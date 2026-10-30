@@ -340,3 +340,9 @@
   color: var(--tal-negative, #f85149);
   font-weight: 600;
 }
+
+/* narrow screens: single-column forms/rows, nothing wider than the viewport */
+@media (max-width: 820px) {
+  .fieldRow { grid-template-columns: minmax(0, 1fr); }
+  .fieldRow > * { min-width: 0; }
+}

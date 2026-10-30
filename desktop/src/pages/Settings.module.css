@@ -521,14 +521,14 @@
 }
 
 .formError {
-  color: #f85149;
+  color: var(--tal-danger);
   font-family: var(--tal-font-mono);
   font-size: var(--tal-text-xs);
   margin: 0;
 }
 
 .formSuccess {
-  color: #2ea043;
+  color: var(--tal-success);
   font-family: var(--tal-font-mono);
   font-size: var(--tal-text-xs);
   margin: 0;
@@ -668,7 +668,7 @@
 
 .spendBar {
   height: 100%;
-  background: #2ea043;
+  background: var(--tal-success);
   transition: width 0.2s ease;
 }
 
@@ -677,7 +677,7 @@
 }
 
 .spendBar_over {
-  background: #f85149;
+  background: var(--tal-danger);
 }
 
 .spendValue {
@@ -777,4 +777,11 @@
   font-size: var(--tal-text-sm);
   color: var(--tal-text-primary);
   cursor: pointer;
+}
+
+/* narrow screens: single-column forms/rows, nothing wider than the viewport */
+@media (max-width: 820px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .aboutRow, .costInputLabel { grid-template-columns: minmax(0, 1fr); gap: var(--tal-space-1); }
+  .spendRow { grid-template-columns: minmax(0, 1fr) auto; }
 }

@@ -372,6 +372,8 @@ export interface SessionCompleteEvent {
   /** null = unknown (a paid model with no verified price); never to be shown as $0. */
   estimated_cost_usd?: number | null;
   cost_known?: boolean;
+  /** Whole-run wall seconds (data fetch + Dexter + debate), frozen when the run completed. */
+  elapsed_s?: number;
   /** Pro-only: `'full'` marks the real LangGraph engine; the free engine
    * omits it. `deep_model`/`quick_model` expose the two-model split and
    * `auth_kind` the credential flow used. */
@@ -629,6 +631,8 @@ export interface SessionSummary {
   output_tokens: number | null;
   estimated_cost_usd: number | null;
   created_at: string;
+  /** Whole-run wall seconds recorded by the engine; null for sessions saved before it was recorded. */
+  elapsed_s?: number | null;
 }
 
 export interface SessionDetail extends SessionSummary {

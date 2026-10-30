@@ -4,7 +4,7 @@
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(13, 17, 23, 0.78);
+  background: color-mix(in oklab, var(--tal-bg-base) 78%, transparent);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -14,8 +14,8 @@
 }
 
 .modal {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--tal-bg-elevated);
+  border: 1px solid var(--tal-border-default);
   border-radius: 8px;
   width: min(520px, 90vw);
   padding: 24px 28px 20px;
@@ -24,7 +24,7 @@
     system-ui,
     -apple-system,
     sans-serif;
-  color: #e6edf3;
+  color: var(--tal-text-primary);
   animation: slideUp 0.18s ease-out;
 }
 
@@ -32,7 +32,7 @@
   margin: 0 0 12px;
   font-size: 18px;
   font-weight: 600;
-  color: #f0a830;
+  color: var(--tal-warning);
   letter-spacing: -0.01em;
 }
 
@@ -40,7 +40,7 @@
   margin: 0 0 16px;
   font-size: 14px;
   line-height: 1.55;
-  color: #c9d1d9;
+  color: var(--tal-text-secondary);
 }
 
 .capList {
@@ -49,8 +49,8 @@
   gap: 8px;
   margin-bottom: 20px;
   padding: 12px 14px;
-  background: #0d1117;
-  border: 1px solid #21262d;
+  background: var(--tal-bg-base);
+  border: 1px solid var(--tal-border-subtle);
   border-radius: 6px;
 }
 
@@ -61,11 +61,11 @@
   gap: 10px;
   font-size: 13px;
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-  color: #8b949e;
+  color: var(--tal-text-muted);
 }
 
 .capRowHighlight {
-  color: #e6edf3;
+  color: var(--tal-text-primary);
   font-weight: 500;
 }
 
@@ -75,23 +75,23 @@
 
 .capProgress {
   height: 8px;
-  background: #21262d;
+  background: var(--tal-bg-overlay);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .capBar {
   height: 100%;
-  background: #2ea043;
+  background: var(--tal-success);
   transition: width 0.2s ease;
 }
 
 .capBarWarn {
-  background: #f0a830;
+  background: var(--tal-warning);
 }
 
 .capBarOver {
-  background: #f85149;
+  background: var(--tal-danger);
 }
 
 .capValue {
@@ -119,42 +119,42 @@
 
 .cancel {
   background: transparent;
-  border: 1px solid #30363d;
-  color: #c9d1d9;
+  border: 1px solid var(--tal-border-default);
+  color: var(--tal-text-secondary);
 }
 
 .cancel:hover {
-  background: #21262d;
-  border-color: #484f58;
+  background: var(--tal-bg-overlay);
+  border-color: var(--tal-border-strong);
 }
 
 .override {
-  background: #f0a830;
-  border: 1px solid #f0a830;
-  color: #0d1117;
+  background: var(--tal-warning);
+  border: 1px solid var(--tal-warning);
+  color: var(--tal-text-inverse);
   font-weight: 600;
   min-width: 180px;
   font-variant-numeric: tabular-nums;
 }
 
 .override:hover:not(:disabled) {
-  background: #ffba3c;
-  border-color: #ffba3c;
+  background: var(--tal-warning);
+  border-color: var(--tal-warning);
 }
 
 .override:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-  background: #6e7681;
-  border-color: #6e7681;
-  color: #0d1117;
+  background: var(--tal-text-muted);
+  border-color: var(--tal-text-muted);
+  color: var(--tal-text-inverse);
 }
 
 .hint {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
-  color: #6e7681;
+  color: var(--tal-text-muted);
   text-align: center;
 }
 
@@ -176,4 +176,9 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* narrow screens: single-column forms/rows, nothing wider than the viewport */
+@media (max-width: 820px) {
+  .capRow { grid-template-columns: 56px minmax(0, 1fr) auto; }
 }

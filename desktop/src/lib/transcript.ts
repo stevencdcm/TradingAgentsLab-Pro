@@ -1,3 +1,4 @@
+import { formatRunDuration } from './duration';
 import type {
   DebateEvent,
   QuoteSummary,
@@ -166,6 +167,10 @@ export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 
     : t('export.md.titleNone');
   lines.push(header, '');
   lines.push(t('export.md.generated', { time: new Date().toISOString() }), '');
+  const done = events.find((e) => e.type === 'session.complete');
+  if (done && done.type === 'session.complete' && done.live) {
+    lines.push(`${done.provider ?? ''} · ${done.model ?? ''} · ${formatRunDuration(done.elapsed_s, t)}`, '');
+  }
   lines.push(t('export.md.banner'), '');
 
   if (decision) {

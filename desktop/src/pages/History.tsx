@@ -1,3 +1,4 @@
+import { formatRunDuration } from '../lib/duration';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './History.module.css';
 import DebateStream from '../components/DebateStream';
@@ -263,6 +264,8 @@ function History() {
                       provider: detail.provider ?? 'openai',
                       model: detail.model ?? '?',
                     })}
+                    {' · '}
+                    <span data-testid="history-detail-duration">{formatRunDuration(detail.elapsed_s, t)}</span>
                   </span>
                 ) : (
                   <span className={styles.detailMetaPillNeutral}>{t('history.stub')}</span>
@@ -376,6 +379,8 @@ function History() {
                         provider: s.provider ?? 'openai',
                         model: s.model ?? '?',
                       })}
+                      {' · '}
+                      <span data-testid={`history-duration-${s.id}`}>{formatRunDuration(s.elapsed_s, t)}</span>
                     </span>
                   )}
                 </div>
@@ -383,12 +388,17 @@ function History() {
                   <span>{s.trade_date}</span>
                   <span className={styles.rowSep}>·</span>
                   <span>{formatRelative(s.created_at)}</span>
-                  {s.estimated_cost_usd !== null && (
+                  {s.estimated_cost_usd !== null ? (
                     <>
                       <span className={styles.rowSep}>·</span>
                       <span>{t('history.estCost', { cost: `$${s.estimated_cost_usd.toFixed(4)}` })}</span>
                     </>
-                  )}
+                  ) : s.live ? (
+                    <>
+                      <span className={styles.rowSep}>·</span>
+                      <span>{t('history.costUnknown')}</span>
+                    </>
+                  ) : null}
                 </div>
                 <div className={styles.rowReasoning}>{s.decision_reasoning}</div>
               </button>

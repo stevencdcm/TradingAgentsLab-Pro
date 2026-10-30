@@ -489,7 +489,26 @@ def summary_to_dict(s: SessionSummary) -> dict[str, Any]:
 
 
 def detail_to_dict(d: SessionDetail) -> dict[str, Any]:
-    return asdict(d)
+    out = asdict(d)
+    out["cost_report"] = session_cost_report(d.events)
+    return out
+
+
+def session_cost_report(events: list[dict]) -> Optional[dict[str, Any]]:
+    """The official-price report saved with the run, else (older sessions) a clearly labelled recomputation from the stored
+    totals at TODAY's list price. Never written back: saved accounting (estimated_cost_usd etc.) is not touched."""
+    complete = next((e for e in reversed(events) if isinstance(e, dict) and e.get("type") == "session.complete"), None)
+    if complete is None:
+        return None
+    stored = complete.get("cost_report")
+    if isinstance(stored, dict):
+        return stored
+    try:
+        from .cost_report import recompute_for_session
+
+        return recompute_for_session(complete)
+    except Exception:  # noqa: BLE001 - the detail view must still open
+        return None
 
 
 # ---- Watchlist -------------------------------------------------------------

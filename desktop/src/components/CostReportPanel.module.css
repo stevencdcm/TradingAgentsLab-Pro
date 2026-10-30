@@ -1,0 +1,13 @@
+.panel { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border, rgba(127, 127, 127, 0.35)); border-radius: 8px; font-size: 0.85rem; }
+.title { margin: 0 0 6px; font-size: 0.9rem; }
+.line, .total, .source { margin: 2px 0; }
+.total { font-weight: 600; }
+.source { opacity: 0.7; font-size: 0.78rem; }
+.ok { margin: 2px 0; opacity: 0.8; }
+.warn { margin: 2px 0; color: var(--warn, #b45309); }
+.reasons { margin: 2px 0 4px 18px; padding: 0; }
+.details { margin-top: 6px; }
+.scroll { overflow-x: auto; }
+.table { border-collapse: collapse; width: 100%; }
+.table th, .table td { padding: 3px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid rgba(127, 127, 127, 0.2); }
+.table th:first-child, .table td:first-child, .table th:nth-child(2), .table td:nth-child(2) { text-align: left; }

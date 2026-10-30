@@ -127,7 +127,7 @@ function History() {
 
   const onCopyTranscript = useCallback(async () => {
     if (!detail) return;
-    const md = buildTranscriptMarkdown(detail.events, locale);
+    const md = buildTranscriptMarkdown(detail.events, locale, detail.cost_report ?? null);
     try {
       await navigator.clipboard.writeText(md);
       setCopied(true);
@@ -147,7 +147,7 @@ function History() {
     if (!detail) return;
     try {
       const { buildTranscriptHtml } = await import('../lib/transcript-html');
-      const { html, suggestedName } = buildTranscriptHtml(detail.events, locale);
+      const { html, suggestedName } = buildTranscriptHtml(detail.events, locale, detail.cost_report ?? null);
       await window.tradingAgentsLab.transcript.openHtml(html, suggestedName);
     } catch (err) {
       setError(
@@ -278,7 +278,7 @@ function History() {
               </div>
             </section>
 
-            <DebateStream events={detail.events} isStreaming={false} />
+            <DebateStream events={detail.events} isStreaming={false} costReport={detail.cost_report ?? null} />
           </>
         )}
       </div>

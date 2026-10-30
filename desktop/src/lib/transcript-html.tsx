@@ -25,6 +25,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DebateEvent } from './engine-client';
+import { costReportHtml, type CostReport } from './cost-report';
 import { findNotices, findResearch, researchMarkdown } from './research-notes';
 import { isReview, riskLabel, stanceLabel, stanceLean } from './stance';
 import { htmlLang, makeTranslator, splitRich, type Locale } from '../i18n';
@@ -151,6 +152,7 @@ export interface TranscriptHtmlResult {
 export function buildTranscriptHtml(
   events: DebateEvent[],
   locale: Locale = 'en',
+  costReportOverride: CostReport | null = null,
 ): TranscriptHtmlResult {
   const t = makeTranslator(locale);
   const start = findStart(events);
@@ -274,6 +276,11 @@ export function buildTranscriptHtml(
     }
   }
 
+  const doneEv = events.find((e) => e.type === 'session.complete');
+  const report = costReportOverride ?? (doneEv && doneEv.type === 'session.complete' ? (doneEv.cost_report ?? null) : null);
+  if (report) {
+    parts.push(costReportHtml(report, t, (n) => n.toLocaleString(locale === 'en' ? 'en' : 'zh-Hant-TW'), esc));
+  }
   parts.push('<footer>');
   parts.push(`<div class="tier3">${richHtml(t('analyze.disclaimer'))}</div>`);
   parts.push(`<div class="tier1">${esc(t('footer.disclaimer'))}</div>`);

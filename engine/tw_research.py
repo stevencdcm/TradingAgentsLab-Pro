@@ -193,7 +193,8 @@ async def tw_research(
                   "estimated_cost_usd": round(debate_cost + d_cost, 4) if (debate_cost is not None and d_cost is not None) else None,
                   "cost_known": debate_cost is not None and d_cost is not None,
                   "cost_complete": bool(cost_known and (not billable or is_priced(config.model)) and (du.get("measured") or not dexter_ran or not billable)),
-                  "usage_complete": bool(du.get("measured") or not dexter_ran)}
+                  "usage_complete": bool(du.get("measured") or not dexter_ran),
+                  "cost_report": _report_with_dexter(ev.get("cost_report"), config, dexter_ran, du)}
         yield ev
 
 
@@ -214,14 +215,26 @@ async def full_graph_dexter(*, code: str, trade_date: str, config: ProviderConfi
         ev = {"type": "dexter.result", "ran": False, "status": "unsupported", "reason": f"stage_error: {reason}", "findings": [], "unknowns": []}
         return {"event": ev, "block": {"ran": False, "status": "unsupported", "reason": ev["reason"], "text": "", "verified": 0},
                 "d_in": 0, "d_out": 0, "d_cost": 0.0, "usage": {"input_tokens": 0, "output_tokens": 0, "measured": False, "est_cost_usd": 0.0, "ran": False},
-                "ran": False, "measured": False, "billable": False}
+                "ran": False, "measured": False, "billable": False, "raw_usage": {}}
     dexter = st["dexter"]
     text = evidence_context(pack, dexter, lang) if st["ran"] else ""
     verified = len([f for f in dexter.get("findings", []) if f.get("verification") == "verified"])
     st["event"] = {**st["event"], "snapshot_id": pack["snapshot_id"]}
     block = {"ran": st["ran"], "status": dexter.get("status"), "reason": dexter.get("reason"), "text": text if st["ran"] else "", "verified": verified}
     return {"event": st["event"], "block": block, "d_in": st["d_in"], "d_out": st["d_out"], "d_cost": st["d_cost"], "usage": st["usage"],
-            "ran": st["ran"], "measured": bool(st["raw_usage"].get("measured")), "billable": st["billable"]}
+            "ran": st["ran"], "measured": bool(st["raw_usage"].get("measured")), "billable": st["billable"],
+            "raw_usage": st["raw_usage"]}
+
+
+def _report_with_dexter(report: Optional[dict[str, Any]], config: ProviderConfig, ran: bool, raw_usage: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Official-price report with the Dexter job added as its own line(s); never raises (the report is secondary)."""
+    try:
+        from .cost_report import add_dexter
+
+        return add_dexter(report, billing=config.auth_kind or "api_key", provider=config.provider, model=config.model,
+                          ran=ran, raw_usage=raw_usage)
+    except Exception:  # noqa: BLE001
+        return report
 
 
 def fold_dexter_into_complete(ev: dict[str, Any], res: Optional[dict[str, Any]], config: ProviderConfig) -> dict[str, Any]:
@@ -242,4 +255,5 @@ def fold_dexter_into_complete(ev: dict[str, Any], res: Optional[dict[str, Any]],
         "estimated_cost_usd": round(debate_cost + d_cost, 4) if known else None,
         "cost_known": bool(known and ev.get("cost_known", True)),
         "usage_complete": bool(res["measured"] or not res["ran"]),
+        "cost_report": _report_with_dexter(ev.get("cost_report"), config, res.get("ran", False), res.get("raw_usage")),
     }

@@ -13,7 +13,7 @@ SECRET = open(sys.argv[3]).read().strip(); OWNER = sys.argv[4]
 client = httpx.AsyncClient(base_url="http://" + UP, follow_redirects=False, timeout=None)
 
 def hdrs(h):
-    out = {k: v for k, v in h if k.lower() not in ("host", "content-length", "connection") and not k.lower().startswith("x-tal-")}
+    out = {k: v for k, v in h if k.lower() not in ("host", "content-length", "connection", "authorization") and not k.lower().startswith("x-tal-")}   # never forward Authorization
     out["host"] = PUBLIC_HOST; out["x-tal-proxy-auth"] = SECRET; out["x-tal-owner"] = OWNER
     return out
 

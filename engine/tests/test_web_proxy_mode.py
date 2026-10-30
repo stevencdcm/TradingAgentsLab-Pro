@@ -3,6 +3,8 @@ to the base path + cookie-authenticated WebSocket (no token in the URL). Default
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -135,3 +137,62 @@ def test_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TAL_WEB_PROXY_SECRET_FILE", str(tmp_path / "missing"))
     with pytest.raises(RuntimeError):
         ProxyConfig.from_env()
+
+
+# ---- engine API (bearer) behind the proxy: cookie-authenticated internal scope, never a client header ------------------------
+
+
+def _with_cookie(app):
+    c = client(app)
+    c.get("/", headers=hop())                       # first load issues the cookie
+    c.cookies.set(COOKIE_NAME, COOKIE)
+    return c
+
+
+def test_engine_api_needs_no_engine_token_once_hop_owner_and_cookie_are_verified(app):
+    c = _with_cookie(app)
+    assert c.get("/health", headers=hop()).status_code == 200                      # no Authorization header at all
+    assert c.get("/cost-guard/state", headers=hop()).status_code == 200
+
+
+@pytest.mark.parametrize("case", ["no_cookie", "wrong_secret", "wrong_owner", "wrong_host", "spoofed_header", "non_loopback"])
+def test_engine_api_stays_closed_for_every_missing_or_forged_condition(app, case):
+    c = client(app, peer="10.9.9.9" if case == "non_loopback" else "127.0.0.1")
+    if case != "no_cookie":
+        c.cookies.set(COOKIE_NAME, COOKIE)
+    h = hop()
+    if case == "wrong_secret":
+        h["x-tal-proxy-auth"] = "z" * 40
+    if case == "wrong_owner":
+        h["x-tal-owner"] = "mallory@example.com"
+    if case == "wrong_host":
+        h["host"] = "evil.example"
+    if case == "spoofed_header":
+        h = {"host": HOST, "x-tal-session-authenticated": "true", "x-tal-trusted": "1", "tal_session_authenticated": "1"}   # no hop secret
+    assert c.get("/health", headers=h).status_code in (401, 403)
+
+
+def test_first_page_load_without_a_cookie_does_not_unlock_the_engine_api(app):
+    c = client(app)
+    r = c.get("/health", headers=hop())             # hop+owner valid but no session cookie yet
+    assert r.status_code == 401
+
+
+def test_local_mode_still_requires_the_bearer_token(app):
+    local = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", client=("127.0.0.1", 9))
+    local.cookies.set(COOKIE_NAME, COOKIE)
+    assert local.get("/health").status_code == 401
+    assert local.get("/health", headers={"Authorization": "Bearer engine-token"}).status_code == 200
+
+
+def test_state_changing_engine_calls_keep_origin_csrf_protection(app):
+    c = _with_cookie(app)
+    body = {"model": "gpt-4o-mini", "auth_kind": "api_key", "max_tokens": 100}
+    assert c.post("/cost-guard/check", json=body, headers=hop()).status_code == 403                      # no Origin
+    assert c.post("/cost-guard/check", json=body, headers=hop(origin="https://evil.example")).status_code == 403
+    assert c.post("/cost-guard/check", json=body, headers=hop(origin=PUBLIC)).status_code == 200
+
+
+def test_vite_base_is_relative_so_assets_follow_the_proxy_base_path():
+    cfg = (Path(__file__).resolve().parents[2] / "desktop" / "vite.config.ts").read_text()
+    assert "base: './'" in cfg

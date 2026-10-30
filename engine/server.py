@@ -24,6 +24,7 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
+    Request,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -99,7 +100,10 @@ def build_app(*, token: str) -> FastAPI:
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    def require_bearer(authorization: Annotated[str | None, Header()] = None) -> None:
+    def require_bearer(request: Request, authorization: Annotated[str | None, Header()] = None) -> None:
+        # Trusted workbench proxy: authenticated by the web guard (hop secret + owner + Origin + session cookie).
+        if request.scope.get("tal_session_authenticated") is True:
+            return
         if authorization is None or not authorization.startswith("Bearer "):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -581,7 +585,7 @@ def build_app(*, token: str) -> FastAPI:
         provided = ws.query_params.get("token")
         # Trusted workbench proxy (cookie + shared-secret hop + owner, checked by the web guard) authenticates the
         # socket without a token in the URL; everything else still needs the engine token.
-        if provided != token and not ws.scope.get("tal_trusted"):
+        if provided != token and ws.scope.get("tal_session_authenticated") is not True:
             await ws.close(code=1008, reason="invalid token")
             return
         await ws.accept()

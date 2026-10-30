@@ -206,7 +206,7 @@ def test_local_launch_entry_keeps_working_while_proxy_mode_is_on(app):
     page = local.get("/")
     assert page.status_code == 200 and "<base" not in page.text and 'src="web-bridge.js"' in page.text
     hs = local.get("/web/handshake").json()
-    assert hs["proxy"] is False and hs["token"] == "engine-token"       # the local page still gets the bearer token
+    assert hs == {"port": PORT, "token": "engine-token", "proxy": False}  # the local page still gets the bearer token
     assert local.get("/assets/").status_code in (200, 404)               # served from the root, not under /lab-pro
 
 
@@ -214,10 +214,22 @@ def test_only_a_verified_hop_gets_the_base_path_and_proxy_handshake(app):
     c = client(app)
     r = c.get("/", headers=hop())
     assert '<base href="/lab-pro/">' in r.text
-    assert c.get("/web/handshake", headers=hop(), cookies={COOKIE_NAME: COOKIE}).json()["proxy"] is True
+    hs = c.get("/web/handshake", headers=hop(), cookies={COOKIE_NAME: COOKIE}).json()
+    assert hs == {"port": PORT, "proxy": True}                            # no engine bearer in the JSON, at all
+    # ... also on the very first, cookie-less hop request
+    assert c.get("/web/handshake", headers=hop()).json() == {"port": PORT, "proxy": True}
     # a forged header from a loopback client without the secret gets neither the page nor the proxy flag
     forged = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", client=("127.0.0.1", 54321))
     forged.cookies.set(COOKIE_NAME, COOKIE)
     f = forged.get("/", headers={"x-tal-owner": OWNER, "x-tal-proxy-auth": "x" * 40})
     assert "<base" not in f.text or f.status_code == 403
-    assert forged.get("/web/handshake", headers={"x-tal-owner": OWNER}).json()["proxy"] is False
+    fh = forged.get("/web/handshake", headers={"x-tal-owner": OWNER}).json()
+    assert fh["proxy"] is False and fh["token"] == "engine-token"        # forged hop headers neither enable proxy nor hide the local token
+
+
+def test_proxy_handshake_text_never_contains_the_engine_token(app):
+    r = client(app).get("/web/handshake", headers=hop(), cookies={COOKIE_NAME: COOKIE})
+    assert "engine-token" not in r.text and "token" not in r.json()
+    # an API call through the hop works without any Authorization header (cookie-authenticated)
+    ok = client(app).get("/web/info", headers=hop(), cookies={COOKIE_NAME: COOKIE})
+    assert ok.status_code == 200

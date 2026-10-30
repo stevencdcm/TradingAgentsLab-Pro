@@ -1,7 +1,8 @@
-import { apiBase, wsBase } from './endpoints';
+import { apiBase, authHeader, wsBase } from './endpoints';
 export interface EngineHandshake {
   port: number;
-  token: string;
+  /** Absent behind the trusted workbench proxy (the session cookie authenticates; the engine bearer is never sent to the browser). */
+  token?: string;
   /** Web only: served through the trusted workbench proxy (cookie-authenticated WebSocket, no token in URLs). */
   proxy?: boolean;
 }
@@ -697,7 +698,7 @@ async function fetchWithTimeout(
 export async function getHealth(): Promise<HealthInfo> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(`${apiBase(port)}/health`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { ...authHeader(token) },
   });
   if (!res.ok) {
     throw new Error(`/health failed: ${res.status} ${res.statusText}`);
@@ -713,7 +714,7 @@ export async function listSessions(opts: { limit?: number; ticker?: string } = {
   const qs = params.toString();
   const url = `${apiBase(port)}/sessions${qs ? `?${qs}` : ''}`;
   const res = await fetchWithTimeout(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { ...authHeader(token) },
   });
   if (!res.ok) {
     throw new Error(`listSessions failed: ${res.status} ${res.statusText}`);
@@ -735,7 +736,7 @@ export async function getSession(id: string): Promise<SessionDetail> {
     const res = await fetchWithTimeout(
       `${apiBase(port)}/sessions/${encodeURIComponent(id)}`,
       {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { ...authHeader(token) },
         signal: controller.signal,
       },
     );
@@ -761,7 +762,7 @@ export async function deleteSession(id: string): Promise<void> {
     `${apiBase(port)}/sessions/${encodeURIComponent(id)}`,
     {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { ...authHeader(token) },
     },
   );
   if (!res.ok) {
@@ -798,7 +799,7 @@ export async function searchTwSymbols(q: string, opts: { refresh?: boolean; sign
     const params = new URLSearchParams({ q, limit: '12' });
     if (opts.refresh) params.set('refresh', 'true');
     const res = await fetchWithTimeout(`${apiBase(port)}/tw/symbols?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { ...authHeader(token) },
       signal: opts.signal ?? own!.signal,
     });
     if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
@@ -814,7 +815,7 @@ export async function searchTwSymbols(q: string, opts: { refresh?: boolean; sign
 export async function listWatchlist(): Promise<WatchlistEntry[]> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(`${apiBase(port)}/watchlist`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { ...authHeader(token) },
   });
   if (!res.ok) {
     throw new Error(`listWatchlist failed: ${res.status} ${res.statusText}`);
@@ -832,7 +833,7 @@ export async function addWatchlist(input: {
   const res = await fetchWithTimeout(`${apiBase(port)}/watchlist`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...authHeader(token),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ ticker: input.ticker, note: input.note ?? null, market: input.market ?? null }),
@@ -855,7 +856,7 @@ export async function removeWatchlist(ticker: string): Promise<void> {
     `${apiBase(port)}/watchlist/${encodeURIComponent(ticker)}`,
     {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { ...authHeader(token) },
     },
   );
   if (!res.ok) {
@@ -908,7 +909,7 @@ export async function testLLMConnection(args: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...authHeader(token),
       },
       body: JSON.stringify({
         provider_config: {
@@ -966,7 +967,7 @@ export async function listCodexModels(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...authHeader(token),
       },
       body: JSON.stringify({ provider_config: providerConfig, refresh }),
       signal: controller.signal,
@@ -1016,7 +1017,7 @@ export interface TelegramBotStartArgs {
 export async function getTelegramBotStatus(): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(`${apiBase(port)}/telegram/status`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { ...authHeader(token) },
   });
   if (!res.ok) {
     throw new Error(
@@ -1034,7 +1035,7 @@ export async function startTelegramBot(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      ...authHeader(token),
     },
     body: JSON.stringify(args),
   });
@@ -1049,7 +1050,7 @@ export async function stopTelegramBot(): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(`${apiBase(port)}/telegram/stop`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { ...authHeader(token) },
   });
   if (!res.ok) {
     throw new Error(
@@ -1070,7 +1071,7 @@ export async function approveTelegramChat(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      ...authHeader(token),
     },
     body: JSON.stringify({ chat_id: chatId }),
   });
@@ -1093,7 +1094,7 @@ export async function refreshTelegramBotCredentials(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      ...authHeader(token),
     },
     body: JSON.stringify({ provider_config: providerConfig }),
   });
@@ -1119,7 +1120,7 @@ export async function denyTelegramChat(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      ...authHeader(token),
     },
     body: JSON.stringify({ chat_id: chatId }),
   });
@@ -1138,7 +1139,7 @@ export async function denyTelegramChat(
 export async function getLocalRuntimes(): Promise<LocalRuntime[]> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(`${apiBase(port)}/llm/local-runtimes`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { ...authHeader(token) },
   });
   if (!res.ok) {
     throw new Error(
@@ -1160,7 +1161,7 @@ export async function listLocalModels(args: {
   try {
     const res = await fetchWithTimeout(`${apiBase(port)}/llm/local-models`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json', ...authHeader(token) },
       body: JSON.stringify({ base_url: args.baseUrl, api_key: args.apiKey || undefined }),
     });
     if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
@@ -1180,7 +1181,7 @@ export async function testLocalConnection(args: {
   try {
     const res = await fetchWithTimeout(`${apiBase(port)}/llm/test`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json', ...authHeader(token) },
       body: JSON.stringify({
         provider_config: {
           provider: 'local',
@@ -1205,7 +1206,7 @@ export async function streamDebate(
   const { port, token, proxy } = await handshake();
   // Behind the trusted workbench proxy the socket authenticates by cookie: no token in the URL (access logs).
   const ws = new WebSocket(
-    `${wsBase(port)}/stream${proxy ? '' : `?token=${encodeURIComponent(token)}`}`,
+    `${wsBase(port)}/stream${proxy ? '' : `?token=${encodeURIComponent(token ?? '')}`}`,
   );
 
   let resolveDone: () => void;
@@ -1311,7 +1312,7 @@ export interface TwSource {
 
 export async function listTwSources(): Promise<TwSource[]> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`${apiBase(port)}/tw/sources`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetchWithTimeout(`${apiBase(port)}/tw/sources`, { headers: { ...authHeader(token) } });
   if (!res.ok) throw new Error(`listTwSources failed: ${res.status}`);
   return ((await res.json()) as { sources: TwSource[] }).sources;
 }
@@ -1321,7 +1322,7 @@ export async function testTwSource(id: string): Promise<{ ok: boolean; error?: s
   try {
     const res = await fetchWithTimeout(
       `${apiBase(port)}/tw/sources/test`,
-      { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) },
+      { method: 'POST', headers: { ...authHeader(token), 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) },
       90_000,
     );
     if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };

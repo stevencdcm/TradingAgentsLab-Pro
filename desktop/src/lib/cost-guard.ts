@@ -1,4 +1,4 @@
-import { apiBase } from './endpoints';
+import { apiBase, authHeader } from './endpoints';
 /**
  * Renderer-side client for the engine's CostGuard endpoints.
  *
@@ -116,7 +116,7 @@ async function authFetch(path: string, init?: RequestInit): Promise<Response> {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      Authorization: `Bearer ${token}`,
+      ...authHeader(token),
       'Content-Type': 'application/json',
     },
   });

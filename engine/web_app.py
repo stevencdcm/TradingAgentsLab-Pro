@@ -252,7 +252,10 @@ def build_web_app(
     async def handshake(request: Request) -> dict[str, Any]:
         # `proxy`: the page is served through the trusted workbench proxy: it must use same-origin relative
         # URLs and the WebSocket authenticates by cookie, so no token is ever put in a URL.
-        return {"port": port, "token": token, "proxy": bool(proxy is not None and request.scope.get("tal_via_proxy"))}
+        if proxy is not None and request.scope.get("tal_via_proxy"):
+            # Verified proxy hop: the page authenticates by cookie, so the engine bearer is never handed to a remote browser.
+            return {"port": port, "proxy": True}
+        return {"port": port, "token": token, "proxy": False}
 
     consent_file = data_dir / "consent.json"
 

@@ -320,6 +320,8 @@ export interface AnalyzeRequest {
   tw_dexter?: boolean;
   /** Full flow only: force the strict as-of mode. Absent = automatic (recent dates use "latest available data"). */
   tw_data_mode?: 'latest' | 'historical';
+  /** Idempotency key for this start (default: a fresh UUID). A repeated start with the same key attaches to the same run. */
+  client_run_key?: string;
   /** Optional FinMind member token (a secret reference in the web build). Absent = anonymous Free tier. */
   finmind_token?: string;
   /** Optional per-stream data provider override (e.g. Alpaca). Engine
@@ -576,7 +578,12 @@ export type DebateEvent =
   | import('./webhooks').WebhookReportEvent;
 
 export interface StreamHandle {
+  /** Unsubscribe only. The analysis keeps running in the engine (refresh / navigation never cancel it). */
   close(): void;
+  /** Explicit user stop: asks the engine to cancel the run and settle its cost. */
+  /** Resolves false when the engine could not be asked (the caller may retry); true otherwise. */
+  cancel(): Promise<boolean>;
+  runId(): string | null;
   done: Promise<void>;
 }
 
@@ -1198,34 +1205,192 @@ export async function testLocalConnection(args: {
   }
 }
 
-export async function streamDebate(
-  req: AnalyzeRequest,
+export type RunConnection = 'connected' | 'reconnecting' | 'offline';
+
+/** Server-side run status (GET /runs/{id}). The run lives in the engine; this is only a safe snapshot. */
+export interface RunStatusSnapshot {
+  run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  active: boolean;
+  /** A stop was requested but the engine is still waiting for the model call in flight to finish. */
+  cancelling?: boolean;
+  /** Finished without completing: tokens/cost are what was measured, not a final figure. */
+  usage_partial?: boolean;
+  ticker: string | null;
+  trade_date: string | null;
+  provider: string | null;
+  model: string | null;
+  auth_kind: string | null;
+  engine: string | null;
+  phase: string | null;
+  steps_done: number;
+  started_at: number;
+  ended_at: number | null;
+  elapsed_s: number;
+  last_seq: number;
+  last_event_type: string | null;
+  since_last_event_s: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  estimated_cost_usd: number | null;
+  cost_known: boolean;
+  session_id: string | null;
+  terminal_code: string | null;
+  error: string | null;
+}
+
+const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 8000, 15000, 15000];
+
+function newRunKey(): string {
+  const c = globalThis.crypto;
+  return typeof c?.randomUUID === 'function' ? c.randomUUID() : `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+interface SubscribeOptions {
+  /** First connection of a NEW run: the start frame (carries the idempotency key, so a retried start never starts twice). */
+  start?: Record<string, unknown>;
+  /** Re-subscribe to an existing run. */
+  runId?: string;
+  after?: number;
+  onConnection?: (state: RunConnection) => void;
+}
+
+/**
+ * One subscription to a server-side run. The analysis does NOT depend on this socket: if it drops (refresh, network),
+ * the run keeps going and we re-subscribe with `?after=<last seq>`; events at or below the last seen `seq` are dropped,
+ * so the consumer sees each event once, in order.
+ */
+async function subscribeRun(
+  opts: SubscribeOptions,
   onEvent: (event: DebateEvent) => void,
   onError?: (err: unknown) => void,
 ): Promise<StreamHandle> {
-  const { port, token, proxy } = await handshake();
-  // Behind the trusted workbench proxy the socket authenticates by cookie: no token in the URL (access logs).
-  const ws = new WebSocket(
-    `${wsBase(port)}/stream${proxy ? '' : `?token=${encodeURIComponent(token ?? '')}`}`,
-  );
-
-  let resolveDone: () => void;
-  let rejectDone: (err: unknown) => void;
+  let runId: string | null = opts.runId ?? null;
+  let lastSeq = opts.after ?? 0;
+  let finished = false;
+  let userClosed = false;
+  let attempt = 0;
+  let ws: WebSocket | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let cancelPromise: Promise<boolean> | null = null;
+  let resolveDone!: () => void;
+  let rejectDone!: (err: unknown) => void;
   const done = new Promise<void>((resolve, reject) => {
     resolveDone = resolve;
     rejectDone = reject;
   });
 
-  ws.addEventListener('open', () => {
-    // Send the start frame. provider_config is optional — when present, the
-    // engine runs a real-LLM debate; when absent, it falls back to the canned
-    // stub. Either way the wire shape downstream is the same.
-    //
-    // The `auth` field is a discriminated union {type: "api_key" | "oauth"}.
-    // Engine accepts both the new shape and legacy {api_key: ...} top-level
-    // for backward compat with older renderer builds.
-    ws.send(
-      JSON.stringify({
+  const connect = async (): Promise<void> => {
+    let hs: EngineHandshake;
+    try {
+      hs = await handshake();
+    } catch (err) {
+      return fail(err);
+    }
+    const { port, token, proxy } = hs;
+    const qs: string[] = [];
+    if (!proxy) qs.push(`token=${encodeURIComponent(token ?? '')}`);
+    let path = '/stream';
+    if (runId) {
+      path = `/runs/${encodeURIComponent(runId)}/stream`;
+      qs.push(`after=${lastSeq}`);
+    }
+    const sock = new WebSocket(`${wsBase(port)}${path}${qs.length ? `?${qs.join('&')}` : ''}`);
+    ws = sock;
+    sock.addEventListener('open', () => {
+      attempt = 0;
+      opts.onConnection?.('connected');
+      if (!runId && opts.start) sock.send(JSON.stringify(opts.start));
+    });
+    sock.addEventListener('message', (msg) => {
+      try {
+        const ev = JSON.parse(msg.data as string) as DebateEvent & { seq?: number; run_id?: string };
+        if (ev.type === ('run.attached' as string) && typeof ev.run_id === 'string') runId = ev.run_id;
+        if (typeof ev.seq === 'number') {
+          if (ev.seq <= lastSeq) return; // already delivered (replay overlap): never show an event twice
+          lastSeq = ev.seq;
+        }
+        if (ev.type === ('run.finished' as string)) finished = true;
+        onEvent(ev);
+      } catch (err) {
+        onError?.(err);
+      }
+    });
+    sock.addEventListener('error', (event) => {
+      if (!finished) onError?.(event);
+    });
+    sock.addEventListener('close', (event) => {
+      if (userClosed) return resolveDone();
+      if (finished || event.code === 1000 || event.code === 1005) return resolveDone();
+      // Lost the socket without a terminal event: the run is still alive on the server, so re-subscribe.
+      if (attempt < RECONNECT_DELAYS_MS.length) {
+        opts.onConnection?.('reconnecting');
+        timer = setTimeout(() => void connect(), RECONNECT_DELAYS_MS[attempt++]);
+        return;
+      }
+      opts.onConnection?.('offline');
+      rejectDone(new Error(`stream closed with code ${event.code}: ${event.reason}`));
+    });
+  };
+
+  const fail = (err: unknown) => {
+    if (attempt < RECONNECT_DELAYS_MS.length && !userClosed) {
+      opts.onConnection?.('reconnecting');
+      timer = setTimeout(() => void connect(), RECONNECT_DELAYS_MS[attempt++]);
+    } else {
+      opts.onConnection?.('offline');
+      rejectDone(err);
+    }
+  };
+
+  await connect();
+  return {
+    // Unsubscribe only: the analysis keeps running on the server. Use cancel() to stop it.
+    close: () => {
+      userClosed = true;
+      if (timer) clearTimeout(timer);
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
+      else resolveDone();
+    },
+    // Idempotent: Stop button, menu, shortcut, New analysis and a second tab may all ask; the engine is asked once per handle and the
+    // stream stays subscribed (and re-subscribes if it drops) until the engine reports run.finished.
+    cancel: () => {
+      cancelPromise ??= (async (): Promise<boolean> => {
+        if (!runId) {
+          userClosed = true; // never attached: nothing to stop on the engine, just stop trying to start
+          if (timer) clearTimeout(timer);
+          if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
+          else resolveDone();
+          return true;
+        }
+        try {
+          await cancelRun(runId);
+          return true;
+        } catch (err) {
+          cancelPromise = null; // the request failed: allow another attempt
+          onError?.(err);
+          return false;
+        }
+      })();
+      return cancelPromise;
+    },
+    runId: () => runId,
+    done,
+  };
+}
+
+export async function streamDebate(
+  req: AnalyzeRequest,
+  onEvent: (event: DebateEvent) => void,
+  onError?: (err: unknown) => void,
+  onConnection?: (state: RunConnection) => void,
+): Promise<StreamHandle> {
+  // provider_config is optional: when present the engine runs a real-LLM debate; when absent the canned stub.
+  // `auth` is a discriminated union {type: "api_key" | "oauth" | "local"}. `client_run_key` makes a retried start
+  // idempotent: the engine attaches to the run it already created instead of starting (and reserving) again.
+  return subscribeRun(
+    {
+      start: {
         ticker: req.ticker,
         trade_date: req.trade_date,
         provider_config: req.provider_config,
@@ -1233,58 +1398,60 @@ export async function streamDebate(
         data_config: req.data_config,
         webhooks: req.webhooks,
         telegram_chat_ids: req.telegram_chat_ids,
-        // Pro engine selector + knobs. Undefined for the free app (the
-        // engine treats absent `engine` as the free path), so this is
-        // inert until the Pro Settings surface populates them.
         engine: req.engine,
         pro_config: req.pro_config,
-        // Optional Alpha Vantage data key (unlocks non-market analysts).
         alpha_vantage_key: req.alpha_vantage_key,
         tw_flow: req.tw_flow,
         tw_dexter: req.tw_dexter,
         tw_data_mode: req.tw_data_mode,
         finmind_token: req.finmind_token,
         report_language: req.report_language,
-      }),
-    );
-  });
-
-  ws.addEventListener('message', (msg) => {
-    try {
-      const parsed = JSON.parse(msg.data as string) as DebateEvent;
-      onEvent(parsed);
-    } catch (err) {
-      onError?.(err);
-    }
-  });
-
-  ws.addEventListener('error', (event) => {
-    onError?.(event);
-  });
-
-  ws.addEventListener('close', (event) => {
-    if (event.code === 1000) {
-      resolveDone();
-    } else if (event.code === 1005) {
-      // 1005 = no status received — treat as clean if server closed before
-      // browser saw the close frame. Server explicitly sends 1000, so this
-      // path is only hit on edge timing.
-      resolveDone();
-    } else {
-      rejectDone(new Error(`stream closed with code ${event.code}: ${event.reason}`));
-    }
-  });
-
-  return {
-    close: () => {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
-      }
+        resumable: true,
+        client_run_key: req.client_run_key ?? newRunKey(),
+      },
+      onConnection,
     },
-    done,
-  };
+    onEvent,
+    onError,
+  );
 }
 
+/** Re-attach to a run the engine is (or was) executing and replay it from `after` (0 = everything). */
+export async function resumeRun(
+  runId: string,
+  onEvent: (event: DebateEvent) => void,
+  onError?: (err: unknown) => void,
+  onConnection?: (state: RunConnection) => void,
+  after = 0,
+): Promise<StreamHandle> {
+  return subscribeRun({ runId, after, onConnection }, onEvent, onError);
+}
+
+async function runFetch(path: string, init?: RequestInit): Promise<Response> {
+  const { port, token } = await handshake();
+  return fetch(`${apiBase(port)}${path}`, { ...init, headers: { ...(init?.headers ?? {}), ...authHeader(token) } });
+}
+
+/** Safe status of a run (no events, no provider configuration). null when it does not exist (or is not ours). */
+export async function getRunStatus(runId: string): Promise<RunStatusSnapshot | null> {
+  const res = await runFetch(`/runs/${encodeURIComponent(runId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`run status failed: ${res.status}`);
+  return (await res.json()) as RunStatusSnapshot;
+}
+
+export async function getActiveRuns(): Promise<{ runs: RunStatusSnapshot[]; recent: RunStatusSnapshot[] }> {
+  const res = await runFetch('/runs/active');
+  if (!res.ok) throw new Error(`active runs failed: ${res.status}`);
+  return (await res.json()) as { runs: RunStatusSnapshot[]; recent: RunStatusSnapshot[] };
+}
+
+/** Explicit stop: the engine cancels the analysis and settles its cost reservation. */
+export async function cancelRun(runId: string): Promise<RunStatusSnapshot> {
+  const res = await runFetch(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error(`cancel failed: ${res.status}`);
+  return (await res.json()) as RunStatusSnapshot;
+}
 
 export type TwSourceState = 'connected' | 'wired_untested' | 'failed' | 'not_implemented';
 

@@ -19,7 +19,9 @@ import {
   type LLMProvider,
   type ProviderConfig,
   type StreamHandle,
+  type RunConnection,
 } from './engine-client';
+import { rememberRun } from './run-memory';
 import {
   CostGuardBlocked,
   reserveCostGuard,
@@ -59,6 +61,8 @@ export interface RunAnalysisCallbacks {
   onEvent: (event: DebateEvent) => void;
   /** Fires on stream-level errors. */
   onError?: (err: unknown) => void;
+  /** Socket state (connected / reconnecting / offline). The analysis itself keeps running in the engine. */
+  onConnection?: (state: RunConnection) => void;
   /** Called when CostGuard blocks the reservation. Return `true` to
    * proceed with override, `false` to abort. If omitted, blocked
    * reservations propagate as a thrown CostGuardBlocked. */
@@ -147,6 +151,8 @@ export async function runAnalysis(
   // for up to 30s after session.complete (the StatusStrip's 30s poll
   // interval).
   const wrappedOnEvent = (event: DebateEvent) => {
+    const attached = event as unknown as { type: string; run_id?: string };
+    if (attached.type === 'run.attached' && attached.run_id) rememberRun({ runId: attached.run_id, ticker: opts.ticker });
     callbacks.onEvent(event);
     if (event.type === 'session.complete') {
       window.dispatchEvent(new CustomEvent('tal:session-complete'));
@@ -173,6 +179,7 @@ export async function runAnalysis(
     },
     wrappedOnEvent,
     callbacks.onError,
+    callbacks.onConnection,
   );
   return { kind: 'streaming', handle };
 }

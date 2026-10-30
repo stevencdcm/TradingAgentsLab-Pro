@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS cost_reservations (
     auth_kind TEXT NOT NULL,
     override INTEGER NOT NULL DEFAULT 0,
     finalized INTEGER NOT NULL DEFAULT 0,
-    finalized_cost_usd REAL
+    finalized_cost_usd REAL,
+    settled_as TEXT
 );
 
 CREATE INDEX IF NOT EXISTS cost_reservations_finalized_idx
@@ -302,6 +303,10 @@ def initialize() -> None:
     _db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(_SCHEMA_DDL)
+        # Additive migration (older DBs): `settled_as='incomplete'` marks a finalized reservation whose run produced NO
+        # session row (failed / cancelled / interrupted) so its spend is still counted; completed runs are counted via sessions.
+        if "settled_as" not in {r[1] for r in conn.execute("PRAGMA table_info(cost_reservations)").fetchall()}:
+            conn.execute("ALTER TABLE cost_reservations ADD COLUMN settled_as TEXT")
         conn.execute(_SEED_CONFIG_SQL, (_iso(_utcnow()),))
         # Sweep any reservations that expired while the engine was down.
         _sweep_expired_reservations(conn)
@@ -530,6 +535,47 @@ def finalize_reservation(reservation_id: str, *, actual_cost_usd: Optional[float
         return False
 
 
+def extend_reservation(reservation_id: str, seconds: int = RESERVATION_TTL_SECONDS) -> bool:
+    """Keep the hold of a long-running run alive (called while the run's heartbeat proves it is still going)."""
+    if not reservation_id:
+        return False
+    try:
+        initialize()
+        with _connect() as conn:
+            cur = conn.execute(
+                "UPDATE cost_reservations SET expires_at = ? WHERE id = ? AND finalized = 0",
+                (_iso(_utcnow() + timedelta(seconds=seconds)), reservation_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[cost_guard] extend failed for {reservation_id}: {type(exc).__name__}: {exc}\n")
+        return False
+
+
+def settle_run_end(reservation_id: str, *, billable_started: bool) -> None:
+    """Final accounting for a run that did NOT complete (failed / cancelled / interrupted).
+
+    Nothing billable started: release the hold at 0. Otherwise keep the measured finalized cost; when the engine could
+    not measure it (unknown) the reserved estimate is counted as a conservative hold. Local / OAuth runs are never API spend.
+    """
+    if not reservation_id:
+        return
+    try:
+        initialize()
+        with _connect() as conn:
+            if not billable_started:
+                conn.execute("UPDATE cost_reservations SET finalized = 1, finalized_cost_usd = COALESCE(finalized_cost_usd, 0) "
+                             "WHERE id = ? AND finalized = 0", (reservation_id,))
+            else:
+                conn.execute("UPDATE cost_reservations SET finalized = 1, settled_as = 'incomplete' WHERE id = ? AND auth_kind = 'api_key'",
+                             (reservation_id,))
+                conn.execute("UPDATE cost_reservations SET finalized = 1 WHERE id = ? AND finalized = 0", (reservation_id,))
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[cost_guard] settle failed for {reservation_id}: {type(exc).__name__}: {exc}\n")
+
+
 # ---- Internals --------------------------------------------------------------
 
 
@@ -586,6 +632,19 @@ def _compute_spend(conn: sqlite3.Connection) -> SpendState:
         ).fetchone()
         return float(row[0])
 
+    def incomplete_cost(since: str) -> float:
+        # Runs that ended without a session row (failed / cancelled / interrupted) still spent money. Counted at the measured
+        # finalized cost, or at the reserved ESTIMATE when the cost is unknown (a conservative budget hold, not an actual cost).
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(COALESCE(finalized_cost_usd, est_cost_usd)), 0)
+            FROM cost_reservations
+            WHERE settled_as = 'incomplete' AND auth_kind = 'api_key' AND created_at >= ?
+            """,
+            (since,),
+        ).fetchone()
+        return float(row[0])
+
     def reserved_cost(since: str) -> float:
         row = conn.execute(
             """
@@ -618,9 +677,9 @@ def _compute_spend(conn: sqlite3.Connection) -> SpendState:
         return int(row[0])
 
     return SpendState(
-        daily_usd=round(cost_sum(day_start) + reserved_cost(day_start), 6),
-        weekly_usd=round(cost_sum(week_start) + reserved_cost(week_start), 6),
-        monthly_usd=round(cost_sum(month_start) + reserved_cost(month_start), 6),
+        daily_usd=round(cost_sum(day_start) + incomplete_cost(day_start) + reserved_cost(day_start), 6),
+        weekly_usd=round(cost_sum(week_start) + incomplete_cost(week_start) + reserved_cost(week_start), 6),
+        monthly_usd=round(cost_sum(month_start) + incomplete_cost(month_start) + reserved_cost(month_start), 6),
         sessions_today=session_count(day_start) + reserved_count(day_start),
     )
 
@@ -714,6 +773,8 @@ __all__ = [
     "CheckResult",
     "ReserveResult",
     "RESERVATION_TTL_SECONDS",
+    "extend_reservation",
+    "settle_run_end",
     "initialize",
     "get_config",
     "update_config",

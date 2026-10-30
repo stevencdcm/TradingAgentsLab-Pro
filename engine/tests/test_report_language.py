@@ -413,6 +413,8 @@ def test_second_full_graph_run_is_refused_while_one_is_active(monkeypatch, tmp_d
             release.set()
             while first.receive_json()["type"] != "session.complete":
                 pass
+            with pytest.raises(Exception):      # the run ends (slot released) before the socket is closed
+                first.receive_json()
         with c.websocket_connect("/stream?token=t") as third:     # slot is free again
             third.send_json(frame)
             assert third.receive_json()["type"] == "session.start"

@@ -94,6 +94,21 @@ export default function RunStatus({ events, clock, streaming, provider, model }:
           </dd>
         </div>
       </dl>
+      {clock.cancelling && (
+        <p className={`${styles.note} ${styles.noteWarn}`} data-testid="run-status-cancelling">{t('runStatus.cancelling')}</p>
+      )}
+      {clock.usagePartial && !clock.cancelling && (
+        <p className={styles.note} data-testid="run-status-usage-partial">{t('runStatus.usagePartial')}</p>
+      )}
+      {(clock.connection === 'reconnecting' || clock.connection === 'offline' || clock.resumed) && (
+        <p className={`${styles.note} ${clock.connection === 'connected' || !clock.connection ? '' : styles.noteWarn}`} data-testid="run-status-connection" data-connection={clock.connection ?? 'connected'}>
+          {clock.connection === 'reconnecting'
+            ? t('runStatus.conn.reconnecting')
+            : clock.connection === 'offline'
+              ? t('runStatus.conn.offline')
+              : t('runStatus.conn.resumed')}
+        </p>
+      )}
       <p className={styles.line} data-testid="run-status-heartbeat">
         {streaming
           ? v.heartbeatAgeMs === null

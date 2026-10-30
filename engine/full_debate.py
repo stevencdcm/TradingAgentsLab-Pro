@@ -44,6 +44,7 @@ import math
 import os
 import re
 import sys
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -185,6 +186,24 @@ class TokenCapExceeded(Exception):
     """Raised by the in-run token meter when the running total crosses the cap."""
 
 
+class RunCancelled(Exception):
+    """Raised inside a graph worker thread once the user cancelled the run: no new model call may start."""
+
+
+CANCEL_DRAIN_S = float(os.environ.get("TAL_CANCEL_DRAIN_S", "240"))
+
+# Meters of runs whose worker thread was STILL inside a model call when the drain timed out. The graph mutates process-global state
+# (config, env, Taiwan cutoff), so no other full-graph run may start while such a thread can still touch it.
+_ZOMBIE_METERS: list = []
+_ZOMBIE_MAX_AGE_S = 3600.0
+
+
+def graph_thread_still_running() -> bool:
+    now = time.monotonic()
+    _ZOMBIE_METERS[:] = [m for m in _ZOMBIE_METERS if m.inflight > 0 and now - getattr(m, "zombie_since", now) < _ZOMBIE_MAX_AGE_S]
+    return bool(_ZOMBIE_METERS)
+
+
 class _TokenMeter(BaseCallbackHandler):
     """Meter token usage across the whole graph run and abort when over cap.
 
@@ -195,11 +214,30 @@ class _TokenMeter(BaseCallbackHandler):
 
     raise_error = True
 
-    def __init__(self, cap: Optional[int]) -> None:
+    def __init__(self, cap: Optional[int], cancel_check: Optional[Any] = None) -> None:
         self.cap = cap
         self.input_tokens = 0
         self.output_tokens = 0
         self.calls = 0
+        # Explicit user cancel: no NEW model call may start; calls already in flight cannot be interrupted (they run on
+        # worker threads), so they are counted (`inflight`) and awaited before the reservation is settled.
+        self.cancel_check = cancel_check
+        self.inflight = 0
+
+    def _starting(self) -> None:
+        self.inflight += 1
+        if self.cancel_check is not None and self.cancel_check():
+            self.inflight -= 1
+            raise RunCancelled("run cancelled by the user")
+
+    def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
+        self._starting()
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        self._starting()
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        self.inflight = max(0, self.inflight - 1)
 
     @property
     def total(self) -> int:
@@ -207,6 +245,7 @@ class _TokenMeter(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         self.calls += 1
+        self.inflight = max(0, self.inflight - 1)
         in_tok = out_tok = 0
         # langchain_anthropic / openai surface usage in a couple of shapes.
         try:
@@ -451,6 +490,7 @@ def _finalize_reservation(
     auth_kind: str,
     merged: Dict[str, Any],
     meter: "_TokenMeter",
+    unknown: bool = False,
 ) -> None:
     """Settle the pre-flight CostGuard reservation with the metered cost.
 
@@ -468,7 +508,7 @@ def _finalize_reservation(
         # A per-token run on a model (deep OR quick) with no verified price has an UNKNOWN cost: settle as NULL, not 0.
         _cost_guard.finalize_reservation(
             reservation_id,
-            actual_cost_usd=_run_cost(auth_kind, merged, meter) if _run_cost_known(auth_kind, merged) else None,
+            actual_cost_usd=_run_cost(auth_kind, merged, meter) if (_run_cost_known(auth_kind, merged) and not unknown) else None,
         )
     except Exception as exc:  # noqa: BLE001 — finalize is best-effort
         sys.stderr.write(
@@ -491,6 +531,7 @@ async def full_debate(
     reservation_id: Optional[str] = None,
     alpha_vantage_key: Optional[str] = None,
     report_language: str = "en",
+    cancel_check: Optional[Any] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Drive the full LangGraph diligence graph, yielding UI-compatible events.
 
@@ -509,7 +550,7 @@ async def full_debate(
     pass ``None`` (the default) to run without CostGuard, as the headless tests do.
     """
     analysts = selected_analysts or ["market", "social", "news", "fundamentals"]
-    meter = _TokenMeter(token_cap)
+    meter = _TokenMeter(token_cap, cancel_check)
     merged: Dict[str, Any] = {}
     final_state: Optional[Dict[str, Any]] = None
     last_phase: Optional[str] = None
@@ -786,7 +827,29 @@ async def full_debate(
             "cost_known": _run_cost_known(auth_kind, merged),
         }
     finally:
-        _finalize_reservation(reservation_id, auth_kind, merged, meter)
+        # A cancelled graph can still have a model call in flight on a worker thread: wait (bounded) for it to land so its
+        # tokens are counted before the reservation is settled and the run slot is released. Never settle early.
+        # The wait runs in its own task and is shielded, so a SECOND cancellation (double click, shutdown, an enclosing cancel) can
+        # neither cut it short nor skip it: only the deadline ends it.
+        deadline = time.monotonic() + CANCEL_DRAIN_S
+
+        async def _drain() -> None:
+            while meter.inflight > 0 and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+
+        drain = asyncio.ensure_future(_drain())
+        while not drain.done():
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                continue
+        still_running = meter.inflight > 0
+        if still_running:
+            meter.zombie_since = time.monotonic()
+            _ZOMBIE_METERS.append(meter)
+        # A call that never came back inside the deadline has an UNKNOWN cost: settle as NULL (the run's incomplete accounting then
+        # holds the reserved estimate) rather than a too-low measured value.
+        _finalize_reservation(reservation_id, auth_kind, merged, meter, unknown=still_running)
 
 
 def _extract_content(node: str, delta: Dict[str, Any], phase: str) -> str:

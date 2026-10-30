@@ -149,6 +149,26 @@ def _do_initialize() -> None:
             conn.execute("ALTER TABLE watchlist ADD COLUMN market TEXT")
         if "name" not in wcols:
             conn.execute("ALTER TABLE watchlist ADD COLUMN name TEXT")
+        # Resumable runs (D7): additive tables, ignored by older engines. They hold run state and sanitized events only —
+        # never provider_config, secrets, or request headers.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL,
+                ticker TEXT, trade_date TEXT, provider TEXT, model TEXT, auth_kind TEXT, engine TEXT, market TEXT,
+                created_at REAL NOT NULL, ended_at REAL, elapsed_s REAL,
+                input_tokens INTEGER, output_tokens INTEGER, estimated_cost_usd REAL, cost_known INTEGER,
+                session_id TEXT, terminal_code TEXT, error TEXT, last_seq INTEGER NOT NULL DEFAULT 0,
+                last_event_type TEXT, last_event_at REAL, steps_done INTEGER NOT NULL DEFAULT 0,
+                reservation_id TEXT, engine_started INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_runs_owner_state ON runs (owner, state);
+            CREATE TABLE IF NOT EXISTS run_events (
+                run_id TEXT NOT NULL, seq INTEGER NOT NULL, ts REAL NOT NULL, etype TEXT NOT NULL, payload TEXT NOT NULL,
+                PRIMARY KEY (run_id, seq)
+            );
+            """
+        )
         # Bump the stored version forward if we just migrated up. Never
         # downgrade — a v2 db running on a v1 engine is rejected above.
         conn.execute(

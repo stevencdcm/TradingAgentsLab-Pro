@@ -31,6 +31,14 @@ export interface RunClock {
   heartbeat: HeartbeatEvent | null;
   /** Transport-level error text when the socket failed / closed abnormally. */
   streamError: string | null;
+  /** Socket state, separate from the model's progress: the analysis runs in the engine whether or not this page is connected. */
+  connection?: 'connected' | 'reconnecting' | 'offline';
+  /** True when this page re-attached to a run that was already going (page reload / second tab). */
+  resumed?: boolean;
+  /** A stop was requested; the engine is waiting for the model call in flight to land before it settles. */
+  cancelling?: boolean;
+  /** The run ended without completing: token / cost figures are partial. */
+  usagePartial?: boolean;
 }
 
 export type RunState =

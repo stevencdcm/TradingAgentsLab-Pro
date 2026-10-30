@@ -9,6 +9,14 @@ export interface ResearchInfo {
   complete: SessionCompleteEvent | null;
 }
 
+/** `run.notice` messages the engine emitted (e.g. social analyst disabled for Taiwan, data purpose). */
+export function findNotices(events: DebateEvent[]): string[] {
+  return events
+    .filter((e) => (e as { type: string }).type === 'run.notice')
+    .map((e) => String((e as unknown as { message?: string }).message ?? ''))
+    .filter(Boolean);
+}
+
 export function findResearch(events: DebateEvent[]): ResearchInfo {
   const evidence = events.find((e) => e.type === 'evidence.pack') as EvidencePackEvent | undefined;
   const dexter = events.find((e) => e.type === 'dexter.result') as DexterResultEvent | undefined;
@@ -22,7 +30,7 @@ export function researchNotes(info: ResearchInfo, t: T, fmt: (n: number) => stri
   if (!c || c.market !== 'TW') return [];
   const notes: string[] = [];
   if (c.engine === 'simplified') notes.push(t('evidence.engineSimplified'));
-  notes.push(t('evidence.notNumberChecked'));
+  if (info.dexter) notes.push(t('evidence.notNumberChecked'));
   const u = c.usage_breakdown;
   if (u) {
     const d = (u.debate?.input_tokens ?? 0) + (u.debate?.output_tokens ?? 0);
@@ -36,7 +44,8 @@ export function researchNotes(info: ResearchInfo, t: T, fmt: (n: number) => stri
 }
 
 /** Markdown section for the export: snapshot, gaps, Dexter status and every finding with its verdict. */
-export function researchMarkdown(info: ResearchInfo, t: T, fmt: (n: number) => string = String): string[] {
+export function researchMarkdown(info: ResearchInfo, t: T, fmt: (n: number) => string = String, notices: string[] = []): string[] {
+  if (notices.length && !info.evidence && !info.dexter) return [...notices.map((n) => `> ${n}`), ''];
   if (!info.evidence && !info.dexter) return [];
   const lines: string[] = [];
   const ev = info.evidence;

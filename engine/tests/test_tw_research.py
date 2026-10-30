@@ -55,7 +55,7 @@ def tw_env(tmp_db, tmp_path, monkeypatch):
 
 def _run(srv, base_url, *, ticker="2330", key=KEY, lang="zh-TW", provider_extra=None):
     token = "t"
-    frame = {"ticker": ticker, "trade_date": "2026-10-29", "report_language": lang, "engine": "pro",
+    frame = {"ticker": ticker, "trade_date": "2026-10-29", "report_language": lang, "engine": "pro", "tw_flow": "simplified",
              "provider_config": {"provider": "local", "auth": {"type": "local", "base_url": base_url, **({"api_key": key} if key else {})},
                                  "model": "Q3.8 Flash Next 原版"}}
     events = []

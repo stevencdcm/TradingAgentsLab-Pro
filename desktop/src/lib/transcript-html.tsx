@@ -25,7 +25,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DebateEvent } from './engine-client';
-import { findResearch, researchMarkdown } from './research-notes';
+import { findNotices, findResearch, researchMarkdown } from './research-notes';
 import { isReview, riskLabel, stanceLabel, stanceLean } from './stance';
 import { htmlLang, makeTranslator, splitRich, type Locale } from '../i18n';
 import {
@@ -248,7 +248,7 @@ export function buildTranscriptHtml(
     parts.push('</ul>');
   }
 
-  const researchMd = researchMarkdown(findResearch(events), t).join('\n');
+  const researchMd = researchMarkdown(findResearch(events), t, String, findNotices(events)).join('\n');
   if (researchMd) parts.push(markdownToHtml(researchMd));
 
   if (news && news.headlines.length > 0) {

@@ -256,6 +256,30 @@ def build_app(*, token: str) -> FastAPI:
             "stale": idx.get("stale", False), "refresh_error": idx.get("error"), "sources": idx.get("sources"),
         }
 
+    @app.get("/tw/sources", dependencies=bearer)
+    async def tw_sources_list() -> dict[str, Any]:
+        """Taiwan data sources: shared catalog + what the adapters actually observed (never a static 'connected')."""
+        from . import tw_graph_tools
+
+        token_configured = False
+        try:
+            token_configured = secret_refs.has_named("data:finmind")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"sources": tw_graph_tools.sources_view(token_configured), "flows": ["pro_full", "simplified"]}
+
+    @app.post("/tw/sources/test", dependencies=bearer)
+    async def tw_sources_test(req: TwSourceTestRequest) -> dict[str, Any]:
+        from . import tw_graph_tools
+
+        token = None
+        try:
+            token = secret_refs.named_value("data:finmind")
+        except Exception:  # noqa: BLE001
+            pass
+        res = await run_in_threadpool(tw_graph_tools.test_source, req.id, token)
+        return {**res, "id": req.id}
+
     @app.delete("/watchlist/{ticker}", dependencies=bearer)
     async def remove_watchlist_endpoint(ticker: str) -> dict[str, Any]:
         removed = storage.remove_watchlist(ticker)
@@ -588,6 +612,7 @@ def build_app(*, token: str) -> FastAPI:
 
         captured_events: list[dict] = []
         slot_held = False
+        tw_run_started = False
         # Bound before the try so the `except WebSocketDisconnect` handler can
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
@@ -621,12 +646,17 @@ def build_app(*, token: str) -> FastAPI:
             guard_error: str | None = None
             tw = taiwan_code(ticker)
             tw_mode = False
+            tw_flow_req = ""
             if tw:
                 # Taiwan research needs a live model (the evidence-based flow); the stub
                 # path has nothing to ground on, so it is refused with an explanation.
                 if ProviderConfig.from_dict(start.get("provider_config")) is not None:
                     tw_mode = True
                     ticker = tw
+                    # Taiwan flow choice. The Pro full graph is the default (the renderer always asks for Pro);
+                    # the simplified evidence-pack + Dexter flow only runs when it is explicitly requested, so a
+                    # Taiwan code with engine=pro never silently degrades to the simplified engine.
+                    tw_flow_req = str(start.get("tw_flow") or "").lower()
                 else:
                     guard_error = taiwan_unsupported_message(
                         tw, normalize_report_language(start.get("report_language"))
@@ -658,6 +688,8 @@ def build_app(*, token: str) -> FastAPI:
             pro_config_raw = start.get("pro_config") or {}
             if not isinstance(pro_config_raw, dict):
                 pro_config_raw = {}
+            tw_full = tw_mode and (tw_flow_req == "full" or (tw_flow_req == "" and is_pro))
+            tw_simple = tw_mode and not tw_full
             # The full graph mutates process-global library config / env while it runs, so only
             # one such run may be active; a second is refused explicitly rather than racing.
             if is_pro or tw_mode:
@@ -704,6 +736,13 @@ def build_app(*, token: str) -> FastAPI:
             )
 
             # Best-effort data fetch; debate degrades gracefully if it fails.
+            if tw_full:
+                from . import tw_graph_tools
+
+                evt = await run_in_threadpool(tw_graph_tools.quote_summary_event, ticker, trade_date)
+                if evt is not None:
+                    await ws.send_json(evt)
+                    captured_events.append(evt)
             summary = None if tw_mode else await _fetch_summary_safe(
                 ticker=ticker, trade_date=trade_date, provider=data_provider
             )
@@ -766,7 +805,7 @@ def build_app(*, token: str) -> FastAPI:
                 # `local` is supported: it maps onto the upstream library's generic
                 # `openai_compatible` provider (base_url + optional key), see
                 # `_build_pro_library_config`.
-                if is_pro and not tw_mode and config.auth_kind not in ("api_key", "oauth", "local"):
+                if is_pro and not tw_simple and config.auth_kind not in ("api_key", "oauth", "local"):
                     evt = {
                         "type": "run.error",
                         "error": (
@@ -808,7 +847,7 @@ def build_app(*, token: str) -> FastAPI:
                 # run starts, instead of failing every node with a 400. See
                 # engine/codex_models.py. Cached per account, so this is one
                 # catalog fetch per 15 minutes, not one per model.
-                if config.provider == "openai" and config.auth_kind == "oauth" and not tw_mode:
+                if config.provider == "openai" and config.auth_kind == "oauth" and not tw_simple:
                     from . import codex_models
 
                     oauth_acct = str(config.auth.get("account_id") or "")
@@ -828,7 +867,7 @@ def build_app(*, token: str) -> FastAPI:
                 # many equities, while Alpaca (which already feeds the chrome
                 # headlines) is reliable. The chain always keeps yfinance as the
                 # fallback so an empty primary never blanks the analyst.
-                if is_pro and pro_lib_config is not None:
+                if is_pro and pro_lib_config is not None and not tw_full:
                     from . import alpaca_news
 
                     dc = start.get("data_config")
@@ -895,7 +934,7 @@ def build_app(*, token: str) -> FastAPI:
                 # Both engines are async generators yielding the same event
                 # shapes, so the send/capture loop is uniform. Pro routes to the
                 # real LangGraph graph; free routes to the simplified reimpl.
-                if tw_mode:
+                if tw_simple:
                     from .tw_research import tw_research
 
                     debate_events = tw_research(
@@ -945,11 +984,40 @@ def build_app(*, token: str) -> FastAPI:
                     # / fundamentals analysts. Absent -> market-only (yfinance,
                     # free). Sent per-run (the engine persists no secrets).
                     av_key = start.get("alpha_vantage_key") or None
+                    selected = pro_config_raw.get("selected_analysts") or None
+                    if tw_full:
+                        # Taiwan data tools for the full graph (FinMind free + TWSE/TPEx open data); no US fallback.
+                        from . import tw_graph_tools
+
+                        tw_graph_tools.install()
+                        fm_token = None
+                        try:
+                            fm_token = secret_refs.resolve_named(start.get("finmind_token"), "data:finmind") if start.get("finmind_token") else None
+                        except secret_refs.SecretRefError:
+                            fm_token = None
+                        tw_graph_tools.begin_run(trade_date, fm_token)
+                        tw_run_started = True
+                        selected, dropped = tw_graph_tools.graph_analysts(selected)
+                        lib_dv = {**(pro_lib_config.get("data_vendors") or {}), **tw_graph_tools.library_config()["data_vendors"]}
+                        pro_lib_config = {**pro_lib_config, "data_vendors": lib_dv, "tool_vendors": {}}
+                        notice = {
+                            "type": "run.notice", "code": "taiwan_full_graph",
+                            "data_mode": tw_graph_tools.mode(), "market": "TW",
+                            "dropped_analysts": dropped,
+                            "message": (
+                                "台股 Pro 完整圖：價量／財報／新聞來自 FinMind 免費層與證交所／櫃買官方開放資料，不使用美股來源。"
+                                + ("社群分析師已停用：沒有可靠的台股社群資料來源。" if dropped else "")
+                                + ("歷史日期：只採用可證明當時已公開的資料，免費來源無法證明財報／新聞公布時間，故這些項目會缺漏。"
+                                   if tw_graph_tools.mode() == "historical" else "最新資料模式：財報與新聞的公布時間未知，已標示。")
+                            ),
+                        }
+                        await ws.send_json(notice)
+                        captured_events.append(notice)
                     debate_events = full_debate(
                         ticker,
                         trade_date,
                         config=pro_lib_config,
-                        selected_analysts=(pro_config_raw.get("selected_analysts") or None),
+                        selected_analysts=selected,
                         token_cap=token_cap,
                         # REAL credential only (None for a keyless local runtime), so
                         # the "local" sentinel is never injected into the environment.
@@ -979,7 +1047,7 @@ def build_app(*, token: str) -> FastAPI:
                 # animations are still visible.
                 hb_meta = {
                     "provider": config.provider, "model": config.model, "auth_kind": config.auth_kind,
-                    "route": "taiwan" if tw_mode else ("full" if is_pro else "simplified"),
+                    "route": "taiwan" if tw_simple else ("full" if is_pro else "simplified"),
                 }
                 async with aclosing(with_heartbeat(debate_events, meta=hb_meta)) as beating:
                   async for event in beating:
@@ -991,6 +1059,11 @@ def build_app(*, token: str) -> FastAPI:
                       if isinstance(event, dict) and event.get("type") == "session.complete":
                           # Whole-run wall time (data fetch + Dexter + debate), frozen here and persisted once.
                           event = {**event, "elapsed_s": round(time.monotonic() - run_t0, 1)}
+                          if tw_full:
+                              from . import tw_graph_tools as _twg
+
+                              event = {**event, "market": "TW", "tw_flow": "full", "data_mode": _twg.mode(),
+                                       "data_vendor": _twg.VENDOR, "source_health": _twg.source_health()}
                       await ws.send_json(event)
                       captured_events.append(event)
                       await asyncio.sleep(0.15)
@@ -1064,6 +1137,10 @@ def build_app(*, token: str) -> FastAPI:
             sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
             return
         finally:
+            if tw_run_started:
+                from . import tw_graph_tools
+
+                tw_graph_tools.end_run()
             if slot_held:
                 run_slot["busy"] = False
 
@@ -1239,6 +1316,10 @@ class WatchlistAddRequest(BaseModel):
     # Taiwan entries: official identity from the symbol index (validated server-side, not trusted).
     market: str | None = Field(default=None, max_length=8)
     name: str | None = Field(default=None, max_length=60)
+
+
+class TwSourceTestRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=60)
 
 
 class CostGuardConfigRequest(BaseModel):

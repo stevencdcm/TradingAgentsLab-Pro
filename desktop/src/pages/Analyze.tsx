@@ -67,6 +67,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   const [isStreaming, setIsStreaming] = useState(false);
   const EMPTY_CLOCK: RunClock = { startedAt: 0, endedAt: null, lastEventAt: null, lastHeartbeatAt: null, heartbeat: null, streamError: null };
   const [runClock, setRunClock] = useState<RunClock>(EMPTY_CLOCK);
+  const [twFlow, setTwFlow] = useState<'full' | 'simplified'>('full');
   const [runCtx, setRunCtx] = useState<{ provider: string | null; model: string | null }>({ provider: null, model: null });
   const [streamError, setStreamError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -622,6 +623,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           openaiAuthKind: authKind,
           model,
           reportLanguage: locale,
+          twFlow,
         },
         {
           onEvent: (event) => {
@@ -930,9 +932,24 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           </div>
         </div>
         {/^\d{4,6}[A-Z]?(\.TWO?)?$/i.test(ticker.trim()) && (
-          <p className={styles.errorBanner} data-testid="taiwan-ticker-hint">
-            {t('analyze.taiwanHint')}
-          </p>
+          <div className={styles.errorBanner} data-testid="taiwan-ticker-hint">
+            <p style={{ margin: 0 }}>{t('analyze.taiwanHint')}</p>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+              <span>{t('analyze.twFlow.label')}</span>
+              <select
+                value={twFlow}
+                onChange={(e) => setTwFlow(e.target.value as 'full' | 'simplified')}
+                disabled={isStreaming}
+                data-testid="tw-flow-select"
+              >
+                <option value="full">{t('analyze.twFlow.full')}</option>
+                <option value="simplified">{t('analyze.twFlow.simplified')}</option>
+              </select>
+            </label>
+            <p style={{ margin: '6px 0 0', fontSize: 'var(--tal-text-sm)' }} data-testid="tw-flow-note">
+              {twFlow === 'full' ? t('analyze.twFlow.fullNote') : t('analyze.twFlow.simplifiedNote')}
+            </p>
+          </div>
         )}
         <div className={styles.cardFooter}>
           <p className={styles.helper}>

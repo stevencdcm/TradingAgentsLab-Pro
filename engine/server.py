@@ -12,6 +12,7 @@ Auth: all endpoints require `Authorization: Bearer <token>` header (or
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -406,6 +407,34 @@ def build_app(*, token: str) -> FastAPI:
                 detail="telegram bot is not running; nothing to refresh",
             )
         return telegram_bot.status().to_dict()
+
+    @app.post("/tw/evidence", dependencies=bearer)
+    async def tw_evidence_build(req: TwEvidenceRequest) -> dict[str, Any]:
+        """Build (and save) an immutable Taiwan evidence pack. No LLM, no cost.
+
+        Free/anonymous FinMind + official TWSE/TPEx snapshots; gaps are listed under
+        `unknowns`, never filled in. The saved file is what research jobs read.
+        """
+        import json as _json
+        from pathlib import Path
+
+        from starlette.concurrency import run_in_threadpool
+
+        from . import tw_evidence
+
+        code = taiwan_code(req.code)
+        if not code:
+            return {"ok": False, "error": "not a Taiwan stock code"}
+        as_of = req.as_of or time.strftime("%Y-%m-%dT%H:%M:%S+08:00", time.gmtime(time.time() + 8 * 3600))
+        try:
+            pack = await run_in_threadpool(tw_evidence.build_tw_evidence, code, as_of, token=secret_refs.resolve(req.finmind_token) if req.finmind_token else None)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": secret_refs.redact(f"{type(exc).__name__}: {exc}")}
+        out_dir = Path(os.environ.get("TAL_EVIDENCE_DIR") or storage._default_db_path().parent / "evidence")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{pack['security_id'].replace(':', '_')}-{pack['snapshot_id'][:16]}.json"
+        path.write_text(_json.dumps(pack, ensure_ascii=False, indent=1), encoding="utf-8")
+        return {"ok": True, "snapshot_id": pack["snapshot_id"], "path": str(path), "coverage": pack["coverage"], "unknowns": pack["unknowns"]}
 
     @app.post("/llm/local-models", dependencies=bearer)
     async def llm_local_models(req: LocalModelsRequest) -> dict[str, Any]:
@@ -1091,6 +1120,12 @@ class LLMModelsRequest(BaseModel):
 
     provider_config: dict[str, Any]
     refresh: bool = False
+
+
+class TwEvidenceRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
+    as_of: str | None = Field(default=None, max_length=40)
+    finmind_token: str | None = Field(default=None, max_length=500)
 
 
 class LocalModelsRequest(BaseModel):

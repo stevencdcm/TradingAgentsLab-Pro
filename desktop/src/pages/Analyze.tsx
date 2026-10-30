@@ -396,7 +396,6 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     setEvents([]);
     setStreamError(null);
     setCopied(false);
-    setRunClock({ ...EMPTY_CLOCK, startedAt: Date.now() });
   }, [resetSignal]);
 
   // Settings writes secrets in the same window; re-read availability right away (the page can stay
@@ -602,6 +601,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     setAssetClass(null);
     isStreamingRef.current = true;
     setIsStreaming(true);
+    setRunClock({ ...EMPTY_CLOCK, startedAt: Date.now() });
 
     // Snapshot the provider/auth/model at click-time through refs so a
     // Settings-tab state change racing with the multiple awaits inside

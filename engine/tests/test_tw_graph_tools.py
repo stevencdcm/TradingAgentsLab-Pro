@@ -186,6 +186,13 @@ def routed(tmp_db, monkeypatch):
     async def boom(**_):
         raise AssertionError("US data providers (yfinance) must never be used for a Taiwan code")
 
+    async def no_dexter(**kw):                       # isolated: never builds a real evidence pack or starts the Dexter runner
+        return {"event": {"type": "dexter.result", "ran": False, "status": "unsupported", "reason": "disabled", "findings": [], "unknowns": []},
+                "block": {"ran": False, "status": "unsupported", "reason": "disabled", "text": "", "verified": 0},
+                "d_in": 0, "d_out": 0, "d_cost": 0.0, "usage": {"input_tokens": 0, "output_tokens": 0, "measured": False, "est_cost_usd": 0.0, "ran": False},
+                "ran": False, "measured": False, "billable": False}
+
+    monkeypatch.setattr(tw_research, "full_graph_dexter", no_dexter)
     monkeypatch.setattr(fd, "full_debate", fake_full)
     monkeypatch.setattr(tw_research, "tw_research", fake_simple)
     monkeypatch.setattr(srv, "_fetch_summary_safe", boom)
@@ -310,3 +317,137 @@ def test_graph_helpers_that_bypass_the_router_are_redirected_for_taiwan_only(env
     assert "rsi" in snap.lower() or "RSI" in snap
     tg.end_run()
     assert tg._run["trade_date"] is None                                   # no active Taiwan run: the original path applies again
+
+
+# ---- S11 follow-ups: latest-available vs as-of separation, fixed limitations, Dexter in the full graph, Sonnet 5.5 price ------
+
+
+def test_recent_past_date_in_latest_mode_never_shows_rows_dated_after_it(env):
+    cutoff = (TODAY - timedelta(days=2)).isoformat()
+    tg.begin_run(cutoff)
+    assert tg.mode() == "latest"
+    out = tg.get_news("2330", (TODAY - timedelta(days=4)).isoformat(), TODAY.isoformat())
+    assert "台積電法說會" not in out                                          # fixture headline is dated TODAY, after the cutoff
+    assert tg._run["excluded_after_cutoff"] >= 1
+    codes = {x["code"] for x in tg.limitations("zh-TW")}
+    assert "withheld_after_cutoff" in codes and "publication_time_unknown" in codes
+
+
+def test_explicit_historical_request_wins_over_the_recent_window(env):
+    tg.begin_run(TODAY.isoformat(), None, "historical")
+    assert tg.mode() == "historical"
+    assert "NO_DATA_AVAILABLE" in tg.get_income_statement("2330", "quarterly", TODAY.isoformat())
+    assert {x["code"] for x in tg.limitations("en")} >= {"historical_gap"}
+    tg.begin_run(TODAY.isoformat(), None, "bogus")                            # unknown request values are ignored
+    assert tg.mode() == "latest"
+
+
+def test_limits_reach_the_model_evidence_and_are_fixed_text(env):
+    for out in (tg.get_income_statement("2330", "quarterly", TODAY.isoformat()),
+                tg.get_fundamentals("2330", TODAY.isoformat()),
+                tg.get_news("2330", (TODAY - timedelta(days=2)).isoformat(), TODAY.isoformat())):
+        assert "[DATA LIMITS — state these in your report]" in out and "publication time" in out.lower()
+    lim = tg.limitations("zh-TW")
+    assert {x["code"] for x in lim} >= {"publication_time_unknown", "news_headlines_only", "disclosures_current_day_only", "raw_prices",
+                                        "no_social_macro_insider", "reflection_no_tw_data", "dexter_not_run"}
+    assert all(x["text"] for x in lim) and tg.limitations("zh-TW") == lim     # deterministic
+
+
+def test_dexter_state_is_always_stated_and_its_findings_reach_the_tools(env):
+    tg.set_dexter({"ran": True, "status": "succeeded", "reason": None, "text": "FINDING-XYZ", "verified": 2})
+    assert "FINDING-XYZ" in tg.get_fundamentals("2330", TODAY.isoformat())
+    assert "FINDING-XYZ" in tg.get_news("2330", (TODAY - timedelta(days=2)).isoformat(), TODAY.isoformat())
+    assert any(x["code"] == "dexter_ran" and "2" in x["text"] for x in tg.limitations("zh-TW"))
+    tg.set_dexter({"ran": False, "status": "unsupported", "reason": "provider_not_supported", "text": "", "verified": 0})
+    assert "FINDING-XYZ" not in tg.get_fundamentals("2330", TODAY.isoformat())
+    assert any(x["code"] == "dexter_skipped" and "provider_not_supported" in x["text"] for x in tg.limitations("en"))
+    tg.set_dexter({"ran": True, "status": "failed", "reason": "timeout", "text": "", "verified": 0})
+    assert any(x["code"] == "dexter_failed" for x in tg.limitations("en"))
+
+
+def test_sonnet_5_5_price_is_the_verified_official_rate():
+    from engine.llm_providers import estimate_cost_or_none, is_priced
+
+    assert is_priced("claude-sonnet-5-5") and estimate_cost_or_none("claude-sonnet-5-5", 1_000_000, 1_000_000) == 12.0
+    assert not is_priced("claude-unpriced-test-9")
+
+
+def test_fold_dexter_adds_usage_and_keeps_unknown_cost_unknown():
+    from engine.llm_providers import ProviderConfig
+    from engine.tw_research import fold_dexter_into_complete
+
+    cfg = ProviderConfig(provider="anthropic", auth={"type": "api_key", "api_key": "k"}, model="claude-haiku-4-5")
+    res = {"block": {"ran": True, "status": "succeeded", "reason": None, "verified": 1}, "d_in": 1000, "d_out": 200, "d_cost": 0.002,
+           "usage": {"input_tokens": 1000, "output_tokens": 200, "measured": True, "est_cost_usd": 0.002, "ran": True}, "ran": True, "measured": True}
+    ev = fold_dexter_into_complete({"type": "session.complete", "input_tokens": 10, "output_tokens": 5, "estimated_cost_usd": 0.01, "cost_known": True}, res, cfg)
+    assert ev["input_tokens"] == 1010 and ev["output_tokens"] == 205 and ev["estimated_cost_usd"] == 0.012 and ev["cost_known"] is True
+    assert ev["dexter"]["ran"] is True and ev["usage_breakdown"]["dexter"]["est_cost_usd"] == 0.002
+    unk = fold_dexter_into_complete({"type": "session.complete", "estimated_cost_usd": None, "cost_known": False}, res, cfg)
+    assert unk["estimated_cost_usd"] is None and unk["cost_known"] is False        # never a fake 0
+    off = fold_dexter_into_complete({"type": "session.complete"}, None, cfg)
+    assert off["dexter"]["ran"] is False and off["dexter"]["status"] == "not_requested"
+
+
+def test_full_graph_dexter_prestep_reports_skip_and_survives_pack_failure(monkeypatch, tmp_path):
+    import asyncio
+
+    from engine import tw_research as twr
+    from engine.llm_providers import ProviderConfig
+
+    cfg = ProviderConfig(provider="openai", auth={"type": "oauth", "access_token": "x", "account_id": "a"}, model="m")
+    monkeypatch.setenv("TAL_EVIDENCE_DIR", str(tmp_path / "ev"))
+    pack = {"schema": "her30.evidence/1", "security_id": "TW:2330", "snapshot_id": "a" * 64, "as_of": "x", "items": [], "unknowns": [], "coverage": {}}
+    monkeypatch.setattr(twr.tw_evidence, "build_tw_evidence", lambda code, as_of: pack)
+    res = asyncio.run(twr.full_graph_dexter(code="2330", trade_date="2026-10-30", config=cfg, lang="zh-TW"))
+    assert res["event"]["type"] == "dexter.result" and res["event"]["ran"] is False and res["event"]["status"] == "unsupported"
+    assert "ChatGPT-OAuth" in res["event"]["reason"] and res["block"]["ran"] is False and res["d_cost"] == 0.0
+
+    def boom(code, as_of):
+        raise RuntimeError("finmind down")
+
+    monkeypatch.setattr(twr.tw_evidence, "build_tw_evidence", boom)
+    res = asyncio.run(twr.full_graph_dexter(code="2330", trade_date="2026-10-30", config=cfg, lang="en"))
+    assert res["event"]["ran"] is False and "stage_error" in res["event"]["reason"]    # the graph still runs; absence is stated
+
+
+def test_server_streams_dexter_result_and_complete_carries_limitations_and_dexter(routed, monkeypatch):
+    from engine import tw_research as twr
+
+    srv, seen = routed
+    calls = {}
+
+    async def fake_stage(**kw):
+        calls.update(kw)
+        return {"event": {"type": "dexter.result", "ran": True, "status": "succeeded", "reason": None, "findings": [], "unknowns": []},
+                "block": {"ran": True, "status": "succeeded", "reason": None, "text": "DX", "verified": 1},
+                "d_in": 100, "d_out": 20, "d_cost": 0.0, "usage": {"input_tokens": 100, "output_tokens": 20, "measured": True, "est_cost_usd": 0.0, "ran": True},
+                "ran": True, "measured": True, "billable": False}
+
+    monkeypatch.setattr(twr, "full_graph_dexter", fake_stage)
+    evs = _run_ws(srv, {**BASE, "engine": "pro"})
+    kinds = [e["type"] for e in evs]
+    assert kinds.index("run.notice") < kinds.index("dexter.result") < kinds.index("session.complete")
+    assert calls["enabled"] is True and calls["trade_date"] == BASE["trade_date"]
+    done = evs[-1]
+    assert done["dexter"] == {"ran": True, "status": "succeeded", "reason": None, "verified": 1}
+    assert done["input_tokens"] == 101 and done["output_tokens"] == 21
+    assert any(x["code"] == "dexter_ran" for x in done["limitations"]) and any(x["code"] == "publication_time_unknown" for x in done["limitations"])
+    assert next(e for e in evs if e["type"] == "run.notice")["data_mode_label"] == "最新可得資料（截至選定日期）"
+
+
+def test_dexter_can_be_turned_off_per_run_and_is_then_reported_not_hidden(routed, monkeypatch):
+    from engine import tw_research as twr
+
+    srv, seen = routed
+    seen_kw = {}
+    base = twr.full_graph_dexter                    # the isolated default installed by the fixture
+
+    async def spy(**kw):
+        seen_kw.update(kw)
+        return await base(**kw)
+
+    monkeypatch.setattr(twr, "full_graph_dexter", spy)
+    evs = _run_ws(srv, {**BASE, "engine": "pro", "tw_dexter": False})
+    dx = next(e for e in evs if e["type"] == "dexter.result")
+    assert seen_kw["enabled"] is False and dx["ran"] is False
+    assert any(x["code"] == "dexter_skipped" for x in evs[-1]["limitations"])

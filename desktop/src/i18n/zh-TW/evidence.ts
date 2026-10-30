@@ -5,6 +5,8 @@ export const evidenceZhTW: Record<keyof typeof evidence, string> = {
   'evidence.snapshot': '快照 {id} · 截至 {asOf}',
   'evidence.unknown': '未知：',
   'dexter.title': 'Dexter（財報深研）',
+  'dexter.notRun': '本次分析沒有執行 Dexter',
+  'limits.title': '資料限制（固定內容，由系統寫入）',
   'dexter.status.succeeded': '已完成',
   'dexter.status.partial': '部分完成——不採用',
   'dexter.status.failed': '未完成',

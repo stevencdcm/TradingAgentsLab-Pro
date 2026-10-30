@@ -23,6 +23,8 @@ export const analyze = {
   'analyze.twFlow.full': 'Pro full graph (Taiwan data)',
   'analyze.twFlow.simplified': 'Simplified debate + Dexter',
   'analyze.twFlow.fullNote': 'Runs the full multi-agent graph on FinMind (Free tier) and TWSE/TPEx open data. The social analyst is turned off (no reliable Taiwan social data). Financial/news publication times are unknown and are labelled; a past date can only use provably-public data.',
+  'analyze.twDexter.label': 'Run the Dexter evidence check first (full graph only)',
+  'analyze.twDexter.note': 'Dexter reads only the evidence pack for the same trade date; its usage counts toward this run\'s cost. If it does not run (unsupported sign-in, cost cap, switched off, or failed) the result says so explicitly; it is never silently skipped.',
   'analyze.twFlow.simplifiedNote': 'Faster, cheaper: evidence pack + sandboxed Dexter + a 12-role simplified debate. Not the Pro full graph.',
   'analyze.taiwanHint': 'This looks like a Taiwan stock code. It uses Taiwan data only — never US data — and needs a configured model (stub mode is refused). For the US ADR enter TSM (a different instrument from 2330).',
   'analyze.ticker': 'Ticker',

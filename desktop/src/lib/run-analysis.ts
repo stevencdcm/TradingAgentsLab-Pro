@@ -51,6 +51,7 @@ export interface RunAnalysisOptions {
   reportLanguage?: Locale;
   /** Taiwan code only: which flow to run. Default 'full' (Pro graph on Taiwan data). */
   twFlow?: 'full' | 'simplified';
+  twDexter?: boolean;
 }
 
 export interface RunAnalysisCallbacks {
@@ -164,6 +165,7 @@ export async function runAnalysis(
       pro_config: proConfig,
       alpha_vantage_key: alphaVantageKey,
       tw_flow: opts.twFlow,
+      tw_dexter: opts.twFlow === 'full' ? opts.twDexter : undefined,
       finmind_token: finmindToken,
       report_language: opts.reportLanguage,
     },

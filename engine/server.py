@@ -617,6 +617,7 @@ def build_app(*, token: str) -> FastAPI:
         captured_events: list[dict] = []
         slot_held = False
         tw_run_started = False
+        tw_dexter_res = None
         # Bound before the try so the `except WebSocketDisconnect` handler can
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
@@ -999,7 +1000,7 @@ def build_app(*, token: str) -> FastAPI:
                             fm_token = secret_refs.resolve_named(start.get("finmind_token"), "data:finmind") if start.get("finmind_token") else None
                         except secret_refs.SecretRefError:
                             fm_token = None
-                        tw_graph_tools.begin_run(trade_date, fm_token)
+                        tw_graph_tools.begin_run(trade_date, fm_token, str(start.get("tw_data_mode") or "").lower() or None)
                         tw_run_started = True
                         selected, dropped = tw_graph_tools.graph_analysts(selected)
                         lib_dv = {**(pro_lib_config.get("data_vendors") or {}), **tw_graph_tools.library_config()["data_vendors"]}
@@ -1007,6 +1008,7 @@ def build_app(*, token: str) -> FastAPI:
                         notice = {
                             "type": "run.notice", "code": "taiwan_full_graph",
                             "data_mode": tw_graph_tools.mode(), "market": "TW",
+                            "data_mode_label": ("歷史日期：只採用可證明當時已公開的資料" if tw_graph_tools.mode() == "historical" else "最新可得資料（截至選定日期）"),
                             "dropped_analysts": dropped,
                             "message": (
                                 "台股 Pro 完整圖：價量／財報／新聞來自 FinMind 免費層與證交所／櫃買官方開放資料，不使用美股來源。"
@@ -1017,6 +1019,17 @@ def build_app(*, token: str) -> FastAPI:
                         }
                         await ws.send_json(notice)
                         captured_events.append(notice)
+                        # Dexter pre-step over an evidence pack for the SAME trade date. It is shown in the stream and
+                        # its usage/cost is folded into the run; a skip or failure is reported, never hidden.
+                        from .tw_research import full_graph_dexter
+
+                        tw_dexter_res = await full_graph_dexter(
+                            code=ticker, trade_date=trade_date, config=config, lang=report_language,
+                            enabled=start.get("tw_dexter") is not False,
+                        )
+                        tw_graph_tools.set_dexter(tw_dexter_res["block"])
+                        await ws.send_json(tw_dexter_res["event"])
+                        captured_events.append(tw_dexter_res["event"])
                     debate_events = full_debate(
                         ticker,
                         trade_date,
@@ -1066,8 +1079,12 @@ def build_app(*, token: str) -> FastAPI:
                           if tw_full:
                               from . import tw_graph_tools as _twg
 
+                              from .tw_research import fold_dexter_into_complete
+
+                              event = fold_dexter_into_complete(event, tw_dexter_res, config)
                               event = {**event, "market": "TW", "tw_flow": "full", "data_mode": _twg.mode(),
-                                       "data_vendor": _twg.VENDOR, "source_health": _twg.source_health()}
+                                       "data_vendor": _twg.VENDOR, "source_health": _twg.source_health(),
+                                       "limitations": _twg.limitations(report_language)}
                       await ws.send_json(event)
                       captured_events.append(event)
                       await asyncio.sleep(0.15)

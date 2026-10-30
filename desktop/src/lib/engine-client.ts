@@ -315,6 +315,10 @@ export interface AnalyzeRequest {
   alpha_vantage_key?: string;
   /** Taiwan code only: 'full' (Pro graph on Taiwan data, default) or 'simplified' (evidence pack + Dexter). */
   tw_flow?: 'full' | 'simplified';
+  /** Full flow only: run the sandboxed Dexter evidence check before the graph (default on; a skip is always shown). */
+  tw_dexter?: boolean;
+  /** Full flow only: force the strict as-of mode. Absent = automatic (recent dates use "latest available data"). */
+  tw_data_mode?: 'latest' | 'historical';
   /** Optional FinMind member token (a secret reference in the web build). Absent = anonymous Free tier. */
   finmind_token?: string;
   /** Optional per-stream data provider override (e.g. Alpaca). Engine
@@ -396,6 +400,10 @@ export interface SessionCompleteEvent {
   };
   usage_complete?: boolean;
   cost_complete?: boolean;
+  /** Taiwan full graph: data mode, Dexter outcome and the FIXED limitations block (written by the engine, not the model). */
+  data_mode?: 'latest' | 'historical';
+  dexter?: { ran: boolean; status: string | null; reason: string | null; verified?: number };
+  limitations?: Array<{ code: string; text: string }>;
 }
 
 export type AssetClass = 'equity' | 'crypto';
@@ -521,6 +529,8 @@ export interface EvidencePackEvent {
 /** Result of the sandboxed Dexter job. `status` is never "succeeded" unless a finding was verified. */
 export interface DexterResultEvent {
   type: 'dexter.result';
+  /** False when Dexter did not run at all (disabled, unsupported provider, cost cap, stage error). */
+  ran?: boolean;
   status: 'succeeded' | 'partial' | 'failed' | 'timeout' | 'canceled' | 'unsupported';
   reason: string | null;
   findings: Array<{
@@ -1230,6 +1240,8 @@ export async function streamDebate(
         // Optional Alpha Vantage data key (unlocks non-market analysts).
         alpha_vantage_key: req.alpha_vantage_key,
         tw_flow: req.tw_flow,
+        tw_dexter: req.tw_dexter,
+        tw_data_mode: req.tw_data_mode,
         finmind_token: req.finmind_token,
         report_language: req.report_language,
       }),

@@ -6,8 +6,9 @@ yfinance / Alpha Vantage. Nothing falls back to a US source: a tool with no Taiw
 `DATA_UNAVAILABLE` / `NO_DATA_AVAILABLE` sentinel and the analyst must say so (never invented).
 
 Two research purposes, never mixed:
-  * latest     (trade date within LATEST_WINDOW_DAYS of today): "what is known now". Rows whose publication time
-               is unknown are shown, labelled `published_at unknown`.
+  * latest     ("latest available data"; trade date within LATEST_WINDOW_DAYS of today): "what is known now". Rows whose
+               publication time is unknown are shown, labelled `published_at unknown`; rows dated AFTER the selected trade
+               date are never shown, so a recent past date cannot leak later data.
   * historical (older trade date): only rows PROVABLY public before the as-of time. The free sources give no
                verified publication time, so fundamentals / news / disclosures come back empty with the reason
                stated; raw prices (exchange close time) remain usable.
@@ -34,7 +35,7 @@ LATEST_WINDOW_DAYS = 3
 TZ_TW = timezone(timedelta(hours=8))
 SOURCES = FreeTaiwanSources()          # one instance: shared cache + minimum request interval
 _lock = threading.Lock()
-_run: dict[str, Any] = {"trade_date": None, "token": None}
+_run: dict[str, Any] = {"trade_date": None, "token": None, "requested_mode": None, "dexter": None, "excluded_after_cutoff": 0}
 _health: dict[str, dict[str, Any]] = {}
 _ohlcv_cache: dict[str, tuple[float, list[dict]]] = {}
 INDICATORS = {
@@ -51,17 +52,31 @@ INDICATORS = {
 # ---- run context / health -------------------------------------------------------------------------------------------
 
 
-def begin_run(trade_date: str, token: Optional[str] = None) -> None:
+def begin_run(trade_date: str, token: Optional[str] = None, requested_mode: Optional[str] = None) -> None:
     _run["trade_date"] = trade_date
     _run["token"] = token or None
+    _run["requested_mode"] = requested_mode if requested_mode in ("latest", "historical") else None
+    _run["dexter"] = None
+    _run["excluded_after_cutoff"] = 0
 
 
 def end_run() -> None:
     _run["trade_date"] = None
     _run["token"] = None
+    _run["requested_mode"] = None
+    _run["dexter"] = None
+    _run["excluded_after_cutoff"] = 0
+
+
+def set_dexter(block: Optional[dict[str, Any]]) -> None:
+    """Dexter's stage outcome for this run (None = the stage did not run at all)."""
+    _run["dexter"] = block
 
 
 def mode() -> str:
+    """`historical` when asked for explicitly or when the trade date is outside the latest window; else `latest`."""
+    if _run.get("requested_mode") == "historical":
+        return "historical"
     td = _run.get("trade_date")
     if not td:
         return "latest"
@@ -219,12 +234,90 @@ def get_indicators(symbol: str, indicator: str, curr_date: str, look_back_days: 
             f"\n\n{INDICATORS[indicator]}\n(Computed from FinMind RAW unadjusted prices.)")
 
 
+# ---- fixed limitations (given to the model AND printed in the report; never left to the model to restate) -----------------
+
+
+def limitations(lang: str = "zh-TW") -> list[dict[str, str]]:
+    """Fixed, deterministic list of what this run could NOT establish. Built from the run mode and observed state only."""
+    zh = lang == "zh-TW"
+    hist = mode() == "historical"
+    td = _run.get("trade_date") or ""
+    items: list[tuple[str, str, str]] = []
+    if hist:
+        items.append(("historical_gap",
+                      f"歷史日期 {td}：免費來源無法證明財報／新聞／公告在當時已公開，因此這些項目不使用（缺漏，非「沒有」）；價量以交易所收盤為準。",
+                      f"Historical date {td}: the free sources cannot prove filings / news / announcements were public by then, so they are NOT used (missing, not absent); prices use exchange closes."))
+    else:
+        items.append(("publication_time_unknown",
+                      f"最新可得資料模式（截至 {td}）：財報、月營收與新聞標題的公布時間未知（來源未提供），已標示；晚於 {td} 的資料一律不採用。",
+                      f"Latest-available-data mode (as of {td}): publication time of filings, monthly revenue and news headlines is UNKNOWN (not provided by the source) and is labelled; anything dated after {td} is excluded."))
+    held = int(_run.get("excluded_after_cutoff") or 0)
+    if held:
+        items.append(("withheld_after_cutoff", f"另有 {held} 筆資料因日期晚於 {td} 而被排除。", f"{held} row(s) dated after {td} were withheld."))
+    items += [
+        ("news_headlines_only", "新聞只有標題、來源與連結，沒有內文或摘要。", "News is headlines + source + link only; no body or summary."),
+        ("disclosures_current_day_only", "證交所／櫃買重大訊息只有當日資料集；沒有該列不代表沒有公告。", "TWSE/TPEx material-information feeds cover the current day only; absence of a row is not proof of no announcement."),
+        ("raw_prices", "股價為未還原的原始價格；跨除權息日不可直接計算報酬。", "Prices are raw/unadjusted; do not compute returns across ex-dividend/split dates."),
+        ("no_social_macro_insider", "沒有可靠的台股社群、總經新聞與內部人交易來源；社群分析師已停用，且不以美股資料替代。", "No reliable Taiwan social, macro-news or insider-transaction source; the social analyst is disabled and US data is not substituted."),
+        ("reflection_no_tw_data", "事後績效追蹤（reflection）仍使用 Yahoo，對台股沒有資料，不能當作結果驗證。", "Outcome tracking (reflection) still uses Yahoo and has no Taiwan data; it is not outcome validation."),
+    ]
+    d = _run.get("dexter")
+    if d is None:
+        items.append(("dexter_not_run", "Dexter：本次完整圖未執行 Dexter 證據核對。", "Dexter: not run in this full-graph run."))
+    elif d.get("ran") and d.get("status") == "succeeded":
+        items.append(("dexter_ran", f"Dexter：已執行並完成（已驗證發現 {int(d.get('verified') or 0)} 項），僅讀取證據包。", f"Dexter: ran and succeeded ({int(d.get('verified') or 0)} verified findings), over the evidence pack only."))
+    elif d.get("ran"):
+        items.append(("dexter_failed", f"Dexter：已執行但未成功（{d.get('status')}：{d.get('reason')}），分析不含 Dexter 發現。", f"Dexter: ran but did not succeed ({d.get('status')}: {d.get('reason')}); analysis has no Dexter findings."))
+    else:
+        items.append(("dexter_skipped", f"Dexter：未執行（{d.get('reason')}），分析不含 Dexter 發現。", f"Dexter: NOT run ({d.get('reason')}); analysis has no Dexter findings."))
+    return [{"code": c, "text": (a if zh else b)} for c, a, b in items]
+
+
+def _model_header() -> str:
+    """Compact English notice prepended to every fundamentals / news tool answer so the analyst sees the limits in the evidence."""
+    lim = limitations("en")
+    keep = [x["text"] for x in lim if x["code"] in ("historical_gap", "publication_time_unknown", "withheld_after_cutoff", "news_headlines_only", "disclosures_current_day_only")]
+    return "[DATA LIMITS — state these in your report] " + " ".join(keep)
+
+
+def _dexter_text() -> str:
+    d = _run.get("dexter")
+    if not d or not d.get("text"):
+        return ""
+    return "\n\n## Dexter evidence check (sandboxed, evidence pack only)\n" + d["text"]
+
+
+def _with_limits(text: str, *, dexter: bool = False) -> str:
+    return text + (_dexter_text() if dexter else "") + "\n\n" + _model_header()
+
+
 # ---- fundamentals / news / disclosures ------------------------------------------------------------------------------
 
 
+def _not_after_cutoff(rows: list[dict]) -> list[dict]:
+    """Drop rows dated after the selected trade date (or with an unreadable date when the trade date is in the past):
+    a past date must never silently mix later data. Counted so the report can say how many were withheld."""
+    td = _run.get("trade_date")
+    if not td:
+        return rows
+    today_tw = datetime.now(TZ_TW).date().isoformat()
+    keep: list[dict] = []
+    for x in rows:
+        dp = str(x.get("data_period") or "")[:10]
+        try:
+            ok = date.fromisoformat(dp) <= date.fromisoformat(td)
+        except ValueError:
+            ok = td >= today_tw                      # unreadable date: only acceptable for a same-day run
+        if ok:
+            keep.append(x)
+        else:
+            _run["excluded_after_cutoff"] = int(_run.get("excluded_after_cutoff") or 0) + 1
+    return keep
+
+
 def _usable(r: FetchResult) -> list[dict]:
-    """latest: everything the source returned (publication time labelled unknown); historical: provably-public rows only."""
-    return r.records + (r.unknown_records if mode() == "latest" else [])
+    """latest: everything the source returned up to the trade date (publication time labelled unknown); historical: provably-public rows only."""
+    return _not_after_cutoff(r.records + (r.unknown_records if mode() == "latest" else []))
 
 
 def _historical_gap(what: str) -> str:
@@ -265,15 +358,15 @@ def _financial(dataset: str, label: str, symbol: str, curr_date: str, freq: str 
 
 
 def get_income_statement(ticker: str, freq: str = "quarterly", curr_date: str = None):
-    return _financial("income", "Income statement", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq)
+    return _with_limits(_financial("income", "Income statement", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq))
 
 
 def get_balance_sheet(ticker: str, freq: str = "quarterly", curr_date: str = None):
-    return _financial("balance", "Balance sheet", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq)
+    return _with_limits(_financial("balance", "Balance sheet", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq))
 
 
 def get_cashflow(ticker: str, freq: str = "quarterly", curr_date: str = None):
-    return _financial("cash_flow", "Cash-flow statement", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq)
+    return _with_limits(_financial("cash_flow", "Cash-flow statement", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq))
 
 
 def get_fundamentals(ticker: str, curr_date: str = None):
@@ -297,7 +390,7 @@ def get_fundamentals(ticker: str, curr_date: str = None):
     else:
         parts.append(_historical_gap("monthly revenue"))
     parts.append(_financial("income", "Income statement", ticker, cd))
-    return "\n\n".join(parts)
+    return _with_limits("\n\n".join(parts), dexter=True)
 
 
 def _disclosures(code: str) -> list[dict]:
@@ -352,7 +445,7 @@ def get_news(ticker: str, start_date: str, end_date: str):
         notes.append(f"disclosures: {type(exc).__name__}")
     if not heads and not disc:
         base = _historical_gap("news and disclosures") if mode() == "historical" else _unavailable("news", "no headlines or same-day material disclosures were returned" + (f" ({'; '.join(notes)})" if notes else ""))
-        return base
+        return _with_limits(base, dexter=True)
     lines = [f"## Taiwan news for {code} — headlines only (FinMind TaiwanStockNews gives title/source/URL; NO summary or full text is available)",
              "# Publication time is unverified for every item" + ("; shown because this is a latest-data run." if mode() == "latest" else ".")]
     for h in heads[:20]:
@@ -363,7 +456,7 @@ def get_news(ticker: str, start_date: str, end_date: str):
             lines.append(f"- event {x.get('data_period')} | speech {x.get('reported_speech_date')} {x.get('reported_speech_time')} (exchange-reported, not independently verified) | {x.get('subject')}")
     if notes:
         lines.append("# Gaps: " + "; ".join(notes))
-    return "\n".join(lines)
+    return _with_limits("\n".join(lines), dexter=True)
 
 
 def get_global_news(curr_date: str, look_back_days: int = 7, limit: int = 5):

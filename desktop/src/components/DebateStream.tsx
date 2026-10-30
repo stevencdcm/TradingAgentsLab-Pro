@@ -1,5 +1,6 @@
 import { formatRunDuration } from '../lib/duration';
-import { findNotices, findResearch, researchNotes } from '../lib/research-notes';
+import { findNotices,
+  findLimitations, findResearch, researchNotes } from '../lib/research-notes';
 import { useEffect, useRef, useState } from 'react';
 import type {
   DebateEvent,
@@ -345,6 +346,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
     | undefined;
   const notices = findNotices(events);
   const researchNotesList = researchNotes(findResearch(events), t, i18n.formatNumber);
+  const limitations = findLimitations(findResearch(events));
   const groups = groupByPhase(events);
   const decision = findDecision(events);
   const meta = findDecisionMeta(events);
@@ -460,6 +462,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
           <div className={styles.newsHeader}>
             <span className={styles.newsLabel}>{t('dexter.title')}</span>
             <span className={styles.newsSource}>
+              {dexter.ran === false ? `${t('dexter.notRun')} · ` : ''}
               {t(`dexter.status.${dexter.status}` as const)}
               {dexter.reason ? ` · ${dexter.reason}` : ''}
               {dexter.usage?.measured
@@ -495,6 +498,21 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
             {notices.map((n, i) => (
               <li key={i} className={styles.newsItem}>
                 <span className={styles.newsMeta}>{n}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {limitations.length > 0 && (
+        <div className={styles.news} data-testid="run-limitations">
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('limits.title')}</span>
+          </div>
+          <ul className={styles.newsList}>
+            {limitations.map((x) => (
+              <li key={x.code} className={styles.newsItem} data-code={x.code}>
+                <span className={styles.newsMeta}>{x.text}</span>
               </li>
             ))}
           </ul>

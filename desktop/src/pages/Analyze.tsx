@@ -68,6 +68,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   const EMPTY_CLOCK: RunClock = { startedAt: 0, endedAt: null, lastEventAt: null, lastHeartbeatAt: null, heartbeat: null, streamError: null };
   const [runClock, setRunClock] = useState<RunClock>(EMPTY_CLOCK);
   const [twFlow, setTwFlow] = useState<'full' | 'simplified'>('full');
+  const [twDexter, setTwDexter] = useState(true);
   const [runCtx, setRunCtx] = useState<{ provider: string | null; model: string | null }>({ provider: null, model: null });
   const [streamError, setStreamError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -624,6 +625,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           model,
           reportLanguage: locale,
           twFlow,
+          twDexter,
         },
         {
           onEvent: (event) => {
@@ -949,6 +951,23 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             <p style={{ margin: '6px 0 0', fontSize: 'var(--tal-text-sm)' }} data-testid="tw-flow-note">
               {twFlow === 'full' ? t('analyze.twFlow.fullNote') : t('analyze.twFlow.simplifiedNote')}
             </p>
+            {twFlow === 'full' && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={twDexter}
+                  onChange={(e) => setTwDexter(e.target.checked)}
+                  disabled={isStreaming}
+                  data-testid="tw-dexter-toggle"
+                />
+                <span>{t('analyze.twDexter.label')}</span>
+              </label>
+            )}
+            {twFlow === 'full' && (
+              <p style={{ margin: '4px 0 0', fontSize: 'var(--tal-text-sm)' }} data-testid="tw-dexter-note">
+                {t('analyze.twDexter.note')}
+              </p>
+            )}
           </div>
         )}
         <div className={styles.cardFooter}>

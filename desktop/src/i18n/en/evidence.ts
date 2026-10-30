@@ -4,6 +4,8 @@ export const evidence = {
   'evidence.snapshot': 'snapshot {id} · as of {asOf}',
   'evidence.unknown': 'Unknown:',
   'dexter.title': 'Dexter (financial deep-dive)',
+  'dexter.notRun': 'Dexter did NOT run in this analysis',
+  'limits.title': 'Data limitations (fixed, written by the system)',
   'dexter.status.succeeded': 'completed',
   'dexter.status.partial': 'partial — not relied on',
   'dexter.status.failed': 'did not complete',

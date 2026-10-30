@@ -53,12 +53,13 @@ def main(argv: list[str] | None = None) -> None:
         launch_secret=launch_secret,
         cookie_value=cookie_value,
     )
-    url = f"http://127.0.0.1:{args.port}/?k={launch_secret}"
-    lf = data_dir / "launch-url.txt"
-    lf.write_text(url + "\n")
-    os.chmod(lf, 0o600)
-    # Never print the one-time nonce (terminals/logs get copied around): it lives in a
-    # 0600 file that tools/open-web.sh hands straight to `open`.
+    # build_web_app wrote the single-use nonce to launch-url.txt (0600). SIGUSR1 issues a fresh
+    # one (used by tools/open-web.sh after the first one was consumed) without printing it.
+    import signal
+
+    signal.signal(signal.SIGUSR1, lambda *_: app.state.launch.rotate())
+    (data_dir / "web.pid").write_text(str(os.getpid()))
+    os.chmod(data_dir / "web.pid", 0o600)
     print(f"Trading Agents Lab Pro (web) on http://127.0.0.1:{args.port}/  -  run tools/open-web.sh to open it", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
 

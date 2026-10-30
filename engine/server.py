@@ -268,7 +268,10 @@ def build_app(*, token: str) -> FastAPI:
         the OAuth row in Settings already shows live connection state
         via `oauth:openai:status`.
         """
-        config = ProviderConfig.from_dict(secret_refs.resolve(req.provider_config))
+        try:
+            config = ProviderConfig.from_dict(secret_refs.resolve_provider_config(req.provider_config))
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "error": str(exc)}
         if config is None:
             return {"ok": False, "error": "invalid provider_config"}
         if config.auth.get("type") == "oauth":
@@ -310,7 +313,10 @@ def build_app(*, token: str) -> FastAPI:
         """
         from . import codex_models
 
-        config = ProviderConfig.from_dict(secret_refs.resolve(req.provider_config))
+        try:
+            config = ProviderConfig.from_dict(secret_refs.resolve_provider_config(req.provider_config))
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "error": str(exc)}
         if config is None or config.provider != "openai" or config.auth_kind != "oauth":
             return {"ok": False, "error": "model discovery is only for OpenAI OAuth"}
         try:
@@ -418,7 +424,10 @@ def build_app(*, token: str) -> FastAPI:
         base = req.base_url.strip().rstrip("/")
         if not base.startswith(("http://", "https://")):
             return {"ok": False, "error": "base_url must start with http:// or https://"}
-        api_key = secret_refs.resolve(req.api_key) if req.api_key else None
+        try:
+            api_key = secret_refs.resolve_local_models_key(req.base_url, req.api_key) if req.api_key else None
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "error": str(exc)}
         headers = {"Authorization": f"Bearer {api_key.strip()}"} if api_key and api_key.strip() else {}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
@@ -493,6 +502,8 @@ def build_app(*, token: str) -> FastAPI:
             "agents": [],
         }
 
+    run_slot = {"busy": False}
+
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
         # WS auth via query param (browsers cannot set Authorization headers on WS).
@@ -503,6 +514,7 @@ def build_app(*, token: str) -> FastAPI:
         await ws.accept()
 
         captured_events: list[dict] = []
+        slot_held = False
         # Bound before the try so the `except WebSocketDisconnect` handler can
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
@@ -521,7 +533,12 @@ def build_app(*, token: str) -> FastAPI:
             #   }
             # Web version: references to server-held secrets become real values here
             # (no-op in the desktop build). The browser never held the values.
-            start = secret_refs.resolve(await ws.receive_json())
+            try:
+                start = secret_refs.resolve_start_frame(await ws.receive_json())
+            except secret_refs.SecretRefError as exc:
+                await ws.send_json({"type": "run.error", "error": str(exc), "code": "secret_ref_rejected"})
+                await ws.close(code=1008, reason="secret_ref_rejected")
+                return
             ticker = (start.get("ticker") or "").upper()
             trade_date = start.get("trade_date") or ""
             # Refuse a ticker we cannot route correctly BEFORE any provider call or
@@ -560,6 +577,17 @@ def build_app(*, token: str) -> FastAPI:
             pro_config_raw = start.get("pro_config") or {}
             if not isinstance(pro_config_raw, dict):
                 pro_config_raw = {}
+            # The full graph mutates process-global library config / env while it runs, so only
+            # one such run may be active; a second is refused explicitly rather than racing.
+            if is_pro:
+                if run_slot["busy"]:
+                    evt = {"type": "run.error", "code": "run_busy",
+                           "error": "Another full-graph run is already in progress. Wait for it to finish, then retry."}
+                    await ws.send_json(evt)
+                    await ws.close(code=1008, reason="run_busy")
+                    return
+                run_slot["busy"] = True
+                slot_held = True
 
             # Optional. Per-stream webhook configs (Phase 8a). Renderer sends
             # the full list each time; engine fires them after persist + before
@@ -931,6 +959,9 @@ def build_app(*, token: str) -> FastAPI:
         except WebSocketDisconnect:
             sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
             return
+        finally:
+            if slot_held:
+                run_slot["busy"] = False
 
     return app
 

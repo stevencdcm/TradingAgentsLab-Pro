@@ -4,7 +4,7 @@
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(13, 17, 23, 0.78);
+  background: color-mix(in oklab, var(--tal-bg-base) 78%, transparent);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -14,8 +14,8 @@
 }
 
 .modal {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--tal-bg-elevated);
+  border: 1px solid var(--tal-border-default);
   border-radius: 8px;
   width: min(620px, 92vw);
   max-height: 88vh;
@@ -26,7 +26,7 @@
     system-ui,
     -apple-system,
     sans-serif;
-  color: #e6edf3;
+  color: var(--tal-text-primary);
   animation: slideUp 0.18s ease-out;
 }
 
@@ -38,22 +38,22 @@
 }
 
 .titleOk {
-  color: #2ea043;
+  color: var(--tal-success);
 }
 
 .titleWarn {
-  color: #f0a830;
+  color: var(--tal-warning);
 }
 
 .titleError {
-  color: #f85149;
+  color: var(--tal-danger);
 }
 
 .body {
   margin: 0 0 16px;
   font-size: 14px;
   line-height: 1.55;
-  color: #c9d1d9;
+  color: var(--tal-text-secondary);
 }
 
 .facts {
@@ -62,8 +62,8 @@
   gap: 6px;
   margin: 0 0 16px;
   padding: 12px 14px;
-  background: #0d1117;
-  border: 1px solid #21262d;
+  background: var(--tal-bg-base);
+  border: 1px solid var(--tal-bg-overlay);
   border-radius: 6px;
 }
 
@@ -77,7 +77,7 @@
 }
 
 .factRow dt {
-  color: #8b949e;
+  color: var(--tal-text-muted);
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
   font-size: 11px;
   text-transform: uppercase;
@@ -86,14 +86,14 @@
 
 .factRow dd {
   margin: 0;
-  color: #e6edf3;
+  color: var(--tal-text-primary);
   font-variant-numeric: tabular-nums;
 }
 
 .code {
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
   font-size: 12px;
-  color: #e6edf3;
+  color: var(--tal-text-primary);
   background: rgba(110, 118, 129, 0.15);
   padding: 1px 5px;
   border-radius: 3px;
@@ -103,8 +103,8 @@
   list-style: none;
   margin: 0 0 16px;
   padding: 12px 14px;
-  background: #0d1117;
-  border: 1px solid #21262d;
+  background: var(--tal-bg-base);
+  border: 1px solid var(--tal-bg-overlay);
   border-radius: 6px;
   max-height: 240px;
   overflow-y: auto;
@@ -113,7 +113,7 @@
 .commitItem {
   margin: 0;
   padding: 4px 0;
-  border-bottom: 1px dashed #21262d;
+  border-bottom: 1px dashed var(--tal-bg-overlay);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -123,19 +123,19 @@
 }
 
 .commitItem em {
-  color: #8b949e;
+  color: var(--tal-text-muted);
   font-style: italic;
 }
 
 .codeBlock {
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
   font-size: 12px;
-  background: #0d1117;
-  border: 1px solid #21262d;
+  background: var(--tal-bg-base);
+  border: 1px solid var(--tal-bg-overlay);
   border-radius: 6px;
   padding: 10px 12px;
   margin: 0 0 16px;
-  color: #c9d1d9;
+  color: var(--tal-text-secondary);
   overflow-x: auto;
   white-space: pre;
 }
@@ -144,7 +144,7 @@
   margin: 0 0 12px;
   font-size: 12px;
   line-height: 1.5;
-  color: #8b949e;
+  color: var(--tal-text-muted);
 }
 
 .buttons {
@@ -167,33 +167,33 @@
 
 .dismiss {
   background: transparent;
-  border: 1px solid #30363d;
-  color: #c9d1d9;
+  border: 1px solid var(--tal-border-default);
+  color: var(--tal-text-secondary);
 }
 
 .dismiss:hover {
-  background: #21262d;
-  border-color: #484f58;
+  background: var(--tal-bg-overlay);
+  border-color: var(--tal-border-strong);
 }
 
 .primary {
-  background: #f0a830;
-  border: 1px solid #f0a830;
-  color: #0d1117;
+  background: var(--tal-warning);
+  border: 1px solid var(--tal-warning);
+  color: var(--tal-bg-base);
   font-weight: 600;
 }
 
 .primary:hover {
-  background: #ffba3c;
-  border-color: #ffba3c;
+  background: var(--tal-warning);
+  border-color: var(--tal-warning);
 }
 
 .spinner {
   width: 32px;
   height: 32px;
   margin: 16px auto;
-  border: 3px solid #30363d;
-  border-top-color: #f0a830;
+  border: 3px solid var(--tal-border-default);
+  border-top-color: var(--tal-warning);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -222,4 +222,9 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* narrow screens: single-column forms/rows, nothing wider than the viewport */
+@media (max-width: 820px) {
+  .factRow { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }

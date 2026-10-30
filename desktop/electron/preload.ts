@@ -211,6 +211,9 @@ contextBridge.exposeInMainWorld('tradingAgentsLab', {
   },
   checkUpstream: (): Promise<UpstreamCheckResultBridge> =>
     ipcRenderer.invoke('app:check-upstream'),
+  // UI language code only ('zh-TW' | 'en'); main validates it.
+  setLocale: (locale: string): Promise<string> =>
+    ipcRenderer.invoke('i18n:set-locale', locale),
   shutdown: (): Promise<void> => ipcRenderer.invoke('app:shutdown'),
   restart: (): Promise<void> => ipcRenderer.invoke('app:restart'),
 });

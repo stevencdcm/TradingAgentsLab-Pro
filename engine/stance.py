@@ -21,6 +21,12 @@ STANCES = (
 
 RISK_LEVELS = ("low", "moderate", "elevated")
 
+# Not a stance: the decision text had no recognisable rating, so NO conclusion is
+# claimed. Kept out of STANCES on purpose (webhook filters / settings only list
+# real stances); it is its own wire value so the UI can say "needs review" instead
+# of showing a fabricated neutral.
+REVIEW = "review"
+
 _DISPLAY = {
     "bullish": "Bullish",
     "moderately_bullish": "Moderately bullish",
@@ -43,12 +49,14 @@ def normalize_stance(value: object) -> str:
     raw = str(value or "").strip()
     if raw.lower() in STANCES:
         return raw.lower()
+    if raw.lower() == REVIEW:
+        return REVIEW
     return _LEGACY.get(raw.upper(), "neutral")
 
 
 def stance_label(value: object) -> str:
     """Human-readable label for a stance (legacy values included)."""
-    return _DISPLAY[normalize_stance(value)]
+    return _DISPLAY.get(normalize_stance(value), "Needs review")
 
 
 def decision_stance(decision: dict) -> str:

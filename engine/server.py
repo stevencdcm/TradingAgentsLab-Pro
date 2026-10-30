@@ -12,6 +12,8 @@ Auth: all endpoints require `Authorization: Bearer <token>` header (or
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -22,11 +24,13 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
+    Request,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -39,12 +43,14 @@ from .data_providers import (
     provider_from_data_config,
 )
 from .live_debate import ProviderConfig, SentimentBlock, live_debate
+from .report_language import normalize_report_language
 from .llm_providers import adapter_for
-from . import cost_guard, local_llm_detect, sentiment_sources, storage
+from . import cost_guard, llm_providers, local_llm_detect, secret_refs, sentiment_sources, storage
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
-from .ticker import normalize_ticker
+from starlette.concurrency import run_in_threadpool
+from .ticker import normalize_ticker, taiwan_code, taiwan_unsupported_message
 
 
 def build_app(*, token: str) -> FastAPI:
@@ -94,7 +100,10 @@ def build_app(*, token: str) -> FastAPI:
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    def require_bearer(authorization: Annotated[str | None, Header()] = None) -> None:
+    def require_bearer(request: Request, authorization: Annotated[str | None, Header()] = None) -> None:
+        # Trusted workbench proxy: authenticated by the web guard (hop secret + owner + Origin + session cookie).
+        if request.scope.get("tal_session_authenticated") is True:
+            return
         if authorization is None or not authorization.startswith("Bearer "):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -201,8 +210,29 @@ def build_app(*, token: str) -> FastAPI:
 
     @app.post("/watchlist", dependencies=bearer)
     async def add_watchlist_endpoint(req: WatchlistAddRequest) -> dict[str, Any]:
+        ticker, market, name = req.ticker, None, None
+        tw = taiwan_code(req.ticker)
+        if tw:
+            # Canonical Taiwan identity = bare code + official market (never .TW/.TWO suffixes).
+            from . import tw_symbols
+
+            ticker = tw
+            try:
+                idx = await run_in_threadpool(tw_symbols.load_index)
+                hit = tw_symbols.lookup(idx, tw)
+            except tw_symbols.SymbolIndexError:
+                hit = None
+                if req.market:
+                    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                        detail="Taiwan symbol index unavailable: cannot verify the market of this code")
+            if hit is None and req.market:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{tw} is not in the official TWSE/TPEx index")
+            if hit is not None:
+                if req.market and req.market != hit["market"]:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{tw} is listed on {hit['market']}, not {req.market}")
+                market, name = hit["market"], hit["name"]
         try:
-            entry = storage.add_watchlist(ticker=req.ticker, note=req.note)
+            entry = storage.add_watchlist(ticker=ticker, note=req.note, market=market, name=name)
         except storage.WatchlistConflict as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -214,6 +244,45 @@ def build_app(*, token: str) -> FastAPI:
                 detail=str(exc),
             )
         return storage.watchlist_to_dict(entry)
+
+    @app.get("/tw/symbols", dependencies=bearer)
+    async def tw_symbols_search(q: str = "", limit: int = 20, refresh: bool = False) -> dict[str, Any]:
+        """Search the official TWSE/TPEx symbol index by code or name ('2330' and '台積電' both work)."""
+        from . import tw_symbols
+
+        try:
+            idx = await run_in_threadpool(tw_symbols.load_index, refresh=refresh)
+        except tw_symbols.SymbolIndexError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True, "results": tw_symbols.search(idx, q, max(1, min(limit, 50))),
+            "as_of": idx.get("as_of"), "fetched_at": idx.get("fetched_at"), "count": len(idx["entries"]),
+            "stale": idx.get("stale", False), "refresh_error": idx.get("error"), "sources": idx.get("sources"),
+        }
+
+    @app.get("/tw/sources", dependencies=bearer)
+    async def tw_sources_list() -> dict[str, Any]:
+        """Taiwan data sources: shared catalog + what the adapters actually observed (never a static 'connected')."""
+        from . import tw_graph_tools
+
+        token_configured = False
+        try:
+            token_configured = secret_refs.has_named("data:finmind")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"sources": tw_graph_tools.sources_view(token_configured), "flows": ["pro_full", "simplified"]}
+
+    @app.post("/tw/sources/test", dependencies=bearer)
+    async def tw_sources_test(req: TwSourceTestRequest) -> dict[str, Any]:
+        from . import tw_graph_tools
+
+        token = None
+        try:
+            token = secret_refs.named_value("data:finmind")
+        except Exception:  # noqa: BLE001
+            pass
+        res = await run_in_threadpool(tw_graph_tools.test_source, req.id, token)
+        return {**res, "id": req.id}
 
     @app.delete("/watchlist/{ticker}", dependencies=bearer)
     async def remove_watchlist_endpoint(ticker: str) -> dict[str, Any]:
@@ -250,6 +319,7 @@ def build_app(*, token: str) -> FastAPI:
             model=req.model,
             auth_kind=req.auth_kind,
             max_tokens=req.max_tokens,
+            extra_models=req.extra_models,
         )
         return cost_guard.check_result_to_dict(result)
 
@@ -266,7 +336,10 @@ def build_app(*, token: str) -> FastAPI:
         the OAuth row in Settings already shows live connection state
         via `oauth:openai:status`.
         """
-        config = ProviderConfig.from_dict(req.provider_config)
+        try:
+            config = ProviderConfig.from_dict(secret_refs.resolve_provider_config(req.provider_config))
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "error": str(exc)}
         if config is None:
             return {"ok": False, "error": "invalid provider_config"}
         if config.auth.get("type") == "oauth":
@@ -288,7 +361,7 @@ def build_app(*, token: str) -> FastAPI:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return {"ok": True, "model": config.model, "ms": elapsed_ms}
         except Exception as exc:  # noqa: BLE001 — surface whatever blew up
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": llm_providers.local_auth_hint(config, secret_refs.redact(f"{type(exc).__name__}: {exc}", config.credential))}
         finally:
             try:
                 await adapter.close()
@@ -308,7 +381,10 @@ def build_app(*, token: str) -> FastAPI:
         """
         from . import codex_models
 
-        config = ProviderConfig.from_dict(req.provider_config)
+        try:
+            config = ProviderConfig.from_dict(secret_refs.resolve_provider_config(req.provider_config))
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "error": str(exc)}
         if config is None or config.provider != "openai" or config.auth_kind != "oauth":
             return {"ok": False, "error": "model discovery is only for OpenAI OAuth"}
         try:
@@ -405,6 +481,68 @@ def build_app(*, token: str) -> FastAPI:
             )
         return telegram_bot.status().to_dict()
 
+    @app.post("/tw/evidence", dependencies=bearer)
+    async def tw_evidence_build(req: TwEvidenceRequest) -> dict[str, Any]:
+        """Build (and save) an immutable Taiwan evidence pack. No LLM, no cost.
+
+        Free/anonymous FinMind + official TWSE/TPEx snapshots; gaps are listed under
+        `unknowns`, never filled in. The saved file is what research jobs read.
+        """
+        import json as _json
+        from pathlib import Path
+
+        from starlette.concurrency import run_in_threadpool
+
+        from . import tw_evidence
+
+        code = taiwan_code(req.code)
+        if not code:
+            return {"ok": False, "error": "not a Taiwan stock code"}
+        as_of = req.as_of or time.strftime("%Y-%m-%dT%H:%M:%S+08:00", time.gmtime(time.time() + 8 * 3600))
+        try:
+            fm_token = secret_refs.resolve_named(req.finmind_token, "data:finmind") if req.finmind_token else None
+            pack = await run_in_threadpool(tw_evidence.build_tw_evidence, code, as_of, token=fm_token)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": secret_refs.redact(f"{type(exc).__name__}: {exc}")}
+        out_dir = Path(os.environ.get("TAL_EVIDENCE_DIR") or storage._default_db_path().parent / "evidence")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{pack['security_id'].replace(':', '_')}-{pack['snapshot_id'][:16]}.json"
+        path.write_text(_json.dumps(pack, ensure_ascii=False, indent=1), encoding="utf-8")
+        return {"ok": True, "snapshot_id": pack["snapshot_id"], "path": str(path), "coverage": pack["coverage"], "unknowns": pack["unknowns"]}
+
+    @app.post("/llm/local-models", dependencies=bearer)
+    async def llm_local_models(req: LocalModelsRequest) -> dict[str, Any]:
+        """List the models an OpenAI-compatible local server exposes.
+
+        Used by Settings → Local LLM for servers that require an API key (oMLX),
+        which the unauthenticated auto-detect cannot see. The key arrives in the
+        request body, is used for ONE GET, and is never logged or stored here.
+        """
+        base = req.base_url.strip().rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            return {"ok": False, "error": "base_url must start with http:// or https://"}
+        try:
+            api_key = secret_refs.resolve_local_models_key(req.base_url, req.api_key) if req.api_key else None
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "error": str(exc)}
+        headers = {"Authorization": f"Bearer {api_key.strip()}"} if api_key and api_key.strip() else {}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+                res = await client.get(f"{base}/models", headers=headers)
+        except Exception as exc:  # noqa: BLE001 — surface a short reason, never the key
+            return {"ok": False, "error": f"{type(exc).__name__}"}
+        if res.status_code != 200:
+            reason = None
+            if res.status_code in (401, 403):
+                reason = "key_rejected" if api_key and api_key.strip() else "key_missing"
+            return {"ok": False, "status": res.status_code, "error": f"HTTP {res.status_code}", **({"reason": reason} if reason else {})}
+        try:
+            data = res.json().get("data") or []
+            models = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "unexpected response"}
+        return {"ok": True, "models": models}
+
     @app.get("/llm/local-runtimes", dependencies=bearer)
     async def llm_local_runtimes() -> dict[str, Any]:
         """Probe localhost for OpenAI-compatible LLM runtimes.
@@ -427,6 +565,7 @@ def build_app(*, token: str) -> FastAPI:
                 auth_kind=req.auth_kind,
                 max_tokens=req.max_tokens,
                 override=req.override,
+                extra_models=req.extra_models,
             )
         except cost_guard.CostGuardBlocked as exc:
             # 402 Payment Required — semantic match for "you can't afford
@@ -464,16 +603,23 @@ def build_app(*, token: str) -> FastAPI:
             "agents": [],
         }
 
+    run_slot = {"busy": False}
+
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
         # WS auth via query param (browsers cannot set Authorization headers on WS).
         provided = ws.query_params.get("token")
-        if provided != token:
+        # Trusted workbench proxy (cookie + shared-secret hop + owner, checked by the web guard) authenticates the
+        # socket without a token in the URL; everything else still needs the engine token.
+        if provided != token and ws.scope.get("tal_session_authenticated") is not True:
             await ws.close(code=1008, reason="invalid token")
             return
         await ws.accept()
 
         captured_events: list[dict] = []
+        slot_held = False
+        tw_run_started = False
+        tw_dexter_res = None
         # Bound before the try so the `except WebSocketDisconnect` handler can
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
@@ -490,14 +636,56 @@ def build_app(*, token: str) -> FastAPI:
             #       "max_tokens": 400
             #     }
             #   }
-            start = await ws.receive_json()
+            # Web version: references to server-held secrets become real values here
+            # (no-op in the desktop build). The browser never held the values.
+            try:
+                start = secret_refs.resolve_start_frame(await ws.receive_json())
+                run_t0 = time.monotonic()      # whole-run wall clock starts when the start frame arrives
+            except secret_refs.SecretRefError as exc:
+                await ws.send_json({"type": "run.error", "error": str(exc), "code": "secret_ref_rejected"})
+                await ws.close(code=1008, reason="secret_ref_rejected")
+                return
             ticker = (start.get("ticker") or "").upper()
             trade_date = start.get("trade_date") or ""
+            # Refuse a ticker we cannot route correctly BEFORE any provider call or
+            # cost reservation: Taiwan codes (no Taiwan data source is connected) and
+            # malformed symbols. Never run on a silently wrong or empty data source.
+            guard_error: str | None = None
+            tw = taiwan_code(ticker)
+            tw_mode = False
+            tw_flow_req = ""
+            if tw:
+                # Taiwan research needs a live model (the evidence-based flow); the stub
+                # path has nothing to ground on, so it is refused with an explanation.
+                if ProviderConfig.from_dict(start.get("provider_config")) is not None:
+                    tw_mode = True
+                    ticker = tw
+                    # Taiwan flow choice. The Pro full graph is the default (the renderer always asks for Pro);
+                    # the simplified evidence-pack + Dexter flow only runs when it is explicitly requested, so a
+                    # Taiwan code with engine=pro never silently degrades to the simplified engine.
+                    tw_flow_req = str(start.get("tw_flow") or "").lower()
+                else:
+                    guard_error = taiwan_unsupported_message(
+                        tw, normalize_report_language(start.get("report_language"))
+                    )
+            else:
+                try:
+                    normalize_ticker(ticker)
+                except ValueError as exc:
+                    guard_error = f"Invalid ticker: {exc}"
+            if guard_error:
+                evt = {"type": "run.error", "error": guard_error, "code": "ticker_unsupported"}
+                await ws.send_json(evt)
+                await ws.close(code=1008, reason="ticker_unsupported")
+                return
             config = ProviderConfig.from_dict(start.get("provider_config"))
             # Optional. Set by Analyze.tsx after a renderer-side cost-guard
             # check. If absent on a live debate, the WS handler auto-reserves
             # below for backward compatibility.
             reservation_id = start.get("reservation_id") or None
+            # UI language -> report language. Reaches the prompts of BOTH engines
+            # (and therefore every provider path); unknown values mean English.
+            report_language = normalize_report_language(start.get("report_language"))
             # Pro engine selection. The free renderer never sends `engine`, so
             # the full-graph path is opt-in and the free path stays byte-for-byte
             # identical. `pro_config` carries the deep/quick model split, debate
@@ -507,6 +695,19 @@ def build_app(*, token: str) -> FastAPI:
             pro_config_raw = start.get("pro_config") or {}
             if not isinstance(pro_config_raw, dict):
                 pro_config_raw = {}
+            tw_full = tw_mode and (tw_flow_req == "full" or (tw_flow_req == "" and is_pro))
+            tw_simple = tw_mode and not tw_full
+            # The full graph mutates process-global library config / env while it runs, so only
+            # one such run may be active; a second is refused explicitly rather than racing.
+            if is_pro or tw_mode:
+                if run_slot["busy"]:
+                    evt = {"type": "run.error", "code": "run_busy",
+                           "error": "Another full-graph / Taiwan research run is already in progress. Wait for it to finish, then retry."}
+                    await ws.send_json(evt)
+                    await ws.close(code=1008, reason="run_busy")
+                    return
+                run_slot["busy"] = True
+                slot_held = True
 
             # Optional. Per-stream webhook configs (Phase 8a). Renderer sends
             # the full list each time; engine fires them after persist + before
@@ -542,7 +743,14 @@ def build_app(*, token: str) -> FastAPI:
             )
 
             # Best-effort data fetch; debate degrades gracefully if it fails.
-            summary = await _fetch_summary_safe(
+            if tw_full:
+                from . import tw_graph_tools
+
+                evt = await run_in_threadpool(tw_graph_tools.quote_summary_event, ticker, trade_date)
+                if evt is not None:
+                    await ws.send_json(evt)
+                    captured_events.append(evt)
+            summary = None if tw_mode else await _fetch_summary_safe(
                 ticker=ticker, trade_date=trade_date, provider=data_provider
             )
             if summary is not None:
@@ -550,7 +758,7 @@ def build_app(*, token: str) -> FastAPI:
                 await ws.send_json(evt)
                 captured_events.append(evt)
 
-            headlines = await _fetch_news_safe(
+            headlines = [] if tw_mode else await _fetch_news_safe(
                 ticker=ticker, limit=4, provider=data_provider
             )
             if headlines:
@@ -573,7 +781,7 @@ def build_app(*, token: str) -> FastAPI:
             # tools, so this pre-fetch is skipped on the Pro path (wasted
             # latency + cost otherwise). The free live_debate still needs it.
             sentiment: Optional[SentimentBlock] = None
-            if config is not None and not is_pro:
+            if config is not None and not is_pro and not tw_mode:
                 try:
                     spec = normalize_ticker(ticker)
                     twits_text, reddit_text = await asyncio.gather(
@@ -601,10 +809,10 @@ def build_app(*, token: str) -> FastAPI:
             if config is not None:
                 # Pro full-graph auth support: api_key (env-var injection) and
                 # OpenAI OAuth (Codex factory patch — see engine/codex_llm.py).
-                # `local` stays rejected: local runtimes haven't been validated
-                # against the tool-heavy graph, so fail loud up front rather
-                # than deep in graph build.
-                if is_pro and config.auth_kind not in ("api_key", "oauth"):
+                # `local` is supported: it maps onto the upstream library's generic
+                # `openai_compatible` provider (base_url + optional key), see
+                # `_build_pro_library_config`.
+                if is_pro and not tw_simple and config.auth_kind not in ("api_key", "oauth", "local"):
                     evt = {
                         "type": "run.error",
                         "error": (
@@ -646,7 +854,7 @@ def build_app(*, token: str) -> FastAPI:
                 # run starts, instead of failing every node with a 400. See
                 # engine/codex_models.py. Cached per account, so this is one
                 # catalog fetch per 15 minutes, not one per model.
-                if config.provider == "openai" and config.auth_kind == "oauth":
+                if config.provider == "openai" and config.auth_kind == "oauth" and not tw_simple:
                     from . import codex_models
 
                     oauth_acct = str(config.auth.get("account_id") or "")
@@ -666,7 +874,7 @@ def build_app(*, token: str) -> FastAPI:
                 # many equities, while Alpaca (which already feeds the chrome
                 # headlines) is reliable. The chain always keeps yfinance as the
                 # fallback so an empty primary never blanks the analyst.
-                if is_pro and pro_lib_config is not None:
+                if is_pro and pro_lib_config is not None and not tw_full:
                     from . import alpaca_news
 
                     dc = start.get("data_config")
@@ -697,6 +905,20 @@ def build_app(*, token: str) -> FastAPI:
                     if is_pro
                     else config.model
                 )
+                # EVERY model the run can bill must be priced: Pro deep AND quick, plus the main model (Dexter).
+                guard_models = [m for m in ((pro_lib_config or {}).get("quick_think_llm") if is_pro else None, config.model) if m]
+                if reservation_id and config.auth_kind not in ("oauth", "local") and cost_guard.get_config().enabled \
+                        and cost_guard.unpriced_paid(reserve_model, config.auth_kind, guard_models) \
+                        and not cost_guard.reservation_override(reservation_id):
+                    evt = {"type": "cost.blocked", "over_dimension": "unknown_price",
+                           "spend": cost_guard.spend_to_dict(cost_guard.check(model=reserve_model, auth_kind=config.auth_kind, max_tokens=config.max_tokens, extra_models=guard_models).current),
+                           "config": cost_guard.config_to_dict(cost_guard.get_config()), "est_cost_usd": 0.0,
+                           "message": "A model in this run has no verified price, so its cost is unknown. Use an explicit per-run override to continue."}
+                    cost_guard.finalize_reservation(reservation_id, actual_cost_usd=0.0)       # nothing ran: release the held estimate
+                    await ws.send_json(evt)
+                    captured_events.append(evt)
+                    await ws.close(code=1008, reason="cost_guard_blocked")
+                    return
 
                 # CostGuard auto-reserve when the renderer didn't pre-reserve.
                 # Older renderer versions don't send reservation_id; rather
@@ -711,6 +933,7 @@ def build_app(*, token: str) -> FastAPI:
                             auth_kind=config.auth_kind,
                             max_tokens=config.max_tokens,
                             override=False,
+                            extra_models=guard_models,
                         )
                         reservation_id = auto.reservation_id
                     except cost_guard.CostGuardBlocked as exc:
@@ -733,7 +956,17 @@ def build_app(*, token: str) -> FastAPI:
                 # Both engines are async generators yielding the same event
                 # shapes, so the send/capture loop is uniform. Pro routes to the
                 # real LangGraph graph; free routes to the simplified reimpl.
-                if is_pro:
+                if tw_simple:
+                    from .tw_research import tw_research
+
+                    debate_events = tw_research(
+                        code=ticker,
+                        trade_date=trade_date,
+                        config=config,
+                        report_language=report_language,
+                        reservation_id=reservation_id,
+                    )
+                elif is_pro:
                     # Imported lazily: the full graph pulls in langchain +
                     # the tradingagents library, which the free engine (and
                     # its test venv) does not carry. Keeping this off the
@@ -773,19 +1006,63 @@ def build_app(*, token: str) -> FastAPI:
                     # / fundamentals analysts. Absent -> market-only (yfinance,
                     # free). Sent per-run (the engine persists no secrets).
                     av_key = start.get("alpha_vantage_key") or None
+                    selected = pro_config_raw.get("selected_analysts") or None
+                    if tw_full:
+                        # Taiwan data tools for the full graph (FinMind free + TWSE/TPEx open data); no US fallback.
+                        from . import tw_graph_tools
+
+                        tw_graph_tools.install()
+                        fm_token = None
+                        try:
+                            fm_token = secret_refs.resolve_named(start.get("finmind_token"), "data:finmind") if start.get("finmind_token") else None
+                        except secret_refs.SecretRefError:
+                            fm_token = None
+                        tw_graph_tools.begin_run(trade_date, fm_token, str(start.get("tw_data_mode") or "").lower() or None)
+                        tw_run_started = True
+                        selected, dropped = tw_graph_tools.graph_analysts(selected)
+                        lib_dv = {**(pro_lib_config.get("data_vendors") or {}), **tw_graph_tools.library_config()["data_vendors"]}
+                        pro_lib_config = {**pro_lib_config, "data_vendors": lib_dv, "tool_vendors": {}}
+                        notice = {
+                            "type": "run.notice", "code": "taiwan_full_graph",
+                            "data_mode": tw_graph_tools.mode(), "market": "TW",
+                            "data_mode_label": ("歷史日期：只採用可證明當時已公開的資料" if tw_graph_tools.mode() == "historical" else "最新可得資料（截至選定日期）"),
+                            "dropped_analysts": dropped,
+                            "message": (
+                                "台股 Pro 完整圖：價量／財報／新聞來自 FinMind 免費層與證交所／櫃買官方開放資料，不使用美股來源。"
+                                + ("社群分析師已停用：沒有可靠的台股社群資料來源。" if dropped else "")
+                                + ("歷史日期：只採用可證明當時已公開的資料，免費來源無法證明財報／新聞公布時間，故這些項目會缺漏。"
+                                   if tw_graph_tools.mode() == "historical" else "最新資料模式：財報與新聞的公布時間未知，已標示。")
+                            ),
+                        }
+                        await ws.send_json(notice)
+                        captured_events.append(notice)
+                        # Dexter pre-step over an evidence pack for the SAME trade date. It is shown in the stream and
+                        # its usage/cost is folded into the run; a skip or failure is reported, never hidden.
+                        from .tw_research import full_graph_dexter
+
+                        tw_dexter_res = await full_graph_dexter(
+                            code=ticker, trade_date=trade_date, config=config, lang=report_language,
+                            enabled=start.get("tw_dexter") is not False,
+                        )
+                        tw_graph_tools.set_dexter(tw_dexter_res["block"])
+                        await ws.send_json(tw_dexter_res["event"])
+                        captured_events.append(tw_dexter_res["event"])
                     debate_events = full_debate(
                         ticker,
                         trade_date,
                         config=pro_lib_config,
-                        selected_analysts=(pro_config_raw.get("selected_analysts") or None),
+                        selected_analysts=selected,
                         token_cap=token_cap,
-                        api_key=config.bearer_token,
+                        # REAL credential only (None for a keyless local runtime), so
+                        # the "local" sentinel is never injected into the environment.
+                        api_key=config.credential,
                         auth_kind=config.auth_kind,
                         # Codex backend 401s without the account id; present
                         # only on the OAuth auth shape (normalized upstream).
                         oauth_account_id=config.auth.get("account_id") or None,
                         reservation_id=reservation_id,
                         alpha_vantage_key=av_key,
+                        report_language=report_language,
                     )
                 else:
                     debate_events = live_debate(
@@ -796,15 +1073,38 @@ def build_app(*, token: str) -> FastAPI:
                         config=config,
                         reservation_id=reservation_id,
                         sentiment=sentiment,
+                        report_language=report_language,
                     )
 
                 # Each agent.message arrives as the LLM response completes — we
                 # throttle a little between events so the UI's transition
                 # animations are still visible.
-                async for event in debate_events:
-                    await ws.send_json(event)
-                    captured_events.append(event)
-                    await asyncio.sleep(0.15)
+                hb_meta = {
+                    "provider": config.provider, "model": config.model, "auth_kind": config.auth_kind,
+                    "route": "taiwan" if tw_simple else ("full" if is_pro else "simplified"),
+                }
+                async with aclosing(with_heartbeat(debate_events, meta=hb_meta)) as beating:
+                  async for event in beating:
+                      if isinstance(event, dict) and event.get("type") == "run.heartbeat":
+                          await ws.send_json(event)      # liveness only: not stored, no pacing sleep
+                          continue
+                      if isinstance(event, dict) and event.get("type") == "run.error" and isinstance(event.get("error"), str):
+                          event = {**event, "error": llm_providers.local_auth_hint(config, event["error"])}
+                      if isinstance(event, dict) and event.get("type") == "session.complete":
+                          # Whole-run wall time (data fetch + Dexter + debate), frozen here and persisted once.
+                          event = {**event, "elapsed_s": round(time.monotonic() - run_t0, 1)}
+                          if tw_full:
+                              from . import tw_graph_tools as _twg
+
+                              from .tw_research import fold_dexter_into_complete
+
+                              event = fold_dexter_into_complete(event, tw_dexter_res, config)
+                              event = {**event, "market": "TW", "tw_flow": "full", "data_mode": _twg.mode(),
+                                       "data_vendor": _twg.VENDOR, "source_health": _twg.source_health(),
+                                       "limitations": _twg.limitations(report_language)}
+                      await ws.send_json(event)
+                      captured_events.append(event)
+                      await asyncio.sleep(0.15)
             else:
                 # Stub debate path — same UX, deterministic content.
                 for event in canned_debate(
@@ -874,8 +1174,58 @@ def build_app(*, token: str) -> FastAPI:
         except WebSocketDisconnect:
             sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
             return
+        finally:
+            if tw_run_started:
+                from . import tw_graph_tools
+
+                tw_graph_tools.end_run()
+            if slot_held:
+                run_slot["busy"] = False
 
     return app
+
+
+HEARTBEAT_INTERVAL_S = float(os.environ.get("TAL_HEARTBEAT_S", "5"))
+
+
+async def with_heartbeat(agen, *, meta: dict, interval: float = 0.0):
+    """Yield every event of `agen` unchanged and, while it is silent, a lightweight
+    `run.heartbeat` every `interval` seconds.
+
+    A heartbeat proves only that the ENGINE PROCESS and the socket are alive and how long it has been
+    since the last REAL event; it says nothing about whether the model is generating (the engines call
+    models non-streaming, so there is nothing finer to report). It carries no content, no tokens and is
+    never persisted. Cleanup of the wrapped generator is guaranteed on early exit / disconnect."""
+    interval = interval or HEARTBEAT_INTERVAL_S
+    it = agen.__aiter__()
+    t0 = last = time.monotonic()
+    pending = asyncio.ensure_future(it.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            now = time.monotonic()
+            if not done:
+                yield {"type": "run.heartbeat", "elapsed_s": round(now - t0, 1), "since_event_s": round(now - last, 1), **meta}
+                continue
+            try:
+                ev = pending.result()
+            except StopAsyncIteration:
+                return
+            last = time.monotonic()
+            pending = asyncio.ensure_future(it.__anext__())
+            yield ev
+    finally:
+        pending.cancel()
+        try:
+            await pending
+        except BaseException:  # noqa: BLE001 — cancelled / already exhausted
+            pass
+        aclose = getattr(agen, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except BaseException:  # noqa: BLE001
+                pass
 
 
 def _persist_session_safe(
@@ -963,6 +1313,12 @@ def _build_pro_library_config(config: ProviderConfig, pro_raw: dict) -> dict[str
     required keys and fills every other default.
     """
     provider = config.provider
+    # The app's "local" provider = any OpenAI-compatible server the user runs
+    # (oMLX, vLLM, LM Studio, Ollama's /v1 ...). The upstream library models that
+    # as the generic `openai_compatible` provider: base_url required, key optional,
+    # structured output bound without a forced tool_choice (works across servers).
+    if provider == "local":
+        provider = "openai_compatible"
     deep = (pro_raw.get("deep_think_llm") or config.model or "").strip()
     quick = (pro_raw.get("quick_think_llm") or config.model or deep).strip()
     lib: dict[str, Any] = {
@@ -995,6 +1351,13 @@ class AnalyzeRequest(BaseModel):
 class WatchlistAddRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=8)
     note: str | None = Field(default=None, max_length=200)
+    # Taiwan entries: official identity from the symbol index (validated server-side, not trusted).
+    market: str | None = Field(default=None, max_length=8)
+    name: str | None = Field(default=None, max_length=60)
+
+
+class TwSourceTestRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=60)
 
 
 class CostGuardConfigRequest(BaseModel):
@@ -1010,6 +1373,8 @@ class CostGuardConfigRequest(BaseModel):
 
 class CostGuardCheckRequest(BaseModel):
     model: str = Field(min_length=1, max_length=120)
+    # Other models the same run can bill (Pro quick model, ...): any unpriced one makes the run's cost unknown.
+    extra_models: list[str] = Field(default_factory=list, max_length=6)
     # Allowed auth kinds: api_key, oauth, local. Local runs are $0 and
     # bypass the USD caps the same way OAuth does (see cost_guard.py
     # `_exceeds_any_cap`); validating it here keeps the pattern + the
@@ -1028,6 +1393,17 @@ class LLMModelsRequest(BaseModel):
 
     provider_config: dict[str, Any]
     refresh: bool = False
+
+
+class TwEvidenceRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
+    as_of: str | None = Field(default=None, max_length=40)
+    finmind_token: str | None = Field(default=None, max_length=500)
+
+
+class LocalModelsRequest(BaseModel):
+    base_url: str = Field(min_length=1, max_length=300)
+    api_key: str | None = Field(default=None, max_length=500)
 
 
 class LLMTestRequest(BaseModel):

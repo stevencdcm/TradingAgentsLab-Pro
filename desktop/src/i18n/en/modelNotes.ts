@@ -1,0 +1,21 @@
+/** Model-choice notes shown next to model names in the Analyze dropdown (keyed by the registry's English text). */
+export const modelNotes = {
+  'modelNote.balanced': 'Balanced',
+  'modelNote.balancedCost': 'Balanced, cost-effective',
+  'modelNote.cheapest': 'Cheapest',
+  'modelNote.currentFlagship': 'Current flagship, fastest',
+  'modelNote.fastFocused': 'Fast and focused, lighter reasoning',
+  'modelNote.flagshipSpeed': 'Flagship speed (~100 TPS)',
+  'modelNote.flagship204k': 'Flagship, 204K context',
+  'modelNote.latestFrontier': 'Latest frontier, 1M context',
+  'modelNote.latestRelease': 'Latest release',
+  'modelNote.mostCapable': 'Most capable',
+  'modelNote.mostCapableSlow': 'Most capable, slower per turn',
+  'modelNote.mostCostEfficient': 'Most cost-efficient (GA)',
+  'modelNote.multimodal': 'Multimodal flagship',
+  'modelNote.previousFrontier': 'Previous frontier',
+  'modelNote.previousGen': 'Previous-gen flagship',
+  'modelNote.reasoningOpt': 'Reasoning-optimized',
+  'modelNote.speedOpt': 'Speed-optimized',
+  'modelNote.goodDefault': 'Strong all-round model, a good default for the debate',
+} as const;

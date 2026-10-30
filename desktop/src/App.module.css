@@ -148,8 +148,8 @@
   top: calc(100% + 6px);
   right: 0;
   min-width: 220px;
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--tal-bg-elevated);
+  border: 1px solid var(--tal-border-default);
   border-radius: 8px;
   padding: 4px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -299,4 +299,75 @@
 
 .footerRight {
   color: var(--tal-text-muted);
+}
+
+/* Language selector (i18n). Same visual weight as the title-bar buttons. */
+.langSelect {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--tal-border-default);
+  color: var(--tal-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.langSelect:hover,
+.langSelect:focus-visible {
+  background: var(--tal-bg-overlay);
+  color: var(--tal-text-primary);
+}
+
+/* ---- Phone / narrow layout (<= 820px): bottom navigation, compact title bar, 44px touch targets ------------- */
+@media (max-width: 820px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "title"
+      "strip"
+      "main"
+      "side"
+      "foot";
+    height: 100dvh;
+  }
+  .titleBar {
+    padding: var(--tal-space-2) var(--tal-space-3);   /* no macOS traffic-light gutter on the web */
+    min-height: 52px;
+  }
+  .titleBarContent { flex-wrap: wrap; gap: var(--tal-space-2); min-width: 0; }
+  .brand { min-width: 0; }
+  .brandText { display: none; }                       /* logo + PRO pill keep the identity; frees the row */
+  .connectionPill { display: none; }
+  .titleBarRight { margin-left: auto; gap: var(--tal-space-2); }
+  .titleBarButton, .langSelect { height: 44px; min-width: 44px; }
+  .langSelect { padding: 0 10px; font-size: var(--tal-text-sm); }
+  .appMenu { right: 0; max-width: calc(100vw - 24px); }
+  .appMenuItem { min-height: 48px; }
+  .statusStripRow { overflow-x: auto; }               /* the pills scroll inside their own row, never the page */
+  .sidebar {
+    flex-direction: row;
+    justify-content: space-around;
+    border-right: 0;
+    border-top: 1px solid var(--tal-border-subtle);
+    padding: var(--tal-space-1) var(--tal-space-2);
+    padding-bottom: calc(var(--tal-space-1) + env(safe-area-inset-bottom, 0px));
+    gap: 0;
+  }
+  .navSpacer { display: none; }
+  .navItem {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 48px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: var(--tal-space-1);
+    font-size: var(--tal-text-xs);
+    text-align: center;
+  }
+  .navItemDot { display: none; }
+  .main { padding: var(--tal-space-4) var(--tal-space-3); overflow-x: hidden; overflow-wrap: anywhere; }
+  .footer { padding: var(--tal-space-1) var(--tal-space-3); flex-wrap: wrap; gap: var(--tal-space-1); font-size: 0.7rem; }
 }

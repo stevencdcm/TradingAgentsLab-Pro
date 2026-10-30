@@ -13,11 +13,12 @@
 import { useEffect, useState } from 'react';
 
 import type { CostGuardConfig, SpendState } from '../lib/cost-guard';
+import { useI18n, type I18n } from '../i18n';
 import styles from './CostGuardModal.module.css';
 
 const COUNTDOWN_SECONDS = 3;
 
-export type OverDimension = 'daily' | 'weekly' | 'monthly' | 'rate';
+export type OverDimension = 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
 
 export interface CostGuardModalProps {
   /** Which cap fired. */
@@ -42,12 +43,14 @@ export function CostGuardModal({
   onConfirm,
   onCancel,
 }: CostGuardModalProps): JSX.Element {
+  const i18n = useI18n();
+  const { t: tr, rich } = i18n;
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
 
   useEffect(() => {
     if (secondsLeft <= 0) return;
-    const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
   }, [secondsLeft]);
 
   useEffect(() => {
@@ -67,32 +70,33 @@ export function CostGuardModal({
     <div className={styles.scrim} role="dialog" aria-modal="true" aria-labelledby="cg-modal-title">
       <div className={styles.modal}>
         <h2 id="cg-modal-title" className={styles.title}>
-          {overDimension === 'rate' ? 'Session rate cap reached' : 'Budget cap reached'}
+          {overDimension === 'rate' ? tr('costGuard.title.rate') : overDimension === 'unknown_price' ? tr('costGuard.title.unknownPrice') : tr('costGuard.title.budget')}
         </h2>
 
-        <p className={styles.body}>{describePrimary(overDimension, spend, config, estCostUsd)}</p>
+        <p className={styles.body}>{describePrimary(overDimension, spend, config, estCostUsd, tr)}</p>
 
         <div className={styles.capList}>
           <CapRow
-            label="Daily"
+            label={tr('costGuard.dim.daily')}
             current={spend.daily_usd}
             cap={config.cap_daily_usd}
             highlight={overDimension === 'daily'}
           />
           <CapRow
-            label="Weekly"
+            label={tr('costGuard.dim.weekly')}
             current={spend.weekly_usd}
             cap={config.cap_weekly_usd}
             highlight={overDimension === 'weekly'}
           />
           <CapRow
-            label="Monthly"
+            label={tr('costGuard.dim.monthly')}
             current={spend.monthly_usd}
             cap={config.cap_monthly_usd}
             highlight={overDimension === 'monthly'}
           />
           {config.cap_sessions_per_day > 0 && (
             <SessionCapRow
+              label={tr('costGuard.dim.sessions')}
               count={spend.sessions_today}
               cap={config.cap_sessions_per_day}
               highlight={overDimension === 'rate'}
@@ -107,7 +111,7 @@ export function CostGuardModal({
             onClick={onCancel}
             autoFocus
           >
-            Cancel
+            {tr('costGuard.cancel')}
           </button>
           <button
             type="button"
@@ -116,14 +120,13 @@ export function CostGuardModal({
             disabled={!overrideReady}
             aria-disabled={!overrideReady}
           >
-            {overrideReady ? 'Override and continue' : `Override (${secondsLeft})`}
+            {overrideReady
+              ? tr('costGuard.override')
+              : tr('costGuard.overrideWait', { seconds: secondsLeft })}
           </button>
         </div>
 
-        <p className={styles.hint}>
-          Override applies to this session only. Adjust caps in{' '}
-          <strong>Settings &rarr; Cost Guard</strong> for permanent changes.
-        </p>
+        <p className={styles.hint}>{rich('costGuard.hint')}</p>
       </div>
     </div>
   );
@@ -136,9 +139,14 @@ function describePrimary(
   spend: SpendState,
   config: CostGuardConfig,
   est: number,
+  t: I18n['t'],
 ): string {
+  if (dim === 'unknown_price') return t('costGuard.body.unknownPrice');
   if (dim === 'rate') {
-    return `You've used ${spend.sessions_today} of your ${config.cap_sessions_per_day} sessions today. This session would push you over the limit.`;
+    return t('costGuard.body.rate', {
+      used: spend.sessions_today,
+      cap: config.cap_sessions_per_day,
+    });
   }
   const current =
     dim === 'daily' ? spend.daily_usd : dim === 'weekly' ? spend.weekly_usd : spend.monthly_usd;
@@ -148,7 +156,12 @@ function describePrimary(
       : dim === 'weekly'
         ? config.cap_weekly_usd
         : config.cap_monthly_usd;
-  return `You've spent ${formatUsd(current)} of your ${formatUsd(cap)} ${dim} cap. This session may cost up to ${formatUsd(est)} and will exceed the limit.`;
+  return t('costGuard.body.budget', {
+    current: formatUsd(current),
+    cap: formatUsd(cap),
+    dimension: t(`costGuard.dimWord.${dim}` as const),
+    estimate: formatUsd(est),
+  });
 }
 
 function CapRow({
@@ -182,10 +195,12 @@ function CapRow({
 }
 
 function SessionCapRow({
+  label,
   count,
   cap,
   highlight,
 }: {
+  label: string;
   count: number;
   cap: number;
   highlight: boolean;
@@ -194,7 +209,7 @@ function SessionCapRow({
   const overPct = pct >= 100;
   return (
     <div className={`${styles.capRow} ${highlight ? styles.capRowHighlight : ''}`}>
-      <span className={styles.capLabel}>Sessions</span>
+      <span className={styles.capLabel}>{label}</span>
       <div className={styles.capProgress}>
         <div
           className={`${styles.capBar} ${overPct ? styles.capBarOver : pct >= 80 ? styles.capBarWarn : ''}`}

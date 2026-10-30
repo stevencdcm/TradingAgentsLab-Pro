@@ -77,6 +77,8 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "claude-haiku-4-5":    {"input": 1.00,  "output": 5.00},
     "claude-sonnet-4-5":   {"input": 3.00,  "output": 15.00},
     "claude-sonnet-4-6":   {"input": 3.00,  "output": 15.00},
+    # Verified 2026-10-30 against https://platform.claude.com/docs/en/about-claude/pricing (Input $2 / Output $10 per MTok).
+    "claude-sonnet-5-5":   {"input": 2.00,  "output": 10.00},
     "claude-opus-4-7":     {"input": 15.00, "output": 75.00},  # kept for backward compat
     "claude-opus-4-8":     {"input": 15.00, "output": 75.00},  # conservative ceiling; verify vs billing
     "claude-fable-5":      {"input": 15.00, "output": 75.00},  # new model; conservative ceiling
@@ -108,6 +110,38 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     # we record the model string with no rate and the engine logs zero,
     # which the UI surfaces as "unknown".)
 }
+
+
+_AUTH_FAIL_RE = re.compile(r"\b401\b|invalid api key|unauthori[sz]ed|incorrect api key", re.I)
+
+
+def local_auth_hint(config: "ProviderConfig | None", error_text: str) -> str:
+    """Tell a missing local key apart from a rejected one.
+
+    A local OpenAI-compatible server (oMLX) answers 401 "Invalid API key" both when NO key is sent and
+    when a WRONG key is sent. The engine knows which it was, so the message must say so instead of
+    making the user guess. Returns the text unchanged for anything that is not a local 401.
+    """
+    if config is None or config.provider != "local" or not _AUTH_FAIL_RE.search(error_text or ""):
+        return error_text
+    if (config.auth or {}).get("api_key"):
+        return f"{error_text} [local server rejected the stored API key: it is wrong or was rotated; re-enter it in Settings → Local LLM]"
+    return f"{error_text} [this local server requires an API key but none is stored: add it in Settings → Local LLM → manual entry, then Save]"
+
+
+def is_priced(model: str) -> bool:
+    return model in _COST_PER_M_TOKENS
+
+
+def estimate_cost_or_none(model: str, in_tokens: int, out_tokens: int) -> float | None:
+    """Like estimate_cost, but None (unknown) instead of 0.0 for a model with no price."""
+    return estimate_cost(model, in_tokens, out_tokens) if model in _COST_PER_M_TOKENS else None
+
+
+def worst_case_job_cost(model: str, total_tokens: int) -> float | None:
+    """Upper bound for a job capped at `total_tokens`: every token at the dearer rate."""
+    r = _COST_PER_M_TOKENS.get(model)
+    return None if r is None else total_tokens * max(r["input"], r["output"]) / 1_000_000
 
 
 def estimate_cost(model: str, in_tokens: int, out_tokens: int) -> float:
@@ -154,8 +188,28 @@ class ProviderConfig:
         if t == "oauth":
             return str(self.auth.get("access") or "")
         if t == "local":
-            return "local"
+            # Servers that enforce authentication (e.g. oMLX with an API key) get
+            # the user's key; open local runtimes (Ollama / LM Studio) accept the
+            # "local" sentinel, which the OpenAI SDK needs to be non-empty.
+            return str(self.auth.get("api_key") or "local")
         raise ValueError(f"ProviderConfig.auth has unknown type: {t!r}")
+
+    @property
+    def credential(self) -> str | None:
+        """The REAL credential to inject into the full-graph engine, if any.
+
+        Unlike `bearer_token` this never returns the "local" sentinel: a keyless
+        local runtime has no credential, so nothing is injected into the
+        environment for it.
+        """
+        t = self.auth.get("type")
+        if t == "api_key":
+            return str(self.auth.get("api_key") or "") or None
+        if t == "oauth":
+            return str(self.auth.get("access") or "") or None
+        if t == "local":
+            return str(self.auth.get("api_key") or "") or None
+        return None
 
     @property
     def auth_kind(self) -> str:
@@ -253,7 +307,12 @@ def _normalize_auth(raw: dict) -> Optional[dict[str, Any]]:
         base_url = (raw.get("base_url") or "").strip()
         if not base_url:
             return None
-        return {"type": "local", "base_url": base_url}
+        out_local: dict[str, Any] = {"type": "local", "base_url": base_url}
+        # Optional API key for local servers that require authentication.
+        local_key = (raw.get("api_key") or "").strip()
+        if local_key:
+            out_local["api_key"] = local_key
+        return out_local
     return None
 
 
@@ -715,7 +774,15 @@ class AnthropicAdapter:
     async def open(self, *, api_key: str) -> None:
         from anthropic import AsyncAnthropic
 
-        self._client = AsyncAnthropic(api_key=api_key, timeout=_LLM_HTTP_TIMEOUT)
+        # The SDK has its own timeout type (anthropic 2.x uses httpx2, so an
+        # httpx.Timeout is rejected). Use the SDK-native one; same limits as the
+        # other cloud clients.
+        from anthropic import Timeout as AnthropicTimeout
+
+        self._client = AsyncAnthropic(
+            api_key=api_key,
+            timeout=AnthropicTimeout(connect=10.0, read=90.0, write=30.0, pool=10.0),
+        )
 
     async def close(self) -> None:
         if self._client is not None:
@@ -740,7 +807,8 @@ class AnthropicAdapter:
         resp = await self._client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=0.7,
+            # No temperature/top_p/top_k: the current SDK's messages.create() does not accept
+            # them (TypeError) and newer Claude models reject sampling parameters.
             system=system,
             messages=[{"role": "user", "content": user}],
         )

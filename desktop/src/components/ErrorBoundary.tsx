@@ -1,4 +1,5 @@
 import React from 'react';
+import { I18nContext } from '../i18n';
 
 /**
  * App-wide error boundary.
@@ -23,6 +24,8 @@ interface State {
 }
 
 export default class ErrorBoundary extends React.Component<Props, State> {
+  static contextType = I18nContext;
+  declare context: React.ContextType<typeof I18nContext>;
   state: State = { error: null };
 
   static getDerivedStateFromError(error: Error): State {
@@ -44,6 +47,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
 
   render(): React.ReactNode {
     const { error } = this.state;
+    const t = this.context.t;
     if (!error) {
       return this.props.children;
     }
@@ -75,15 +79,13 @@ export default class ErrorBoundary extends React.Component<Props, State> {
             color: '#f0a830',
           }}
         >
-          Something went wrong
+          {t('errorBoundary.badge')}
         </div>
         <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>
-          The view hit an unexpected error
+          {t('errorBoundary.title')}
         </h1>
         <p style={{ maxWidth: 460, fontSize: 14, lineHeight: 1.6, color: '#9da7b3', margin: 0 }}>
-          Your data and settings are safe. Reload to get back to a working
-          screen. If it keeps happening on the same page, note what you were
-          doing so it can be reproduced.
+          {t('errorBoundary.text')}
         </p>
         <button
           type="button"
@@ -100,7 +102,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
             cursor: 'pointer',
           }}
         >
-          Reload
+          {t('errorBoundary.reload')}
         </button>
         <pre
           style={{

@@ -1,0 +1,257 @@
+{
+ "price_2330": [
+  {
+   "date": "2026-10-27",
+   "stock_id": "2330",
+   "Trading_Volume": 38173147,
+   "Trading_money": 91313227194,
+   "open": 2380.0,
+   "max": 2405.0,
+   "min": 2380.0,
+   "close": 2400.0,
+   "spread": 15.0,
+   "Trading_turnover": 133483
+  },
+  {
+   "date": "2026-10-28",
+   "stock_id": "2330",
+   "Trading_Volume": 21866835,
+   "Trading_money": 52940678675,
+   "open": 2420.0,
+   "max": 2430.0,
+   "min": 2410.0,
+   "close": 2425.0,
+   "spread": 25.0,
+   "Trading_turnover": 56719
+  },
+  {
+   "date": "2026-10-29",
+   "stock_id": "2330",
+   "Trading_Volume": 18403916,
+   "Trading_money": 44316626887,
+   "open": 2420.0,
+   "max": 2425.0,
+   "min": 2390.0,
+   "close": 2415.0,
+   "spread": -10.0,
+   "Trading_turnover": 103233
+  },
+  {
+   "date": "2026-10-30",
+   "stock_id": "2330",
+   "Trading_Volume": 34900231,
+   "Trading_money": 82766867140,
+   "open": 2380.0,
+   "max": 2380.0,
+   "min": 2360.0,
+   "close": 2370.0,
+   "spread": -45.0,
+   "Trading_turnover": 331324
+  }
+ ],
+ "revenue_2330": [
+  {
+   "date": "2026-07-01",
+   "stock_id": "2330",
+   "country": "Taiwan",
+   "revenue": 442679969000,
+   "revenue_month": 6,
+   "revenue_year": 2026,
+   "create_time": "2026-07-13"
+  },
+  {
+   "date": "2026-08-01",
+   "stock_id": "2330",
+   "country": "Taiwan",
+   "revenue": 467580548000,
+   "revenue_month": 7,
+   "revenue_year": 2026,
+   "create_time": "2026-08-10"
+  },
+  {
+   "date": "2026-09-01",
+   "stock_id": "2330",
+   "country": "Taiwan",
+   "revenue": 514805337000,
+   "revenue_month": 8,
+   "revenue_year": 2026,
+   "create_time": "2026-09-10"
+  },
+  {
+   "date": "2026-10-01",
+   "stock_id": "2330",
+   "country": "Taiwan",
+   "revenue": 511857399000,
+   "revenue_month": 9,
+   "revenue_year": 2026,
+   "create_time": "2026-10-08"
+  }
+ ],
+ "fin_2330": [
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "EPS",
+   "value": 27.25,
+   "origin_name": "基本每股盈餘"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "OTHNOE",
+   "value": 5274039000.0,
+   "origin_name": "其他收益及費損淨額"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "OtherComprehensiveIncome",
+   "value": 17286598000.0,
+   "origin_name": "其他綜合損益（淨額）"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "TAX",
+   "value": 155649163000.0,
+   "origin_name": "所得稅費用（利益）"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "IncomeAfterTaxes",
+   "value": 706780923000.0,
+   "origin_name": "本期淨利（淨損）"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "TotalConsolidatedProfitForThePeriod",
+   "value": 724067521000.0,
+   "origin_name": "本期綜合損益總額"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "EquityAttributableToOwnersOfParent",
+   "value": 706561938000.0,
+   "origin_name": "淨利（淨損）歸屬於母公司業主"
+  },
+  {
+   "date": "2026-06-30",
+   "stock_id": "2330",
+   "type": "NoncontrollingInterests",
+   "value": 218985000.0,
+   "origin_name": "淨利（淨損）歸屬於非控制權益"
+  }
+ ],
+ "chips_2330": [
+  {
+   "date": "2026-10-28",
+   "stock_id": "2330",
+   "buy": 0,
+   "name": "Foreign_Dealer_Self",
+   "sell": 0
+  },
+  {
+   "date": "2026-10-28",
+   "stock_id": "2330",
+   "buy": 245050,
+   "name": "Dealer_self",
+   "sell": 223000
+  },
+  {
+   "date": "2026-10-28",
+   "stock_id": "2330",
+   "buy": 292702,
+   "name": "Dealer_Hedging",
+   "sell": 52577
+  },
+  {
+   "date": "2026-10-28",
+   "stock_id": "2330",
+   "buy": 14083826,
+   "name": "Foreign_Investor",
+   "sell": 17258847
+  },
+  {
+   "date": "2026-10-28",
+   "stock_id": "2330",
+   "buy": 1144185,
+   "name": "Investment_Trust",
+   "sell": 300129
+  },
+  {
+   "date": "2026-10-29",
+   "stock_id": "2330",
+   "buy": 0,
+   "name": "Foreign_Dealer_Self",
+   "sell": 0
+  },
+  {
+   "date": "2026-10-29",
+   "stock_id": "2330",
+   "buy": 97100,
+   "name": "Dealer_self",
+   "sell": 289000
+  },
+  {
+   "date": "2026-10-29",
+   "stock_id": "2330",
+   "buy": 216274,
+   "name": "Dealer_Hedging",
+   "sell": 305607
+  },
+  {
+   "date": "2026-10-29",
+   "stock_id": "2330",
+   "buy": 12090245,
+   "name": "Foreign_Investor",
+   "sell": 12100444
+  },
+  {
+   "date": "2026-10-29",
+   "stock_id": "2330",
+   "buy": 609374,
+   "name": "Investment_Trust",
+   "sell": 166260
+  }
+ ],
+ "twse_row_2330": [
+  {
+   "Date": "1151029",
+   "Code": "2330",
+   "Name": "台積電",
+   "TradeVolume": "18403916",
+   "TradeValue": "44316626887",
+   "OpeningPrice": "2420.00",
+   "HighestPrice": "2425.00",
+   "LowestPrice": "2390.00",
+   "ClosingPrice": "2415.00",
+   "Change": "-10.0000",
+   "Transaction": "103233"
+  }
+ ],
+ "tpex_row_6488": [
+  {
+   "Date": "1151029",
+   "SecuritiesCompanyCode": "6488",
+   "CompanyName": "環球晶",
+   "Close": "814.00",
+   "Change": "-35.00 ",
+   "Open": "850.00",
+   "High": "853.00",
+   "Low": "803.00",
+   "Average": "817.61",
+   "TradingShares": "7652732",
+   "TransactionAmount": "6256954695",
+   "TransactionNumber": "28241",
+   "LatestBidPrice": "813.00",
+   "LatesAskPrice": "814.00",
+   "Capitals": "528113725",
+   "NextReferencePrice": "814.00",
+   "NextLimitUp": "895.00",
+   "NextLimitDown": "733.00"
+  }
+ ]
+}

@@ -52,14 +52,16 @@ def test_rich_fields_still_parsed():
     assert d["reasoning"].startswith("Balanced setup")
 
 
-def test_missing_rating_falls_back_neutral():
+def test_missing_rating_is_review_not_a_made_up_neutral():
     d = _parse_pm_decision(_state("Some unstructured verdict text."))
-    assert d["stance"] == "neutral"
-    assert d["conviction"] == 0.5
+    assert d["stance"] == "review"
+    assert d["conviction"] == 0.0
+    assert d["rating_status"] == "unparsed"
     assert d["reasoning"] == "Some unstructured verdict text."
 
 
-def test_empty_state_falls_back_neutral():
+def test_empty_state_is_review():
     d = _parse_pm_decision(None)
-    assert d["stance"] == "neutral"
+    assert d["stance"] == "review"
+    assert d["rating_status"] == "unparsed"
     assert d["reasoning"] == "No assessment text produced."

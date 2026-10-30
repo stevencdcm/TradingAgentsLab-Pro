@@ -40,6 +40,9 @@ vi.mock('node:fs', () => ({
     throw new Error('ENOENT');
   },
   unlinkSync: () => {},
+  mkdirSync: () => {},
+  existsSync: () => false,
+  copyFileSync: () => {},
 }));
 
 interface FakeChild extends EventEmitter {
@@ -74,6 +77,40 @@ afterEach(() => {
 });
 
 const HANDSHAKE = '{"port":54321,"token":"tok-abc"}\n';
+
+describe('sessions DB location (never inside the signed bundle)', () => {
+  it('points the engine at <userData>/sessions.db by default', async () => {
+    delete process.env['TAL_SESSIONS_DB'];
+    let seenEnv: Record<string, string> = {};
+    h.spawnImpl = (_cmd: unknown, _args: unknown, opts: unknown) => {
+      seenEnv = (opts as { env: Record<string, string> }).env;
+      return fakeChild;
+    };
+    const { startEngine } = await import('../../electron/engine-runner');
+    const p = startEngine();
+    fakeChild.stdout.emit('data', Buffer.from(HANDSHAKE));
+    await p;
+    expect(seenEnv['TAL_SESSIONS_DB']).toBe('/tmp/tal-userdata/sessions.db');
+  });
+
+  it('an explicit TAL_SESSIONS_DB (tests / tooling) wins', async () => {
+    process.env['TAL_SESSIONS_DB'] = '/custom/path.db';
+    let seenEnv: Record<string, string> = {};
+    h.spawnImpl = (_cmd: unknown, _args: unknown, opts: unknown) => {
+      seenEnv = (opts as { env: Record<string, string> }).env;
+      return fakeChild;
+    };
+    try {
+      const { startEngine } = await import('../../electron/engine-runner');
+      const p = startEngine();
+      fakeChild.stdout.emit('data', Buffer.from(HANDSHAKE));
+      await p;
+      expect(seenEnv['TAL_SESSIONS_DB']).toBe('/custom/path.db');
+    } finally {
+      delete process.env['TAL_SESSIONS_DB'];
+    }
+  });
+});
 
 describe('startEngine handshake', () => {
   it('resolves with port/token on a valid handshake line', async () => {

@@ -1,0 +1,144 @@
+{
+  "stage": "S11",
+  "as_of": "2026-10-30T23:59:59+08:00",
+  "queries": [
+    {
+      "stock_id": "2330",
+      "dataset": "income",
+      "status": "ok",
+      "count": 17,
+      "safe_count": 0,
+      "unknown_count": 17,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:19.072506+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=2330&start_date=2025-01-01&end_date=2025-03-31",
+      "first_metric": "EPS"
+    },
+    {
+      "stock_id": "2330",
+      "dataset": "balance",
+      "status": "ok",
+      "count": 101,
+      "safe_count": 0,
+      "unknown_count": 101,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:20.113227+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockBalanceSheet&data_id=2330&start_date=2025-01-01&end_date=2025-03-31",
+      "first_metric": "CashAndCashEquivalents"
+    },
+    {
+      "stock_id": "2330",
+      "dataset": "cash_flow",
+      "status": "ok",
+      "count": 28,
+      "safe_count": 0,
+      "unknown_count": 28,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:21.055956+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockCashFlowsStatement&data_id=2330&start_date=2025-01-01&end_date=2025-03-31",
+      "first_metric": "ReceivableIncrease"
+    },
+    {
+      "stock_id": "2330",
+      "dataset": "news",
+      "status": "ok",
+      "count": 45,
+      "safe_count": 0,
+      "unknown_count": 45,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:22.105369+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockNews&data_id=2330&start_date=2026-10-29",
+      "summary_available": false
+    },
+    {
+      "stock_id": "6488",
+      "dataset": "income",
+      "status": "ok",
+      "count": 16,
+      "safe_count": 0,
+      "unknown_count": 16,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:23.073321+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=6488&start_date=2025-01-01&end_date=2025-03-31",
+      "first_metric": "EPS"
+    },
+    {
+      "stock_id": "6488",
+      "dataset": "balance",
+      "status": "ok",
+      "count": 83,
+      "safe_count": 0,
+      "unknown_count": 83,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:24.132463+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockBalanceSheet&data_id=6488&start_date=2025-01-01&end_date=2025-03-31",
+      "first_metric": "CashAndCashEquivalents"
+    },
+    {
+      "stock_id": "6488",
+      "dataset": "cash_flow",
+      "status": "ok",
+      "count": 27,
+      "safe_count": 0,
+      "unknown_count": 27,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:25.072335+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockCashFlowsStatement&data_id=6488&start_date=2025-01-01&end_date=2025-03-31",
+      "first_metric": "RedemptionOfBonds"
+    },
+    {
+      "stock_id": "6488",
+      "dataset": "news",
+      "status": "ok",
+      "count": 2,
+      "safe_count": 0,
+      "unknown_count": 2,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:26.078610+00:00",
+      "source_url": "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockNews&data_id=6488&start_date=2026-10-29",
+      "summary_available": false
+    },
+    {
+      "stock_id": "2330",
+      "dataset": "listed_disclosures",
+      "status": "ok",
+      "count": 1,
+      "safe_count": 0,
+      "unknown_count": 1,
+      "gaps": [
+        "published_at_unknown"
+      ],
+      "fetched_at": "2026-10-30T08:38:26.985126+00:00",
+      "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap04_L"
+    },
+    {
+      "stock_id": "6488",
+      "dataset": "otc_disclosures",
+      "status": "empty",
+      "count": 0,
+      "safe_count": 0,
+      "unknown_count": 0,
+      "gaps": [
+        "no_matching_rows"
+      ],
+      "fetched_at": "2026-10-30T08:38:27.996702+00:00",
+      "source_url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O"
+    }
+  ]
+}

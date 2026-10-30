@@ -7,13 +7,16 @@
 import { app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_LOCALE, isLocale, type Locale } from '../src/i18n/core';
 
 export interface Prefs {
   /** Whether the app checks for updates on its own (default on). */
   autoUpdate: boolean;
+  /** UI language; drives the native menu + dialogs (renderer keeps its own copy). */
+  locale: Locale;
 }
 
-const DEFAULTS: Prefs = { autoUpdate: true };
+const DEFAULTS: Prefs = { autoUpdate: true, locale: DEFAULT_LOCALE };
 
 function prefsPath(): string {
   return path.join(app.getPath('userData'), 'preferences.json');
@@ -50,4 +53,16 @@ export function setAutoUpdate(enabled: boolean): boolean {
   p.autoUpdate = enabled;
   writePrefs(p);
   return enabled;
+}
+
+export function getLocale(): Locale {
+  const l = readPrefs().locale;
+  return isLocale(l) ? l : DEFAULT_LOCALE;
+}
+
+export function setLocale(locale: Locale): Locale {
+  const p = readPrefs();
+  p.locale = locale;
+  writePrefs(p);
+  return locale;
 }

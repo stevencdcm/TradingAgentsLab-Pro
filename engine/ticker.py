@@ -123,8 +123,44 @@ def _crypto_spec(*, raw: str, base: str, quote: str) -> TickerSpec:
     )
 
 
+# Taiwan listings: 4-6 digit codes (2330, 0050, 00878, 6488), optional trailing
+# letter (00679B bond ETFs), or an explicit .TW / .TWO suffix. Typed without the
+# suffix they would otherwise be sent to US-oriented data tools and quietly
+# return nothing or, worse, a different instrument.
+_TW_RE = re.compile(r"^(\d{4,6}[A-Z]?)(\.(TW|TWO))?$")
+
+
+def taiwan_code(raw: str) -> str | None:
+    """The Taiwan stock code if `raw` looks like a Taiwan listing, else None.
+
+    US ADRs of Taiwan companies (TSM, UMC) are ordinary US tickers and are NOT
+    matched. 2330 and TSM are different instruments with different prices.
+    """
+    if not raw:
+        return None
+    m = _TW_RE.match(raw.strip().upper())
+    return m.group(1) if m else None
+
+
+def taiwan_unsupported_message(code: str, language: str = "en") -> str:
+    """User-facing explanation. Chinese when the report language is zh-TW."""
+    if language == "zh-TW":
+        return (
+            f"「{code}」看起來是台股代號。目前尚未接入台股資料來源（FinMind），"
+            "為避免誤用美股或其他市場的資料，這次不會執行研究。"
+            "美股 ADR 請輸入 TSM（它與台股 2330 是不同的標的與價格）。"
+        )
+    return (
+        f"'{code}' looks like a Taiwan stock code. No Taiwan data source (FinMind) is connected yet, "
+        "so no research is run, to avoid mixing in US or other-market data. "
+        "For the US ADR enter TSM (it is a different instrument and price from 2330)."
+    )
+
+
 __all__ = [
     "AssetClass",
     "TickerSpec",
     "normalize_ticker",
+    "taiwan_code",
+    "taiwan_unsupported_message",
 ]

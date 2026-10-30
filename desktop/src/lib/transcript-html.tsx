@@ -20,13 +20,17 @@
  * They are baked into the document, not optional.
  */
 
+import { formatRunDuration } from './duration';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DebateEvent } from './engine-client';
-import { riskLabel, stanceLabel, stanceLean } from './stance';
+import { findNotices, findResearch, researchMarkdown } from './research-notes';
+import { isReview, riskLabel, stanceLabel, stanceLean } from './stance';
+import { htmlLang, makeTranslator, splitRich, type Locale } from '../i18n';
 import {
-  PHASE_LABEL,
+  agentLabelFor,
+  phaseLabelFor,
   findDecision,
   findNews,
   findStart,
@@ -53,22 +57,12 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-// Locked tier-1 / tier-2 lines (verbatim from the shipped app copy).
-const TIER1 =
-  'Educational research only · Not a registered investment advisor · Not investment advice';
-const TIER2 =
-  'Not investment advice · LLM output may be inaccurate · Verify independently before any action';
-// Locked tier-3 page-level disclaimer, exactly as shipped on the Analyze page.
-const TIER3 =
-  '<strong>For educational and research purposes only.</strong> Trading Agents Lab is ' +
-  '<strong>not a registered investment advisor</strong> and does not provide investment, ' +
-  'financial, legal, or tax advice. The multi-agent LLM analyses on this page may be ' +
-  'inaccurate, incomplete, or outdated: large language models can and do hallucinate. ' +
-  'Nothing produced by this software is a recommendation to buy, sell, or hold any ' +
-  'security, cryptocurrency, or other asset. Consult a qualified financial professional ' +
-  'before making any investment decision. You assume all risk for any action you take ' +
-  'based on this analysis. The maintainers and contributors accept no liability for ' +
-  'losses arising from use of this software.';
+/** Escape a message that may contain `<b>…</b>` runs and render them as <strong>. */
+function richHtml(text: string): string {
+  return splitRich(text)
+    .map((p) => (p.tag === 'b' ? `<strong>${esc(p.text)}</strong>` : esc(p.text)))
+    .join('');
+}
 
 // Palette mirrors the Pro app's design tokens (src/styles/tokens.css):
 // #0d1117 base, indigo accent #5b74f0, and the same text/border ramp — so
@@ -105,6 +99,7 @@ const STYLE = `
   .action { font-family: var(--mono); font-size: 30px; font-weight: 700; }
   .action.buy { color: var(--buy); } .action.sell { color: var(--sell); }
   .action.hold { color: var(--hold); }
+  .action.review { color: #d29922; font-size: 18px; }
   .decision .facts { color: var(--muted); font-family: var(--mono);
     font-size: 13.5px; margin: 6px 0 12px; }
   .ownership { color: var(--muted); font-size: 12.5px; margin-top: 16px; }
@@ -152,7 +147,12 @@ export interface TranscriptHtmlResult {
   suggestedName: string;
 }
 
-export function buildTranscriptHtml(events: DebateEvent[]): TranscriptHtmlResult {
+/** `locale` defaults to English so callers/tests that omit it keep the original output. */
+export function buildTranscriptHtml(
+  events: DebateEvent[],
+  locale: Locale = 'en',
+): TranscriptHtmlResult {
+  const t = makeTranslator(locale);
   const start = findStart(events);
   const summary = findSummary(events);
   const decision = findDecision(events);
@@ -161,9 +161,9 @@ export function buildTranscriptHtml(events: DebateEvent[]): TranscriptHtmlResult
 
   const ticker = start?.ticker ?? 'transcript';
   const date = start?.trade_date ?? '';
-  const title = start
-    ? `${start.ticker} · ${start.trade_date} · Trading Agents Lab Pro`
-    : 'Debate transcript · Trading Agents Lab Pro';
+  const title = t('export.html.pageTitle', {
+    what: start ? `${start.ticker} · ${start.trade_date}` : t('export.html.titleNone'),
+  });
   const suggestedName = `${ticker}-${date || 'session'}`
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
@@ -172,67 +172,87 @@ export function buildTranscriptHtml(events: DebateEvent[]): TranscriptHtmlResult
   const parts: string[] = [];
 
   parts.push('<header>');
-  parts.push('<div class="brand">Trading Agents Lab Pro · The Diligence</div>');
+  parts.push(`<div class="brand">${esc(t('export.html.brand'))}</div>`);
   parts.push(
-    `<h1>${esc(start ? `${start.ticker} · ${start.trade_date}` : 'Debate transcript')}</h1>`,
+    `<h1>${esc(start ? `${start.ticker} · ${start.trade_date}` : t('export.html.titleNone'))}</h1>`,
   );
-  parts.push(`<div class="meta">Generated ${esc(new Date().toISOString())}</div>`);
   parts.push(
-    '<div class="banner"><strong>For educational research and paper trading.</strong> ' +
-      'Trading Agents Lab does not provide investment advice.</div>',
+    `<div class="meta">${esc(t('export.html.generated', { time: new Date().toISOString() }))}</div>`,
+    ...(() => {
+      const d = events.find((e) => e.type === 'session.complete');
+      return d && d.type === 'session.complete' && d.live
+        ? [`<div class="meta">${esc(`${d.provider ?? ''} · ${d.model ?? ''} · ${formatRunDuration(d.elapsed_s, t)}`)}</div>`]
+        : [];
+    })(),
   );
+  parts.push(`<div class="banner">${richHtml(t('export.html.banner'))}</div>`);
   parts.push('</header>');
 
   if (decision) {
     const lean = stanceLean(decision.stance);
-    const cls = lean === 'bullish' ? 'buy' : lean === 'bearish' ? 'sell' : 'hold';
-    const facts: string[] = [`conviction ${(decision.conviction * 100).toFixed(0)}%`];
-    if (decision.bull_strength != null && decision.bear_strength != null) {
+    const review = isReview(decision.stance);
+    const cls = review ? 'review' : lean === 'bullish' ? 'buy' : lean === 'bearish' ? 'sell' : 'hold';
+    const facts: string[] = review
+      ? [t('debate.decision.reviewNote')]
+      : [t('export.html.facts.conviction', { pct: (decision.conviction * 100).toFixed(0) })];
+    if (!review && decision.bull_strength != null && decision.bear_strength != null) {
       facts.push(
-        `bull thesis ${decision.bull_strength}/100`,
-        `bear thesis ${decision.bear_strength}/100`,
+        t('export.html.facts.bull', { n: decision.bull_strength }),
+        t('export.html.facts.bear', { n: decision.bear_strength }),
       );
     }
     if (decision.risk_level != null) {
-      facts.push(`risk ${riskLabel(decision.risk_level).toLowerCase()}`);
+      facts.push(t('export.md.facts.risk', { risk: riskLabel(decision.risk_level, t).toLowerCase() }));
     }
-    if (decision.price_target != null) facts.push(`modeled scenario ${decision.price_target}`);
-    if (decision.time_horizon) facts.push(`horizon ${decision.time_horizon}`);
-    parts.push('<h2 class="section">Committee Assessment</h2>');
+    if (decision.price_target != null) {
+      facts.push(t('export.html.facts.scenario', { value: decision.price_target }));
+    }
+    if (decision.time_horizon) {
+      facts.push(t('export.html.facts.horizon', { value: decision.time_horizon }));
+    }
+    parts.push(`<h2 class="section">${esc(t('debate.decision.label'))}</h2>`);
     parts.push('<div class="decision">');
-    parts.push(`<div class="action ${cls}">${esc(stanceLabel(decision.stance))}</div>`);
+    parts.push(`<div class="action ${cls}">${esc(stanceLabel(decision.stance, t))}</div>`);
     parts.push(`<div class="facts">${esc(facts.join(' · '))}</div>`);
     parts.push(markdownToHtml(decision.reasoning));
     if (decision.investment_thesis) {
-      parts.push('<h4>Investment thesis</h4>');
+      parts.push(`<h4>${esc(t('export.html.thesis'))}</h4>`);
       parts.push(markdownToHtml(decision.investment_thesis));
     }
     parts.push(
-      `<div class="ownership">${esc(
-        'This assessment is an analytical output of a simulated research committee, not a recommendation. Any investment decision is yours alone.',
-      )}</div>`,
+      `<div class="ownership">${esc(t('debate.decision.ownership'))}</div>`,
     );
-    parts.push(`<div class="tier2">${esc(TIER2)}</div>`);
+    parts.push(`<div class="tier2">${esc(t('debate.decision.disclaimer'))}</div>`);
     parts.push('</div>');
   }
 
   if (summary) {
     const sign = summary.period_change_pct >= 0 ? '+' : '';
-    parts.push('<h2 class="section">Data summary</h2>');
+    parts.push(`<h2 class="section">${esc(t('export.dataSummary'))}</h2>`);
     parts.push('<ul class="data">');
     parts.push(
-      `<li><span class="k">Last close</span><strong>${summary.last_close.toFixed(2)}</strong></li>`,
-      `<li><span class="k">Period change</span>${sign}${summary.period_change_pct.toFixed(2)}%</li>`,
-      `<li><span class="k">Range</span>${summary.period_low.toFixed(2)} to ${summary.period_high.toFixed(2)}</li>`,
-      `<li><span class="k">Avg daily volume</span>${Math.round(summary.avg_volume).toLocaleString()}</li>`,
-      `<li><span class="k">Sessions</span>${summary.sessions}</li>`,
-      `<li><span class="k">Source</span>${esc(summary.source)} · as of ${esc(summary.as_of)}</li>`,
+      `<li><span class="k">${esc(t('debate.summary.lastClose'))}</span><strong>${summary.last_close.toFixed(2)}</strong></li>`,
+      `<li><span class="k">${esc(t('debate.summary.periodChange'))}</span>${sign}${summary.period_change_pct.toFixed(2)}%</li>`,
+      `<li><span class="k">${esc(t('debate.summary.range'))}</span>${esc(
+        t('debate.summary.rangeValue', {
+          low: summary.period_low.toFixed(2),
+          high: summary.period_high.toFixed(2),
+        }),
+      )}</li>`,
+      `<li><span class="k">${esc(t('export.avgDailyVolume'))}</span>${Math.round(summary.avg_volume).toLocaleString(locale === 'en' ? 'en' : 'zh-Hant-TW')}</li>`,
+      `<li><span class="k">${esc(t('export.sessions'))}</span>${summary.sessions}</li>`,
+      `<li><span class="k">${esc(t('export.source'))}</span>${esc(
+        t('export.sourceLine', { source: summary.source, asOf: summary.as_of }),
+      )}</li>`,
     );
     parts.push('</ul>');
   }
 
+  const researchMd = researchMarkdown(findResearch(events), t, String, findNotices(events)).join('\n');
+  if (researchMd) parts.push(markdownToHtml(researchMd));
+
   if (news && news.headlines.length > 0) {
-    parts.push('<h2 class="section">News headlines</h2>');
+    parts.push(`<h2 class="section">${esc(t('export.news'))}</h2>`);
     parts.push('<ul class="news">');
     for (const h of news.headlines) {
       const meta = [h.publisher, h.pub_date].filter(Boolean).join(' · ');
@@ -245,23 +265,23 @@ export function buildTranscriptHtml(events: DebateEvent[]): TranscriptHtmlResult
   }
 
   for (const group of groups) {
-    parts.push(`<h2 class="section">${esc(PHASE_LABEL[group.phase] ?? group.phase)}</h2>`);
+    parts.push(`<h2 class="section">${esc(phaseLabelFor(group.phase, t))}</h2>`);
     for (const msg of group.messages) {
       parts.push('<article class="agent">');
-      parts.push(`<div class="agent-name">${esc(msg.agent)}</div>`);
+      parts.push(`<div class="agent-name">${esc(agentLabelFor(msg.agent, t))}</div>`);
       parts.push(markdownToHtml(stripChatArtifacts(msg.content)));
       parts.push('</article>');
     }
   }
 
   parts.push('<footer>');
-  parts.push(`<div class="tier3">${TIER3}</div>`);
-  parts.push(`<div class="tier1">${esc(TIER1)}</div>`);
+  parts.push(`<div class="tier3">${richHtml(t('analyze.disclaimer'))}</div>`);
+  parts.push(`<div class="tier1">${esc(t('footer.disclaimer'))}</div>`);
   parts.push('</footer>');
 
   const html = [
     '<!DOCTYPE html>',
-    '<html lang="en">',
+    `<html lang="${htmlLang(locale)}">`,
     '<head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',

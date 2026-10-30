@@ -9,7 +9,10 @@ import {
   stopEngine,
   type EngineHandshake,
 } from './engine-runner';
-import { registerAppMenu } from './menu';
+import { rebuildAppMenu, registerAppMenu } from './menu';
+import { getLocale, setLocale } from './prefs';
+import { isLocale, translate, type Locale } from '../src/i18n/core';
+import { catalogFor } from '../src/i18n/messages';
 import { openAlphaVantageSignup } from './av-signup';
 import { OpenAIOAuthService } from './oauth-openai';
 import {
@@ -37,7 +40,10 @@ process.env.APP_ROOT = path.join(__dirname, '..');
 // resolves and before the menu template references `app.name`.
 // Repo / package names stay one word ("TradingAgentsLab") — only the
 // user-facing display surface is three words.
-app.setName('Trading Agents Lab Pro');
+// `TAL_APP_NAME` lets a side-by-side candidate build use its own name (and
+// therefore its own userData folder and safeStorage keychain entry) instead of
+// sharing the installed app's. Normal builds keep the product name.
+app.setName(process.env['TAL_APP_NAME'] || app.getName() || 'Trading Agents Lab Pro');
 
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist');
@@ -268,22 +274,24 @@ const IS_DEV = Boolean(process.env['VITE_DEV_SERVER_URL']);
 
 async function confirmAction(action: 'shutdown' | 'restart'): Promise<boolean> {
   const w = win;
+  const catalog = catalogFor(getLocale());
+  const t = (key: Parameters<typeof translate>[1]) => translate(catalog, key);
   const messages = {
     shutdown: {
-      title: 'Shut down Trading Agents Lab Pro?',
-      detail: 'The engine sidecar will stop and the app will quit. Any in-flight debate is aborted.',
-      confirmLabel: 'Shut down',
+      title: t('dialog.shutdown.title'),
+      detail: t('dialog.shutdown.detail'),
+      confirmLabel: t('dialog.shutdown.confirm'),
     },
     restart: {
-      title: 'Restart Trading Agents Lab Pro?',
-      detail: 'The engine sidecar will stop and the app will relaunch. Any in-flight debate is aborted.',
-      confirmLabel: 'Restart',
+      title: t('dialog.restart.title'),
+      detail: t('dialog.restart.detail'),
+      confirmLabel: t('dialog.restart.confirm'),
     },
   };
   const cfg = messages[action];
   const result = await dialog.showMessageBox(w ?? undefined!, {
     type: 'question',
-    buttons: ['Cancel', cfg.confirmLabel],
+    buttons: [t('dialog.cancel'), cfg.confirmLabel],
     defaultId: 0,
     cancelId: 0,
     title: cfg.title,
@@ -292,6 +300,15 @@ async function confirmAction(action: 'shutdown' | 'restart'): Promise<boolean> {
   });
   return result.response === 1;
 }
+
+// UI language: the renderer owns the preference (localStorage) and tells main
+// the locale CODE only (no other data) so the native menu + dialogs match.
+ipcMain.handle('i18n:set-locale', (_evt, locale: unknown): Locale => {
+  if (!isLocale(locale)) return getLocale();
+  setLocale(locale);
+  rebuildAppMenu(locale);
+  return locale;
+});
 
 ipcMain.handle('app:shutdown', async (): Promise<void> => {
   const ok = await confirmAction('shutdown');

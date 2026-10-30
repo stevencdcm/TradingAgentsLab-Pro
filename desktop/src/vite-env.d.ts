@@ -14,6 +14,7 @@ declare module '*.module.css' {
 interface EngineHandshakeBridge {
   port: number;
   token: string;
+  proxy?: boolean;
 }
 
 interface SecretListingBridge {
@@ -147,7 +148,7 @@ interface UpdatesBridge {
 
 interface TradingAgentsLabBridge {
   version: string;
-  platform: NodeJS.Platform;
+  platform: NodeJS.Platform | 'web';
   getEngineHandshake: () => Promise<EngineHandshakeBridge>;
   onEngineExited: (handler: () => void) => () => void;
   consent: ConsentBridge;
@@ -167,6 +168,8 @@ interface TradingAgentsLabBridge {
     handler: (...args: unknown[]) => void,
   ) => () => void;
   checkUpstream: () => Promise<UpstreamCheckResultBridge>;
+  /** Tell main the UI language ('zh-TW' | 'en') so the native menu follows. */
+  setLocale: (locale: string) => Promise<string>;
   shutdown: () => Promise<void>;
   restart: () => Promise<void>;
 }

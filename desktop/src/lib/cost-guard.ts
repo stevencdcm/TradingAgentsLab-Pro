@@ -1,3 +1,4 @@
+import { apiBase } from './endpoints';
 /**
  * Renderer-side client for the engine's CostGuard endpoints.
  *
@@ -38,7 +39,7 @@ export interface CostGuardStateResponse {
 
 export interface CostGuardCheckResult {
   allow: boolean;
-  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | null;
+  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price' | null;
   override_available: boolean;
   current: SpendState;
   config: CostGuardConfig;
@@ -65,6 +66,8 @@ export interface CostGuardCheckRequest {
   model: string;
   auth_kind: 'api_key' | 'oauth' | 'local';
   max_tokens: number;
+  /** Other models the same run can bill (Pro quick model, Dexter's model). Any unpriced one blocks without override. */
+  extra_models?: string[];
 }
 
 export interface CostGuardReserveRequest extends CostGuardCheckRequest {
@@ -75,7 +78,7 @@ export interface CostGuardReserveRequest extends CostGuardCheckRequest {
  * fails. Structurally identical to the 402 detail body from /reserve. */
 export interface CostGuardBlockedEvent {
   type: 'cost.blocked';
-  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate';
+  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
   spend: SpendState;
   config: CostGuardConfig;
   est_cost_usd: number;
@@ -85,13 +88,13 @@ export interface CostGuardBlockedEvent {
 // ---- Errors -----------------------------------------------------------------
 
 export class CostGuardBlocked extends Error {
-  readonly over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate';
+  readonly over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
   readonly spend: SpendState;
   readonly config: CostGuardConfig;
   readonly est_cost_usd: number;
 
   constructor(detail: {
-    over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate';
+    over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
     spend: SpendState;
     config: CostGuardConfig;
     est_cost_usd: number;
@@ -109,7 +112,7 @@ export class CostGuardBlocked extends Error {
 
 async function authFetch(path: string, init?: RequestInit): Promise<Response> {
   const { port, token } = await handshake();
-  return fetch(`http://127.0.0.1:${port}${path}`, {
+  return fetch(`${apiBase(port)}${path}`, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
@@ -170,7 +173,7 @@ export async function reserveCostGuard(
   if (res.status === 402) {
     const body = (await res.json()) as { detail: {
       error: string;
-      over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate';
+      over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
       spend: SpendState;
       config: CostGuardConfig;
       est_cost_usd: number;

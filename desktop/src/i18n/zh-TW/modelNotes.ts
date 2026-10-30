@@ -1,0 +1,22 @@
+import type { modelNotes } from '../en/modelNotes';
+
+export const modelNotesZhTW: Record<keyof typeof modelNotes, string> = {
+  'modelNote.balanced': '均衡',
+  'modelNote.balancedCost': '均衡、划算',
+  'modelNote.cheapest': '最便宜',
+  'modelNote.currentFlagship': '目前旗艦、最快',
+  'modelNote.fastFocused': '快速專注、推理較輕',
+  'modelNote.flagshipSpeed': '旗艦速度（約 100 TPS）',
+  'modelNote.flagship204k': '旗艦、204K 上下文',
+  'modelNote.latestFrontier': '最新前沿、1M 上下文',
+  'modelNote.latestRelease': '最新發行',
+  'modelNote.mostCapable': '能力最強',
+  'modelNote.mostCapableSlow': '能力最強、每回合較慢',
+  'modelNote.mostCostEfficient': '最具成本效益（正式版）',
+  'modelNote.multimodal': '多模態旗艦',
+  'modelNote.previousFrontier': '上一代前沿',
+  'modelNote.previousGen': '上一代旗艦',
+  'modelNote.reasoningOpt': '針對推理最佳化',
+  'modelNote.speedOpt': '針對速度最佳化',
+  'modelNote.goodDefault': '全方位表現強勁，是辯論的理想預設',
+};

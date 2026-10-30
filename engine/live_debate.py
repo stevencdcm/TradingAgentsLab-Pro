@@ -32,11 +32,14 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
 from .data_providers import Headline, QuoteSummary
+from .secret_refs import redact as redact_secrets
+from .report_language import free_engine_suffix, normalize_report_language
 from .llm_providers import (
     LLMAdapter,
     ProviderConfig,
     adapter_for,
     estimate_cost,
+    is_priced,
 )
 
 
@@ -373,6 +376,7 @@ def _format_context(
     state: _DebateState,
     sentiment: Optional[SentimentBlock] = None,
     include_full_sentiment: bool = False,
+    extra_context: str = "",
 ) -> str:
     """Build the user message for a given agent.
 
@@ -419,6 +423,9 @@ def _format_context(
         lines.append("Prior turns in this debate (most recent last):")
         for turn in state.transcript:
             lines.append(f"[{turn['agent']}] {turn['content']}")
+    if extra_context:
+        lines.append("")
+        lines.append(extra_context)
     return "\n".join(lines)
 
 
@@ -446,8 +453,10 @@ def _parse_decision(content: str) -> dict:
     """
     import re
 
-    stance = "neutral"
-    conviction = 0.5
+    # No STANCE line => no conclusion is claimed ("review"), not a made-up neutral.
+    stance = "review"
+    conviction = 0.0
+    parsed_stance = False
     bull_strength = 50
     bear_strength = 50
     risk_level = "moderate"
@@ -459,6 +468,8 @@ def _parse_decision(content: str) -> dict:
     )
     if m:
         stance = m.group(1).lower()
+        parsed_stance = True
+        conviction = 0.5
     m = re.search(r"CONVICTION\s*=\s*([0-9]*\.?[0-9]+)", content, re.IGNORECASE)
     if m:
         try:
@@ -496,6 +507,7 @@ def _parse_decision(content: str) -> dict:
     return {
         "stance": stance,
         "conviction": conviction,
+        "rating_status": "parsed" if parsed_stance else "unparsed",
         "bull_strength": bull_strength,
         "bear_strength": bear_strength,
         "risk_level": risk_level,
@@ -516,8 +528,13 @@ async def live_debate(
     config: ProviderConfig,
     reservation_id: Optional[str] = None,
     sentiment: Optional[SentimentBlock] = None,
+    report_language: str = "en",
+    extra_context: str = "",
 ) -> AsyncIterator[dict]:
     """Real-LLM debate. Yields the same event shapes as `canned_debate`.
+
+    ``report_language`` ("en" | "zh-TW") is appended to every agent's system
+    prompt so the generated report itself is written in that language.
 
     Caller is responsible for sending these events down the WebSocket and
     enforcing per-event delays — this generator does NOT include `_delay`
@@ -554,6 +571,8 @@ async def live_debate(
         }
         return
 
+    language_code = normalize_report_language(report_language)
+    language_suffix = free_engine_suffix(language_code)
     started_at = time.time()
     state = _DebateState()
     # `bearer_token` works for both api_key and oauth auth shapes; the
@@ -579,6 +598,7 @@ async def live_debate(
             "type": "session.start",
             "ticker": ticker,
             "trade_date": trade_date,
+            "report_language": language_code,
         }
 
         last_phase: Optional[str] = None
@@ -598,12 +618,13 @@ async def live_debate(
                 state=state,
                 sentiment=sentiment,
                 include_full_sentiment=(agent.name == "sentiment_analyst"),
+                extra_context=extra_context,
             )
             try:
                 content, in_tok, out_tok = await _complete_with_retry(
                     adapter,
                     provider=config.provider,
-                    system=agent.system_prompt,
+                    system=agent.system_prompt + language_suffix,
                     user=user_msg,
                     model=config.model,
                     max_tokens=config.max_tokens,
@@ -613,7 +634,7 @@ async def live_debate(
                     "type": "agent.message",
                     "agent": agent.name,
                     "phase": agent.phase,
-                    "content": f"[live debate error] {type(exc).__name__}: {exc}",
+                    "content": f"[live debate error] {redact_secrets(f'{type(exc).__name__}: {exc}', config.credential)}",
                 }
                 # If the very first agent fails, abort early — no point continuing.
                 if not state.transcript:
@@ -703,11 +724,14 @@ async def live_debate(
             # OAuth (subscription) and local LLM runs both record 0 so the
             # cost ledger only reflects per-token API spend. Tokens still
             # recorded above for telemetry.
+            # Known-free (OAuth / local) is 0.0; a per-token model with no verified price is UNKNOWN (null),
+            # never 0.0, so the ledger and History cannot present it as free.
             "estimated_cost_usd": (
                 0.0
                 if config.auth_kind in ("oauth", "local")
-                else round(cost, 4)
+                else (round(cost, 4) if is_priced(config.model) else None)
             ),
+            "cost_known": config.auth_kind in ("oauth", "local") or is_priced(config.model),
         }
         yielded_complete = True
     finally:
@@ -730,10 +754,12 @@ async def live_debate(
                 # normal completion. OAuth always finalizes at 0.0.
                 final_cost = (
                     0.0
-                    if config.auth_kind == "oauth"
+                    if config.auth_kind in ("oauth", "local")
                     else estimate_cost(
                         config.model, state.input_tokens, state.output_tokens
                     )
+                    if is_priced(config.model)
+                    else None            # unknown price: settle as NULL (unknown), never as a fake 0
                 )
                 _cost_guard.finalize_reservation(
                     reservation_id, actual_cost_usd=final_cost

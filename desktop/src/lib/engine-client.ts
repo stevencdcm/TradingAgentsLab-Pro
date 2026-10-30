@@ -1,6 +1,9 @@
+import { apiBase, wsBase } from './endpoints';
 export interface EngineHandshake {
   port: number;
   token: string;
+  /** Web only: served through the trusted workbench proxy (cookie-authenticated WebSocket, no token in URLs). */
+  proxy?: boolean;
 }
 
 export type LLMProvider =
@@ -38,6 +41,8 @@ export type ProviderAuth =
        * accept any non-empty Authorization header value. */
       type: 'local';
       base_url: string;
+      /** Optional key for local servers that enforce authentication (oMLX). */
+      api_key?: string;
     };
 
 export interface ProviderConfig {
@@ -248,6 +253,10 @@ export const PROVIDER_SECRET_KEY: Record<LLMProvider, string> = {
 /** Companion secret key for the local provider's model selection. */
 export const LOCAL_MODEL_SECRET_KEY = 'local:model';
 
+/** Optional API key for local servers that enforce authentication (e.g. oMLX).
+ * Stored only via safeStorage, never logged. */
+export const LOCAL_API_KEY_SECRET_KEY = 'local:api-key';
+
 /** Per-stream data provider override. When present on the WS start frame,
  * the engine instantiates the named provider for this debate's data fetches
  * (quote summary + news). When absent or malformed, the engine falls back
@@ -281,6 +290,10 @@ export interface ProConfig {
 }
 
 export interface AnalyzeRequest {
+  /** Language the GENERATED report is written in ('zh-TW' | 'en'); follows the UI
+   * language. The engine turns it into prompt instructions for every provider
+   * path. Absent / unknown means English. */
+  report_language?: string;
   ticker: string;
   trade_date: string;
   provider_config?: ProviderConfig;
@@ -300,6 +313,14 @@ export interface AnalyzeRequest {
    * Absent means market-only (free, yfinance). The engine persists no secrets;
    * this is sent per run. */
   alpha_vantage_key?: string;
+  /** Taiwan code only: 'full' (Pro graph on Taiwan data, default) or 'simplified' (evidence pack + Dexter). */
+  tw_flow?: 'full' | 'simplified';
+  /** Full flow only: run the sandboxed Dexter evidence check before the graph (default on; a skip is always shown). */
+  tw_dexter?: boolean;
+  /** Full flow only: force the strict as-of mode. Absent = automatic (recent dates use "latest available data"). */
+  tw_data_mode?: 'latest' | 'historical';
+  /** Optional FinMind member token (a secret reference in the web build). Absent = anonymous Free tier. */
+  finmind_token?: string;
   /** Optional per-stream data provider override (e.g. Alpaca). Engine
    * falls through to yfinance default when absent. */
   data_config?: DataConfig;
@@ -359,7 +380,11 @@ export interface SessionCompleteEvent {
   model?: string;
   input_tokens?: number;
   output_tokens?: number;
-  estimated_cost_usd?: number;
+  /** null = unknown (a paid model with no verified price); never to be shown as $0. */
+  estimated_cost_usd?: number | null;
+  cost_known?: boolean;
+  /** Whole-run wall seconds (data fetch + Dexter + debate), frozen when the run completed. */
+  elapsed_s?: number;
   /** Pro-only: `'full'` marks the real LangGraph engine; the free engine
    * omits it. `deep_model`/`quick_model` expose the two-model split and
    * `auth_kind` the credential flow used. */
@@ -367,6 +392,18 @@ export interface SessionCompleteEvent {
   deep_model?: string;
   quick_model?: string;
   auth_kind?: string;
+  /** Taiwan research (S3/S4): market tag, the engine actually used, and the usage split. */
+  market?: 'TW';
+  usage_breakdown?: {
+    debate?: { input_tokens?: number | null; output_tokens?: number | null; est_cost_usd?: number | null };
+    dexter?: { input_tokens?: number; output_tokens?: number; measured?: boolean; est_cost_usd?: number | null; ran?: boolean };
+  };
+  usage_complete?: boolean;
+  cost_complete?: boolean;
+  /** Taiwan full graph: data mode, Dexter outcome and the FIXED limitations block (written by the engine, not the model). */
+  data_mode?: 'latest' | 'historical';
+  dexter?: { ran: boolean; status: string | null; reason: string | null; verified?: number };
+  limitations?: Array<{ code: string; text: string }>;
 }
 
 export type AssetClass = 'equity' | 'crypto';
@@ -409,7 +446,7 @@ export interface NewsHeadlinesEvent {
  * gate handles this before the WS opens. */
 export interface CostBlockedEvent {
   type: 'cost.blocked';
-  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate';
+  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
   spend: { daily_usd: number; weekly_usd: number; monthly_usd: number; sessions_today: number };
   config: {
     enabled: boolean;
@@ -479,6 +516,38 @@ export interface RunErrorEvent {
   error: string;
 }
 
+/** Taiwan research: the immutable evidence pack the run is grounded on. */
+export interface EvidencePackEvent {
+  type: 'evidence.pack';
+  security_id: string;
+  snapshot_id: string;
+  as_of: string;
+  coverage: Record<string, unknown>;
+  unknowns: string[];
+}
+
+/** Result of the sandboxed Dexter job. `status` is never "succeeded" unless a finding was verified. */
+export interface DexterResultEvent {
+  type: 'dexter.result';
+  /** False when Dexter did not run at all (disabled, unsupported provider, cost cap, stage error). */
+  ran?: boolean;
+  status: 'succeeded' | 'partial' | 'failed' | 'timeout' | 'canceled' | 'unsupported';
+  reason: string | null;
+  findings: Array<{
+    id: string;
+    claim: string;
+    verification: 'verified' | 'unverified';
+    reason?: string;
+    point_in_time: 'ok' | 'unknown';
+    citations: Array<{ kind: string; period: string; field?: string; entity?: string }>;
+  }>;
+  unknowns: string[];
+  answer_markdown?: string;
+  summary_dropped?: string;
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; measured?: boolean };
+  elapsed_ms?: number;
+}
+
 export type DebateEvent =
   | { type: 'session.start'; ticker: string; trade_date: string }
   | ({ type: 'data.summary' } & QuoteSummary)
@@ -498,6 +567,8 @@ export type DebateEvent =
   | { type: 'phase.transition'; from: string; to: string }
   | CostUsageEvent
   | SessionCompleteEvent
+  | EvidencePackEvent
+  | DexterResultEvent
   | CostBlockedEvent
   | RunTokenCapEvent
   | RunErrorEvent
@@ -577,6 +648,8 @@ export interface SessionSummary {
   output_tokens: number | null;
   estimated_cost_usd: number | null;
   created_at: string;
+  /** Whole-run wall seconds recorded by the engine; null for sessions saved before it was recorded. */
+  elapsed_s?: number | null;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -623,7 +696,7 @@ async function fetchWithTimeout(
 
 export async function getHealth(): Promise<HealthInfo> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/health`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/health`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -638,7 +711,7 @@ export async function listSessions(opts: { limit?: number; ticker?: string } = {
   if (opts.limit) params.set('limit', String(opts.limit));
   if (opts.ticker) params.set('ticker', opts.ticker);
   const qs = params.toString();
-  const url = `http://127.0.0.1:${port}/sessions${qs ? `?${qs}` : ''}`;
+  const url = `${apiBase(port)}/sessions${qs ? `?${qs}` : ''}`;
   const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -660,7 +733,7 @@ export async function getSession(id: string): Promise<SessionDetail> {
   const timer = setTimeout(() => controller.abort(), GET_SESSION_TIMEOUT_MS);
   try {
     const res = await fetchWithTimeout(
-      `http://127.0.0.1:${port}/sessions/${encodeURIComponent(id)}`,
+      `${apiBase(port)}/sessions/${encodeURIComponent(id)}`,
       {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
@@ -685,7 +758,7 @@ export async function getSession(id: string): Promise<SessionDetail> {
 export async function deleteSession(id: string): Promise<void> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/sessions/${encodeURIComponent(id)}`,
+    `${apiBase(port)}/sessions/${encodeURIComponent(id)}`,
     {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -700,11 +773,47 @@ export interface WatchlistEntry {
   ticker: string;
   added_at: string;
   note: string | null;
+  /** Taiwan entries only: official market and name from the TWSE/TPEx index. US / legacy rows: null/absent. */
+  market?: 'TWSE' | 'TPEx' | null;
+  name?: string | null;
+}
+
+export interface TwSymbol {
+  code: string;
+  name: string;
+  market: 'TWSE' | 'TPEx';
+  source: string;
+}
+
+export type TwSymbolSearch =
+  | { ok: true; results: TwSymbol[]; as_of: string | null; fetched_at: string; count: number; stale: boolean; refresh_error: string | null }
+  | { ok: false; error: string };
+
+/** Search the official TWSE/TPEx symbol index by code or name. Transport failures are reported, never hidden. */
+export async function searchTwSymbols(q: string, opts: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<TwSymbolSearch> {
+  const own = opts.signal ? null : new AbortController();
+  const timer = own ? setTimeout(() => own.abort(), 60_000) : null; // first build downloads ~7 MB of official lists
+  try {
+    const { port, token } = await handshake();
+    const params = new URLSearchParams({ q, limit: '12' });
+    if (opts.refresh) params.set('refresh', 'true');
+    const res = await fetchWithTimeout(`${apiBase(port)}/tw/symbols?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: opts.signal ?? own!.signal,
+    });
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return (await res.json()) as TwSymbolSearch;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return { ok: false, error: 'aborted' };
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function listWatchlist(): Promise<WatchlistEntry[]> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/watchlist`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/watchlist`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -717,15 +826,16 @@ export async function listWatchlist(): Promise<WatchlistEntry[]> {
 export async function addWatchlist(input: {
   ticker: string;
   note?: string;
+  market?: 'TWSE' | 'TPEx';
 }): Promise<WatchlistEntry> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/watchlist`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/watchlist`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ ticker: input.ticker, note: input.note ?? null }),
+    body: JSON.stringify({ ticker: input.ticker, note: input.note ?? null, market: input.market ?? null }),
   });
   if (!res.ok) {
     if (res.status === 409) {
@@ -742,7 +852,7 @@ export async function addWatchlist(input: {
 export async function removeWatchlist(ticker: string): Promise<void> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/watchlist/${encodeURIComponent(ticker)}`,
+    `${apiBase(port)}/watchlist/${encodeURIComponent(ticker)}`,
     {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -794,7 +904,7 @@ export async function testLLMConnection(args: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LLM_TEST_TIMEOUT_MS);
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/test`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/test`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -852,7 +962,7 @@ export async function listCodexModels(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LLM_TEST_TIMEOUT_MS);
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/models`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/models`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -905,7 +1015,7 @@ export interface TelegramBotStartArgs {
 
 export async function getTelegramBotStatus(): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/status`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/status`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -920,7 +1030,7 @@ export async function startTelegramBot(
   args: TelegramBotStartArgs,
 ): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/start`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/start`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -937,7 +1047,7 @@ export async function startTelegramBot(
 
 export async function stopTelegramBot(): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/stop`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/stop`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -956,7 +1066,7 @@ export async function approveTelegramChat(
   chatId: number,
 ): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/approve`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/approve`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -979,7 +1089,7 @@ export async function refreshTelegramBotCredentials(
   providerConfig: Record<string, unknown>,
 ): Promise<TelegramBotStatus | null> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/refresh-credentials`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/refresh-credentials`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1005,7 +1115,7 @@ export async function denyTelegramChat(
   chatId: number,
 ): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/deny`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/deny`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1027,7 +1137,7 @@ export async function denyTelegramChat(
  * entry fallback, not a failed fetch. */
 export async function getLocalRuntimes(): Promise<LocalRuntime[]> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/local-runtimes`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/llm/local-runtimes`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -1039,14 +1149,63 @@ export async function getLocalRuntimes(): Promise<LocalRuntime[]> {
   return body.runtimes;
 }
 
+/** Models an OpenAI-compatible local server exposes (GET {base}/models), with an
+ * optional Bearer key. The key travels in the request body to the local engine
+ * and is used for that one call only. */
+export async function listLocalModels(args: {
+  baseUrl: string;
+  apiKey?: string | null;
+}): Promise<{ ok: true; models: string[] } | { ok: false; error: string; status?: number; reason?: 'key_missing' | 'key_rejected' }> {
+  const { port, token } = await handshake();
+  try {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/local-models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ base_url: args.baseUrl, api_key: args.apiKey || undefined }),
+    });
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return (await res.json()) as { ok: true; models: string[] } | { ok: false; error: string; status?: number; reason?: 'key_missing' | 'key_rejected' };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** One 1-token completion against a local server (Settings → Local LLM → Test). */
+export async function testLocalConnection(args: {
+  baseUrl: string;
+  model: string;
+  apiKey?: string | null;
+}): Promise<LLMTestResult> {
+  const { port, token } = await handshake();
+  try {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        provider_config: {
+          provider: 'local',
+          auth: { type: 'local', base_url: args.baseUrl, ...(args.apiKey ? { api_key: args.apiKey } : {}) },
+          model: args.model,
+          max_tokens: 1,
+        },
+      }),
+    });
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return (await res.json()) as LLMTestResult;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function streamDebate(
   req: AnalyzeRequest,
   onEvent: (event: DebateEvent) => void,
   onError?: (err: unknown) => void,
 ): Promise<StreamHandle> {
-  const { port, token } = await handshake();
+  const { port, token, proxy } = await handshake();
+  // Behind the trusted workbench proxy the socket authenticates by cookie: no token in the URL (access logs).
   const ws = new WebSocket(
-    `ws://127.0.0.1:${port}/stream?token=${encodeURIComponent(token)}`,
+    `${wsBase(port)}/stream${proxy ? '' : `?token=${encodeURIComponent(token)}`}`,
   );
 
   let resolveDone: () => void;
@@ -1080,6 +1239,11 @@ export async function streamDebate(
         pro_config: req.pro_config,
         // Optional Alpha Vantage data key (unlocks non-market analysts).
         alpha_vantage_key: req.alpha_vantage_key,
+        tw_flow: req.tw_flow,
+        tw_dexter: req.tw_dexter,
+        tw_data_mode: req.tw_data_mode,
+        finmind_token: req.finmind_token,
+        report_language: req.report_language,
       }),
     );
   });
@@ -1118,4 +1282,51 @@ export async function streamDebate(
     },
     done,
   };
+}
+
+
+export type TwSourceState = 'connected' | 'wired_untested' | 'failed' | 'not_implemented';
+
+export interface TwSource {
+  id: string;
+  name: string;
+  official_docs: string[];
+  data_types: string[];
+  free_scope: string;
+  token_requirement: string;
+  limits: string;
+  update_cadence: string;
+  license_notes: string;
+  verified_at: string;
+  verification_scope: string;
+  implementation_status: 'wired' | 'unsupported';
+  state: TwSourceState;
+  used_by: string[];
+  last_ok_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  calls_observed: number;
+  token_configured: boolean | null;
+}
+
+export async function listTwSources(): Promise<TwSource[]> {
+  const { port, token } = await handshake();
+  const res = await fetchWithTimeout(`${apiBase(port)}/tw/sources`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`listTwSources failed: ${res.status}`);
+  return ((await res.json()) as { sources: TwSource[] }).sources;
+}
+
+export async function testTwSource(id: string): Promise<{ ok: boolean; error?: string; ms?: number; rows?: number; note?: string | null; status?: string; http_status?: number | null }> {
+  const { port, token } = await handshake();
+  try {
+    const res = await fetchWithTimeout(
+      `${apiBase(port)}/tw/sources/test`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) },
+      90_000,
+    );
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return await res.json();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

@@ -101,7 +101,8 @@ function migrateFilter(f: Record<string, unknown>): WebhookFilter {
       ? f.min_confidence
       : 0;
   return {
-    stances: rawList.map((v) => normalizeStance(v)),
+    // A webhook filter can only list real stances ('review' never triggers a push).
+    stances: rawList.map((v) => normalizeStance(v)).filter((s): s is Exclude<ReturnType<typeof normalizeStance>, 'review'> => s !== 'review'),
     min_conviction: floor,
   };
 }

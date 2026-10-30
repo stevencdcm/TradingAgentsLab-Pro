@@ -51,6 +51,10 @@ from langchain_core.callbacks import BaseCallbackHandler
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+from .secret_refs import redact as redact_secrets
+from .rating_parse import extract_pm_rating
+from .report_language import library_output_language, normalize_report_language
+
 
 # ---------------------------------------------------------------------------
 # Node -> wire vocabulary mapping
@@ -170,6 +174,9 @@ _PROVIDER_ENV_VAR: Dict[str, str] = {
     "qwen": "DASHSCOPE_API_KEY",
     "glm": "ZHIPU_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    # Generic OpenAI-compatible endpoint (the "local" provider: oMLX / vLLM /
+    # LM Studio ...). Only set when the user configured a key for the server.
+    "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
     # ollama / other local runtimes need no key (client sends a dummy "ollama").
 }
 
@@ -274,12 +281,17 @@ def _parse_pm_decision(final_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if final_state:
         text = final_state.get("final_trade_decision") or ""
 
-    rating_match = re.search(r"\*\*Rating\*\*:\s*([A-Za-z]+)", text)
-    rating = rating_match.group(1).strip() if rating_match else ""
-    rating_key = rating.lower()
-
-    stance = _RATING_TO_STANCE.get(rating_key, "neutral")
-    conviction = _RATING_TO_CONVICTION.get(rating_key, 0.5)
+    # NFKC + English label/word passes + labelled Chinese forms ("**評級**：增持").
+    # None means NOTHING parseable: report that honestly (stance "review") instead
+    # of defaulting to neutral / 0.5, which would present a made-up conclusion.
+    rating = extract_pm_rating(text)
+    rating_key = (rating or "").lower()
+    if rating:
+        stance = _RATING_TO_STANCE[rating_key]
+        conviction = _RATING_TO_CONVICTION[rating_key]
+    else:
+        stance = "review"
+        conviction = 0.0
 
     summary_match = re.search(
         r"\*\*Executive Summary\*\*:\s*(.+?)(?:\n\*\*|\Z)", text, re.DOTALL
@@ -297,6 +309,7 @@ def _parse_pm_decision(final_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "stance": stance,
         "conviction": conviction,
+        "rating_status": "parsed" if rating else "unparsed",
         "reasoning": reasoning,
         # Pro-richer native fields. price_target is displayed as the
         # "modeled scenario range" in the UI (an analytical estimate, not
@@ -387,6 +400,32 @@ def _build_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
+def _apply_report_language(merged: Dict[str, Any], report_language: str) -> Dict[str, Any]:
+    """Point the upstream library's `output_language` at the requested report language.
+
+    The library appends `get_language_instruction()` to every analyst / researcher /
+    debater / manager / trader prompt, so this one key localises the whole report.
+    English leaves the library default untouched (no extra prompt text).
+    """
+    language = library_output_language(report_language)
+    if language:
+        merged["output_language"] = language
+    return merged
+
+
+def _run_cost_known(auth_kind: str, merged: Dict[str, Any]) -> bool:
+    """False when a per-token run used a model (deep or quick) with no verified price: its cost is
+    unknown and must be stored as null, not as 0.0."""
+    if auth_kind in ("oauth", "local"):
+        return True
+    try:
+        from .llm_providers import is_priced
+
+        return all(is_priced(m) for m in (merged.get("deep_think_llm"), merged.get("quick_think_llm")) if m)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run_cost(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") -> float:
     """Best-effort USD estimate for the metered run.
 
@@ -426,8 +465,10 @@ def _finalize_reservation(
     try:
         from . import cost_guard as _cost_guard
 
+        # A per-token run on a model (deep OR quick) with no verified price has an UNKNOWN cost: settle as NULL, not 0.
         _cost_guard.finalize_reservation(
-            reservation_id, actual_cost_usd=_run_cost(auth_kind, merged, meter)
+            reservation_id,
+            actual_cost_usd=_run_cost(auth_kind, merged, meter) if _run_cost_known(auth_kind, merged) else None,
         )
     except Exception as exc:  # noqa: BLE001 — finalize is best-effort
         sys.stderr.write(
@@ -449,6 +490,7 @@ async def full_debate(
     oauth_account_id: Optional[str] = None,
     reservation_id: Optional[str] = None,
     alpha_vantage_key: Optional[str] = None,
+    report_language: str = "en",
 ) -> AsyncIterator[Dict[str, Any]]:
     """Drive the full LangGraph diligence graph, yielding UI-compatible events.
 
@@ -481,7 +523,7 @@ async def full_debate(
             # Cost is finalized against the provider on session.complete; during
             # the run we report tokens and let the UI's cost-guard poll fill USD.
             "est_cost_usd": 0.0,
-            "free": merged.get("llm_provider") in ("local",),
+            "free": merged.get("llm_provider") in ("local", "openai_compatible"),
         }
 
     # Outer try/finally guarantees the CostGuard reservation is settled on EVERY
@@ -490,7 +532,7 @@ async def full_debate(
     # at ANY yield, including the two early ones). `merged` starts empty so a
     # pre-config failure still finalizes cleanly (priced at zero: no LLM calls).
     try:
-        merged = _build_config(config)
+        merged = _apply_report_language(_build_config(config), report_language)
 
         # Data-tool key (Alpha Vantage) must be in the environment for the WHOLE
         # run: the library's dataflows tools (news / social / fundamentals) read
@@ -573,7 +615,12 @@ async def full_debate(
                 else:
                     os.environ[env_var] = _prev_env
 
-        yield {"type": "session.start", "ticker": ticker, "trade_date": trade_date}
+        yield {
+            "type": "session.start",
+            "ticker": ticker,
+            "trade_date": trade_date,
+            "report_language": normalize_report_language(report_language),
+        }
         # graph.plan lets the UI render honest totals for the deterministic
         # phases. Analyst per-phase counts are NOT included: their tool loops make
         # the count non-deterministic, so the UI tracks analysts by explicit
@@ -668,7 +715,7 @@ async def full_debate(
         except Exception as exc:  # noqa: BLE001 - surface any node failure as a terminal event
             yield {
                 "type": "run.error",
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": redact_secrets(f"{type(exc).__name__}: {exc}", api_key),
             }
             return
 
@@ -696,12 +743,23 @@ async def full_debate(
         # Persist to the memory log so the NEXT same-ticker run can reflect on
         # this decision. Bypassing the library's _run_graph means we replicate
         # this hook explicitly; skipping it silently disables cross-run learning.
+        #
+        # Only decisions with a parsed rating are remembered. The library's own
+        # tagging defaults an unparseable decision to "Hold"; writing that would
+        # feed a made-up history into the next run's reflection. When the rating
+        # came from a Chinese label the library cannot read, a machine label is
+        # prepended so the stored tag is the real rating rather than Hold.
         try:
-            if final_state is not None and final_state.get("final_trade_decision"):
+            raw_decision = (final_state or {}).get("final_trade_decision")
+            if raw_decision and decision.get("rating_status") == "parsed":
+                to_store = raw_decision
+                # Always pin OUR parsed rating: the library's tagger scans for stray
+                # English words and would otherwise record a different one (or Hold).
+                to_store = f"**Rating**: {extract_pm_rating(raw_decision)}\n\n{raw_decision}"
                 graph.memory_log.store_decision(
                     ticker=ticker,
                     trade_date=trade_date,
-                    final_trade_decision=final_state["final_trade_decision"],
+                    final_trade_decision=to_store,
                 )
         except Exception:
             pass  # memory is best-effort; never fail the run over it
@@ -722,7 +780,10 @@ async def full_debate(
             "auth_kind": auth_kind,
             "input_tokens": meter.input_tokens,
             "output_tokens": meter.output_tokens,
-            "estimated_cost_usd": round(_run_cost(auth_kind, merged, meter), 4),
+            "estimated_cost_usd": (
+                round(_run_cost(auth_kind, merged, meter), 4) if _run_cost_known(auth_kind, merged) else None
+            ),
+            "cost_known": _run_cost_known(auth_kind, merged),
         }
     finally:
         _finalize_reservation(reservation_id, auth_kind, merged, meter)

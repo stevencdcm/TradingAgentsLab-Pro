@@ -1,3 +1,6 @@
+import { formatRunDuration } from '../lib/duration';
+import { findNotices,
+  findLimitations, findResearch, researchNotes } from '../lib/research-notes';
 import { useEffect, useRef, useState } from 'react';
 import type {
   DebateEvent,
@@ -7,8 +10,12 @@ import type {
   NewsHeadlinesEvent,
 } from '../lib/engine-client';
 import Markdown from './Markdown';
-import { normalizeStance, riskLabel, stanceLabel, stanceLean } from '../lib/stance';
+import { isReview, normalizeStance, riskLabel, stanceLabel, stanceLean } from '../lib/stance';
+import { useI18n, type I18n } from '../i18n';
+import { localizeEngineError } from '../lib/engine-errors';
 import styles from './DebateStream.module.css';
+
+type Tr = I18n['t'];
 
 interface DebateStreamProps {
   events: DebateEvent[];
@@ -146,24 +153,19 @@ export function computeProgress(events: DebateEvent[]): {
 
 /** Format elapsed milliseconds for the live clock. Compact: "12s",
  * "1m 24s", "1h 02m". Long-form (1h+) is for slow local models. */
-function formatElapsed(ms: number): string {
-  if (ms < 0) return '0s';
+function formatElapsed(ms: number, t: Tr): string {
+  if (ms < 0) return t('debate.elapsed.s', { s: 0 });
   const totalSec = Math.floor(ms / 1000);
-  if (totalSec < 60) return `${totalSec}s`;
+  if (totalSec < 60) return t('debate.elapsed.s', { s: totalSec });
   const totalMin = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
-  if (totalMin < 60) return `${totalMin}m ${String(sec).padStart(2, '0')}s`;
+  if (totalMin < 60) {
+    return t('debate.elapsed.ms', { m: totalMin, s: String(sec).padStart(2, '0') });
+  }
   const hr = Math.floor(totalMin / 60);
   const min = totalMin % 60;
-  return `${hr}h ${String(min).padStart(2, '0')}m`;
+  return t('debate.elapsed.hm', { h: hr, m: String(min).padStart(2, '0') });
 }
-
-const PHASE_SHORT_LABEL: Record<string, string> = {
-  analysts: 'Analysts',
-  researchers: 'Researchers',
-  trader: 'Trader',
-  risk: 'Risk',
-};
 
 function findSummary(events: DebateEvent[]): QuoteSummary | null {
   const ev = events.find((e) => e.type === 'data.summary');
@@ -179,15 +181,16 @@ function findHeadlines(events: DebateEvent[]): NewsHeadlinesEvent | null {
   return ev && ev.type === 'news.headlines' ? ev : null;
 }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string, i18n: I18n): string {
   const ts = new Date(iso).getTime();
   if (Number.isNaN(ts)) return '';
   const diffSec = Math.round((Date.now() - ts) / 1000);
-  if (diffSec < 60) return 'just now';
-  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`;
-  if (diffSec < 86400 * 7) return `${Math.round(diffSec / 86400)}d ago`;
-  return new Date(iso).toLocaleDateString();
+  const { t } = i18n;
+  if (diffSec < 60) return t('debate.time.justNow');
+  if (diffSec < 3600) return t('debate.time.minutesAgo', { n: Math.round(diffSec / 60) });
+  if (diffSec < 86400) return t('debate.time.hoursAgo', { n: Math.round(diffSec / 3600) });
+  if (diffSec < 86400 * 7) return t('debate.time.daysAgo', { n: Math.round(diffSec / 86400) });
+  return i18n.formatDateTime(iso, { dateStyle: 'medium' });
 }
 
 function formatVolume(n: number): string {
@@ -252,7 +255,8 @@ interface DecisionMeta {
   model?: string;
   inputTokens?: number;
   outputTokens?: number;
-  estimatedCostUsd?: number;
+  estimatedCostUsd?: number | null;
+  elapsedS?: number | null;
 }
 
 function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
@@ -265,6 +269,7 @@ function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
       inputTokens: complete.input_tokens,
       outputTokens: complete.output_tokens,
       estimatedCostUsd: complete.estimated_cost_usd,
+      elapsedS: complete.elapsed_s ?? null,
     };
   }
   return { live: false };
@@ -278,62 +283,70 @@ function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
  * styling read as "stopped" vs "failed". */
 interface TerminalState {
   kind: 'token_cap' | 'error';
-  message: string;
+  /** token_cap: cap + used; error: the raw engine error text. */
+  cap?: number | null;
+  used?: number;
+  error?: string;
 }
 
 function findTerminal(events: DebateEvent[]): TerminalState | null {
   for (const ev of events) {
     if (ev.type === 'run.token_cap') {
-      return {
-        kind: 'token_cap',
-        message:
-          ev.cap != null
-            ? `Analysis stopped: token cap of ${ev.cap.toLocaleString()} reached (used ${ev.used.toLocaleString()}).`
-            : `Analysis stopped: token cap reached (used ${ev.used.toLocaleString()}).`,
-      };
+      return { kind: 'token_cap', cap: ev.cap, used: ev.used };
     }
     if (ev.type === 'run.error') {
-      return { kind: 'error', message: ev.error };
+      return { kind: 'error', error: ev.error };
     }
   }
   return null;
 }
 
-const PHASE_LABEL: Record<string, string> = {
-  analysts: 'Analysts',
-  researchers: 'Researchers',
-  trader: 'Trader',
-  risk: 'Risk',
-};
+/** Known wire phase ids (anything else renders its raw id). */
+const KNOWN_PHASES = ['analysts', 'researchers', 'trader', 'risk'] as const;
+type KnownPhase = (typeof KNOWN_PHASES)[number];
+const isKnownPhase = (p: string): p is KnownPhase => (KNOWN_PHASES as readonly string[]).includes(p);
 
-const PHASE_DESCRIPTION: Record<string, string> = {
-  analysts: 'Technical · Fundamental · News · Sentiment',
-  researchers: 'Bull · Bear · Research Manager',
-  trader: 'Trade plan',
-  risk: 'Aggressive · Conservative · Neutral · Portfolio Manager',
-};
+const KNOWN_AGENTS = [
+  'technical_analyst',
+  'fundamental_analyst',
+  'news_analyst',
+  'sentiment_analyst',
+  'bull_researcher',
+  'bear_researcher',
+  'research_manager',
+  'trader',
+  'risk_aggressive',
+  'risk_conservative',
+  'risk_neutral',
+  'portfolio_manager',
+] as const;
+type KnownAgent = (typeof KNOWN_AGENTS)[number];
+const isKnownAgent = (a: string): a is KnownAgent => (KNOWN_AGENTS as readonly string[]).includes(a);
 
 /* Present-tense narration of what the active phase is doing, for the live
    status banner. Each agent turn takes 20-60s of silent LLM work, so this plus
    the always-moving shimmer bar and ticking clock reassures the user that the
    run is progressing rather than stuck. */
-const PHASE_ACTIVITY: Record<string, string> = {
-  analysts: 'Analysts are gathering market data and forming their views',
-  researchers: 'Researchers are debating the bull and bear case',
-  trader: 'The trader is shaping a concrete plan',
-  risk: 'Risk managers are stress-testing the decision',
-};
 
 // Founder-measured real full-graph runs (2026-07-06, TSLA, all four
 // analysts): ~11m30s on Anthropic API; OAuth/OpenAI in the same band.
 // Varies with provider, model split, debate rounds, and analyst count,
 // so the copy quotes a range rather than a point estimate.
-const TYPICAL_DURATION = 'Typically 8 to 15 minutes';
-
 function DebateStream({ events, isStreaming }: DebateStreamProps) {
+  const i18n = useI18n();
+  const { t, tp } = i18n;
   const start = findStart(events);
   const summary = findSummary(events);
   const news = findHeadlines(events);
+  const evidencePack = events.find((e) => e.type === 'evidence.pack') as
+    | Extract<DebateEvent, { type: 'evidence.pack' }>
+    | undefined;
+  const dexter = events.find((e) => e.type === 'dexter.result') as
+    | Extract<DebateEvent, { type: 'dexter.result' }>
+    | undefined;
+  const notices = findNotices(events);
+  const researchNotesList = researchNotes(findResearch(events), t, i18n.formatNumber);
+  const limitations = findLimitations(findResearch(events));
   const groups = groupByPhase(events);
   const decision = findDecision(events);
   const meta = findDecisionMeta(events);
@@ -400,16 +413,18 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
   const activePhase = progress.phases.find((p) => p.state === 'active')?.phase ?? null;
   const usingTools = events[events.length - 1]?.type === 'agent.activity';
   const liveNarration = usingTools
-    ? 'Fetching market data and running the tools'
+    ? t('debate.narration.tools')
     : activePhase
-      ? PHASE_ACTIVITY[activePhase] ?? 'Working through the diligence'
-      : 'Starting the diligence';
+      ? isKnownPhase(activePhase)
+        ? t(`debate.phaseActivity.${activePhase}` as const)
+        : t('debate.narration.working')
+      : t('debate.narration.starting');
 
   return (
     <section className={styles.stream}>
       {start && (
         <header className={styles.header}>
-          <div className={styles.headerLabel}>Session</div>
+          <div className={styles.headerLabel}>{t('debate.session')}</div>
           <div className={styles.headerTitle}>
             <span className={styles.ticker}>{start.ticker}</span>
             <span className={styles.headerSep}>·</span>
@@ -418,20 +433,112 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
           {isStreaming && (
             <div className={styles.streamingBadge}>
               <span className={styles.streamingDot} />
-              Diligence
+              {t('debate.badge')}
             </div>
           )}
         </header>
       )}
 
+      {evidencePack && (
+        <div className={styles.news} data-testid="evidence-pack">
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('evidence.title')}</span>
+            <span className={styles.newsSource}>
+              {t('evidence.snapshot', { id: evidencePack.snapshot_id.slice(0, 12), asOf: evidencePack.as_of.slice(0, 10) })}
+            </span>
+          </div>
+          <ul className={styles.newsList}>
+            {evidencePack.unknowns.map((u, i) => (
+              <li key={i} className={styles.newsItem}>
+                <span className={styles.newsMeta}>{t('evidence.unknown')} {u}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {dexter && (
+        <div className={styles.news} data-testid="dexter-result" data-status={dexter.status}>
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('dexter.title')}</span>
+            <span className={styles.newsSource}>
+              {dexter.ran === false ? `${t('dexter.notRun')} · ` : ''}
+              {t(`dexter.status.${dexter.status}` as const)}
+              {dexter.reason ? ` · ${dexter.reason}` : ''}
+              {dexter.usage?.measured
+                ? ` · ${t('dexter.tokens', { n: i18n.formatNumber(dexter.usage.total_tokens ?? 0) })}`
+                : ''}
+            </span>
+          </div>
+          <ul className={styles.newsList}>
+            {dexter.findings.map((f) => (
+              <li key={f.id} className={styles.newsItem} data-verification={f.verification}>
+                <span className={styles.newsTitle}>
+                  {f.verification === 'verified' ? '✓' : '✗'} {f.claim}
+                </span>
+                <span className={styles.newsMeta}>
+                  {f.citations.map((c) => `[${c.kind} ${c.period}]`).join(' ')}
+                  {f.verification === 'unverified' && f.reason ? ` · ${t('dexter.unverified')}: ${f.reason}` : ''}
+                  {f.verification === 'verified' && f.point_in_time === 'unknown' ? ` · ${t('dexter.pitUnknown')}` : ''}
+                </span>
+              </li>
+            ))}
+            {dexter.findings.length === 0 && (
+              <li className={styles.newsItem}>
+                <span className={styles.newsMeta}>{t('dexter.noFindings')}</span>
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {notices.length > 0 && (
+        <div className={styles.news} data-testid="run-notices">
+          <ul className={styles.newsList}>
+            {notices.map((n, i) => (
+              <li key={i} className={styles.newsItem}>
+                <span className={styles.newsMeta}>{n}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {limitations.length > 0 && (
+        <div className={styles.news} data-testid="run-limitations">
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('limits.title')}</span>
+          </div>
+          <ul className={styles.newsList}>
+            {limitations.map((x) => (
+              <li key={x.code} className={styles.newsItem} data-code={x.code}>
+                <span className={styles.newsMeta}>{x.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {researchNotesList.length > 0 && (
+        <div className={styles.news} data-testid="research-notes">
+          <ul className={styles.newsList}>
+            {researchNotesList.map((n, i) => (
+              <li key={i} className={styles.newsItem}>
+                <span className={styles.newsMeta}>{n}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {summary && (
         <div className={styles.summaryStrip}>
           <div className={styles.summaryItem}>
-            <span className={styles.summaryLabel}>Last close</span>
+            <span className={styles.summaryLabel}>{t('debate.summary.lastClose')}</span>
             <span className={styles.summaryValue}>{summary.last_close.toFixed(2)}</span>
           </div>
           <div className={styles.summaryItem}>
-            <span className={styles.summaryLabel}>Period change</span>
+            <span className={styles.summaryLabel}>{t('debate.summary.periodChange')}</span>
             <span
               className={
                 summary.period_change_pct >= 0
@@ -444,17 +551,24 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
             </span>
           </div>
           <div className={styles.summaryItem}>
-            <span className={styles.summaryLabel}>Range</span>
+            <span className={styles.summaryLabel}>{t('debate.summary.range')}</span>
             <span className={styles.summaryValue}>
-              {summary.period_low.toFixed(2)} to {summary.period_high.toFixed(2)}
+              {t('debate.summary.rangeValue', {
+                low: summary.period_low.toFixed(2),
+                high: summary.period_high.toFixed(2),
+              })}
             </span>
           </div>
           <div className={styles.summaryItem}>
-            <span className={styles.summaryLabel}>Avg volume</span>
+            <span className={styles.summaryLabel}>{t('debate.summary.avgVolume')}</span>
             <span className={styles.summaryValue}>{formatVolume(summary.avg_volume)}</span>
           </div>
           <div className={styles.summarySource}>
-            {summary.sessions} sessions · {summary.source} · as of {summary.as_of}
+            {t('debate.summary.source', {
+              sessions: summary.sessions,
+              source: summary.source,
+              asOf: summary.as_of,
+            })}
           </div>
         </div>
       )}
@@ -466,7 +580,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
           ticks a live elapsed clock. After the decision lands, it
           freezes on the final state so the user can see "12 of 12
           agents · 1m 24s" alongside the conclusion. */}
-      <div className={styles.progress} aria-label="Debate progress">
+      <div className={styles.progress} aria-label={t('debate.progress.aria')}>
         {streaming && (
           <div className={styles.liveStatus} aria-live="polite">
             <div className={styles.liveStatusRow}>
@@ -474,9 +588,9 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
               <span className={styles.liveNarration}>{liveNarration}</span>
               <span className={styles.liveTiming}>
                 {elapsedMs !== null && (
-                  <span className={styles.liveElapsed}>{formatElapsed(elapsedMs)}</span>
+                  <span className={styles.liveElapsed}>{formatElapsed(elapsedMs, t)}</span>
                 )}
-                <span className={styles.liveHint}>{TYPICAL_DURATION}</span>
+                <span className={styles.liveHint}>{t('debate.typicalDuration')}</span>
               </span>
             </div>
             <div className={styles.liveBar} aria-hidden="true">
@@ -497,7 +611,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                 {p.state === 'done' ? '✓' : p.state === 'active' ? '●' : '○'}
               </span>
               <span className={styles.progressPhaseLabel}>
-                {PHASE_SHORT_LABEL[p.phase] ?? p.phase}
+                {isKnownPhase(p.phase) ? t(`debate.phase.${p.phase}` as const) : p.phase}
               </span>
               <span className={styles.progressPhaseCount}>
                 {p.done}/{p.total}
@@ -507,15 +621,18 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
         </div>
         <div className={styles.progressFooter}>
           <span>
-            {progress.totalDone} of {progress.totalAgents} agents
+            {t('debate.footer.agents', {
+              done: progress.totalDone,
+              total: progress.totalAgents,
+            })}
           </span>
           {elapsedMs !== null && (
             <>
               <span className={styles.progressSep}>·</span>
               <span>
                 {endedAtRef.current !== null
-                  ? `Diligence complete in ${formatElapsed(elapsedMs)}`
-                  : `Diligence in progress · ${formatElapsed(elapsedMs)}`}
+                  ? t('debate.footer.complete', { elapsed: formatElapsed(elapsedMs, t) })
+                  : t('debate.footer.inProgress', { elapsed: formatElapsed(elapsedMs, t) })}
               </span>
             </>
           )}
@@ -525,9 +642,9 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
       {news && news.headlines.length > 0 && (
         <div className={styles.news}>
           <div className={styles.newsHeader}>
-            <span className={styles.newsLabel}>News</span>
+            <span className={styles.newsLabel}>{t('debate.news')}</span>
             <span className={styles.newsSource}>
-              {news.headlines.length} headline{news.headlines.length === 1 ? '' : 's'} · {news.source}
+              {tp('debate.news.count', news.headlines.length, { source: news.source })}
             </span>
           </div>
           <ul className={styles.newsList}>
@@ -546,7 +663,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                   <span className={styles.newsTitle}>{h.title}</span>
                 )}
                 <span className={styles.newsMeta}>
-                  {[h.publisher, h.pub_date && formatRelativeTime(h.pub_date)]
+                  {[h.publisher, h.pub_date && formatRelativeTime(h.pub_date, i18n)]
                     .filter(Boolean)
                     .join(' · ')}
                 </span>
@@ -563,19 +680,21 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
         >
           <div className={styles.phaseHeader}>
             <span className={styles.phaseLabel}>
-              {PHASE_LABEL[group.phase] ?? group.phase}
+              {isKnownPhase(group.phase) ? t(`debate.phase.${group.phase}` as const) : group.phase}
             </span>
             <span className={styles.phaseDescription}>
-              {PHASE_DESCRIPTION[group.phase] ?? ''}
+              {isKnownPhase(group.phase) ? t(`debate.phaseDesc.${group.phase}` as const) : ''}
             </span>
           </div>
           <div className={styles.messages}>
             {group.messages.map((msg, idx) => (
               <article key={`${msg.agent}-${idx}`} className={styles.message}>
-                <div className={styles.messageAgent}>
-                  {msg.agent}
+                <div className={styles.messageAgent} title={msg.agent}>
+                  {isKnownAgent(msg.agent) ? t(`agent.${msg.agent}` as const) : msg.agent}
                   {msg.round != null && msg.round > 0 && (
-                    <span className={styles.messageRound}> · round {msg.round}</span>
+                    <span className={styles.messageRound}>
+                      {t('debate.round', { round: msg.round })}
+                    </span>
                   )}
                 </div>
                 <div className={styles.messageContent}>
@@ -594,26 +713,38 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
           data-stance={normalizeStance(decision.stance)}
         >
           <div className={styles.decisionLabel}>
-            Committee Assessment
+            {t('debate.decision.label')}
             {meta.live && (
               <span className={styles.decisionLiveBadge}>
-                Live · {meta.provider ?? 'openai'} · {meta.model ?? '?'}
+                {t('debate.decision.live', {
+                  provider: meta.provider ?? 'openai',
+                  model: meta.model ?? '?',
+                })}
+                {' · '}
+                <span data-testid="decision-duration">{formatRunDuration(meta.elapsedS, t)}</span>
               </span>
             )}
           </div>
           <div className={styles.decisionAction} data-testid="decision-stance">
-            {stanceLabel(decision.stance)}
+            {stanceLabel(decision.stance, t)}
           </div>
-          <div className={styles.decisionConfidence}>
-            Conviction{' '}
-            <span className={styles.decisionConfidenceValue}>
-              {(decision.conviction * 100).toFixed(0)}%
-            </span>
-          </div>
+          {isReview(decision.stance) && (
+            <div className={styles.decisionConfidence} data-testid="decision-review-note">
+              {t('debate.decision.reviewNote')}
+            </div>
+          )}
+          {!isReview(decision.stance) && (
+            <div className={styles.decisionConfidence}>
+              {t('debate.decision.conviction')}{' '}
+              <span className={styles.decisionConfidenceValue}>
+                {(decision.conviction * 100).toFixed(0)}%
+              </span>
+            </div>
+          )}
           {decision.bull_strength != null && decision.bear_strength != null && (
             <div className={styles.decisionStrengths}>
               <div className={styles.strengthRow}>
-                <span className={styles.strengthName}>Bull thesis</span>
+                <span className={styles.strengthName}>{t('debate.decision.bull')}</span>
                 <div className={styles.strengthTrack}>
                   <div
                     className={styles.strengthFillBull}
@@ -625,7 +756,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                 </span>
               </div>
               <div className={styles.strengthRow}>
-                <span className={styles.strengthName}>Bear thesis</span>
+                <span className={styles.strengthName}>{t('debate.decision.bear')}</span>
                 <div className={styles.strengthTrack}>
                   <div
                     className={styles.strengthFillBear}
@@ -638,7 +769,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
               </div>
               {decision.risk_level != null && (
                 <div className={styles.riskChip} data-risk={String(decision.risk_level)}>
-                  Risk: {riskLabel(decision.risk_level)}
+                  {t('debate.decision.risk', { risk: riskLabel(decision.risk_level, t) })}
                 </div>
               )}
             </div>
@@ -648,7 +779,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
               <div className={styles.decisionTargets}>
                 {decision.price_target != null && (
                   <span className={styles.decisionTarget}>
-                    <span className={styles.decisionTargetLabel}>Modeled scenario</span>
+                    <span className={styles.decisionTargetLabel}>{t('debate.decision.scenario')}</span>
                     <span className={styles.decisionTargetValue}>
                       {decision.price_target.toFixed(2)}
                     </span>
@@ -656,7 +787,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                 )}
                 {decision.time_horizon && (
                   <span className={styles.decisionTarget}>
-                    <span className={styles.decisionTargetLabel}>Horizon</span>
+                    <span className={styles.decisionTargetLabel}>{t('debate.decision.horizon')}</span>
                     <span className={styles.decisionTargetValue}>
                       {decision.time_horizon}
                     </span>
@@ -667,27 +798,28 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
             <Markdown>{decision.reasoning}</Markdown>
           </div>
           <div className={styles.decisionOwnership}>
-            This assessment is an analytical output of a simulated research
-            committee, not a recommendation. Any investment decision is yours
-            alone.
+            {t('debate.decision.ownership')}
           </div>
           {meta.live && (meta.estimatedCostUsd !== undefined || meta.inputTokens !== undefined) && (
             <div className={styles.decisionUsage}>
               {meta.inputTokens !== undefined && meta.outputTokens !== undefined && (
                 <span>
-                  {meta.inputTokens.toLocaleString()} in · {meta.outputTokens.toLocaleString()} out tokens
+                  {t('debate.decision.tokens', {
+                    input: i18n.formatNumber(meta.inputTokens),
+                    output: i18n.formatNumber(meta.outputTokens),
+                  })}
                 </span>
               )}
-              {meta.estimatedCostUsd !== undefined && (
+              {meta.estimatedCostUsd === null && <span>{t('debate.decision.costUnknown')}</span>}
+              {typeof meta.estimatedCostUsd === 'number' && (
                 <span>
-                  est cost ${meta.estimatedCostUsd.toFixed(4)}
+                  {t('debate.decision.cost', { cost: `$${meta.estimatedCostUsd.toFixed(4)}` })}
                 </span>
               )}
             </div>
           )}
           <div className={styles.decisionDisclaimer}>
-            Not investment advice · LLM output may be inaccurate · Verify
-            independently before any action
+            {t('debate.decision.disclaimer')}
           </div>
         </div>
       )}
@@ -701,13 +833,37 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
           data-terminal={terminal.kind}
         >
           <div className={styles.decisionLabel}>
-            {terminal.kind === 'token_cap' ? 'Analysis stopped' : 'Analysis failed'}
+            {terminal.kind === 'token_cap' ? t('debate.terminal.stopped') : t('debate.terminal.failed')}
           </div>
-          <div className={styles.decisionReasoning}>{terminal.message}</div>
+          <div className={styles.decisionReasoning}>
+            {terminal.kind === 'token_cap' ? (
+              terminal.cap != null ? (
+                t('debate.terminal.capWithCap', {
+                  cap: i18n.formatNumber(terminal.cap),
+                  used: i18n.formatNumber(terminal.used ?? 0),
+                })
+              ) : (
+                t('debate.terminal.cap', { used: i18n.formatNumber(terminal.used ?? 0) })
+              )
+            ) : (
+              (() => {
+                const e = localizeEngineError(terminal.error ?? '', i18n);
+                return e.localized ? (
+                  <>
+                    {e.text}
+                    <br />
+                    <small>{t('err.original', { text: e.original })}</small>
+                  </>
+                ) : (
+                  e.text
+                );
+              })()
+            )}
+          </div>
           <div className={styles.decisionDisclaimer}>
             {terminal.kind === 'token_cap'
-              ? 'The token cap is a safety backstop. Raise it in Settings to allow a longer run.'
-              : 'No decision was produced. Check the engine logs or try again.'}
+              ? t('debate.terminal.capHint')
+              : t('debate.terminal.errorHint')}
           </div>
         </div>
       )}
@@ -715,17 +871,17 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
       {webhookReport && webhookReport.results.length > 0 && (
         <div className={styles.webhooks} data-testid="webhook-report">
           <div className={styles.webhooksHeader}>
-            <span className={styles.webhooksLabel}>Webhooks</span>
+            <span className={styles.webhooksLabel}>{t('debate.webhooks')}</span>
             <span className={styles.webhooksSummary}>
               {(() => {
                 const fired = webhookReport.results.filter((r) => r.status === 'fired').length;
                 const filtered = webhookReport.results.filter((r) => r.status === 'filtered').length;
                 const failed = webhookReport.results.filter((r) => r.status === 'failed').length;
                 const parts: string[] = [];
-                if (fired) parts.push(`${fired} fired`);
-                if (filtered) parts.push(`${filtered} filtered`);
-                if (failed) parts.push(`${failed} failed`);
-                return parts.join(' · ') || 'none';
+                if (fired) parts.push(t('debate.webhooks.fired', { n: fired }));
+                if (filtered) parts.push(t('debate.webhooks.filtered', { n: filtered }));
+                if (failed) parts.push(t('debate.webhooks.failed', { n: failed }));
+                return parts.join(' · ') || t('debate.webhooks.none');
               })()}
             </span>
           </div>
@@ -742,10 +898,15 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                 </span>
                 <span className={styles.webhookName}>{r.name}</span>
                 <span className={styles.webhookDetail}>
-                  {r.status === 'filtered' && 'filter did not match'}
-                  {r.status === 'fired' && r.http_status && `HTTP ${r.http_status}`}
+                  {r.status === 'filtered' && t('debate.webhooks.filterMiss')}
+                  {r.status === 'fired' &&
+                    r.http_status &&
+                    t('debate.webhooks.http', { status: r.http_status })}
                   {r.status === 'failed' &&
-                    (r.error || (r.http_status ? `HTTP ${r.http_status}` : 'failed'))}
+                    (r.error ||
+                      (r.http_status
+                        ? t('debate.webhooks.http', { status: r.http_status })
+                        : t('debate.webhooks.failedShort')))}
                 </span>
               </li>
             ))}

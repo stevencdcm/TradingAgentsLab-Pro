@@ -12,6 +12,7 @@ Auth: all endpoints require `Authorization: Bearer <token>` header (or
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import os
 import sys
 import time
@@ -936,12 +937,20 @@ def build_app(*, token: str) -> FastAPI:
                 # Each agent.message arrives as the LLM response completes — we
                 # throttle a little between events so the UI's transition
                 # animations are still visible.
-                async for event in debate_events:
-                    if isinstance(event, dict) and event.get("type") == "run.error" and isinstance(event.get("error"), str):
-                        event = {**event, "error": llm_providers.local_auth_hint(config, event["error"])}
-                    await ws.send_json(event)
-                    captured_events.append(event)
-                    await asyncio.sleep(0.15)
+                hb_meta = {
+                    "provider": config.provider, "model": config.model, "auth_kind": config.auth_kind,
+                    "route": "taiwan" if tw_mode else ("full" if is_pro else "simplified"),
+                }
+                async with aclosing(with_heartbeat(debate_events, meta=hb_meta)) as beating:
+                  async for event in beating:
+                      if isinstance(event, dict) and event.get("type") == "run.heartbeat":
+                          await ws.send_json(event)      # liveness only: not stored, no pacing sleep
+                          continue
+                      if isinstance(event, dict) and event.get("type") == "run.error" and isinstance(event.get("error"), str):
+                          event = {**event, "error": llm_providers.local_auth_hint(config, event["error"])}
+                      await ws.send_json(event)
+                      captured_events.append(event)
+                      await asyncio.sleep(0.15)
             else:
                 # Stub debate path — same UX, deterministic content.
                 for event in canned_debate(
@@ -1016,6 +1025,49 @@ def build_app(*, token: str) -> FastAPI:
                 run_slot["busy"] = False
 
     return app
+
+
+HEARTBEAT_INTERVAL_S = float(os.environ.get("TAL_HEARTBEAT_S", "5"))
+
+
+async def with_heartbeat(agen, *, meta: dict, interval: float = 0.0):
+    """Yield every event of `agen` unchanged and, while it is silent, a lightweight
+    `run.heartbeat` every `interval` seconds.
+
+    A heartbeat proves only that the ENGINE PROCESS and the socket are alive and how long it has been
+    since the last REAL event; it says nothing about whether the model is generating (the engines call
+    models non-streaming, so there is nothing finer to report). It carries no content, no tokens and is
+    never persisted. Cleanup of the wrapped generator is guaranteed on early exit / disconnect."""
+    interval = interval or HEARTBEAT_INTERVAL_S
+    it = agen.__aiter__()
+    t0 = last = time.monotonic()
+    pending = asyncio.ensure_future(it.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            now = time.monotonic()
+            if not done:
+                yield {"type": "run.heartbeat", "elapsed_s": round(now - t0, 1), "since_event_s": round(now - last, 1), **meta}
+                continue
+            try:
+                ev = pending.result()
+            except StopAsyncIteration:
+                return
+            last = time.monotonic()
+            pending = asyncio.ensure_future(it.__anext__())
+            yield ev
+    finally:
+        pending.cancel()
+        try:
+            await pending
+        except BaseException:  # noqa: BLE001 — cancelled / already exhausted
+            pass
+        aclose = getattr(agen, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except BaseException:  # noqa: BLE001
+                pass
 
 
 def _persist_session_safe(

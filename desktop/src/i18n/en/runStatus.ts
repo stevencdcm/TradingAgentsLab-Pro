@@ -4,6 +4,7 @@ export const runStatus = {
   'runStatus.state.connecting': 'Connecting to the engine…',
   'runStatus.state.waiting_model': 'Waiting for the model’s response',
   'runStatus.state.using_tools': 'Agent is using tools',
+  'runStatus.state.demo': 'Demo run — no model is called',
   'runStatus.state.completed': 'Completed',
   'runStatus.state.failed': 'Failed',
   'runStatus.state.stopped': 'Stopped',

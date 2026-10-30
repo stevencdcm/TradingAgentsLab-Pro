@@ -41,13 +41,15 @@ export default function RunStatus({ events, clock, streaming, provider, model }:
     model,
     totalSteps: events.some((e) => e.type === 'graph.plan') ? total : null,
   });
+  // No provider configured and no engine heartbeat: this is the canned demo run, no model is being called.
+  const demo = !provider && !clock.heartbeat && (v.state === 'waiting_model' || v.state === 'connecting');
   const live = streaming && v.state !== 'completed';
   const note =
     v.quiet === 'no_heartbeat'
       ? t('runStatus.note.noHeartbeat', { age: fmt(v.heartbeatAgeMs ?? now - clock.startedAt) })
       : v.quiet === 'quiet'
         ? t('runStatus.note.quiet', { age: fmt(v.sinceEventMs ?? now - clock.startedAt) })
-        : v.state === 'waiting_model'
+        : v.state === 'waiting_model' && !demo
           ? t('runStatus.note.waiting')
           : v.state === 'disconnected'
             ? t('runStatus.note.disconnected', { error: clock.streamError ?? '' })
@@ -59,7 +61,7 @@ export default function RunStatus({ events, clock, streaming, provider, model }:
         <span className={styles.title}>{t('runStatus.title')}</span>
         <span className={`${styles.state} ${styles[`s_${v.state}`] ?? ''}`}>
           {live && v.quiet === 'none' && <span className={styles.dot} aria-hidden="true" />}
-          {t(`runStatus.state.${v.state}` as const)}
+          {demo ? t('runStatus.state.demo') : t(`runStatus.state.${v.state}` as const)}
         </span>
       </div>
       <dl className={styles.grid}>

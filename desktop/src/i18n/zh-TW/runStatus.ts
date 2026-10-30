@@ -5,6 +5,7 @@ export const runStatusZhTW: Record<keyof typeof runStatus, string> = {
   'runStatus.state.connecting': '正在連線到分析引擎…',
   'runStatus.state.waiting_model': '等待模型回應',
   'runStatus.state.using_tools': '代理人正在使用工具',
+  'runStatus.state.demo': '示範模式——沒有呼叫模型',
   'runStatus.state.completed': '已完成',
   'runStatus.state.failed': '失敗',
   'runStatus.state.stopped': '已停止',

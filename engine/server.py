@@ -319,6 +319,7 @@ def build_app(*, token: str) -> FastAPI:
             model=req.model,
             auth_kind=req.auth_kind,
             max_tokens=req.max_tokens,
+            extra_models=req.extra_models,
         )
         return cost_guard.check_result_to_dict(result)
 
@@ -564,6 +565,7 @@ def build_app(*, token: str) -> FastAPI:
                 auth_kind=req.auth_kind,
                 max_tokens=req.max_tokens,
                 override=req.override,
+                extra_models=req.extra_models,
             )
         except cost_guard.CostGuardBlocked as exc:
             # 402 Payment Required — semantic match for "you can't afford
@@ -903,6 +905,19 @@ def build_app(*, token: str) -> FastAPI:
                     if is_pro
                     else config.model
                 )
+                # EVERY model the run can bill must be priced: Pro deep AND quick, plus the main model (Dexter).
+                guard_models = [m for m in ((pro_lib_config or {}).get("quick_think_llm") if is_pro else None, config.model) if m]
+                if reservation_id and config.auth_kind not in ("oauth", "local") and cost_guard.get_config().enabled \
+                        and cost_guard.unpriced_paid(reserve_model, config.auth_kind, guard_models) \
+                        and not cost_guard.reservation_override(reservation_id):
+                    evt = {"type": "cost.blocked", "over_dimension": "unknown_price",
+                           "spend": cost_guard.spend_to_dict(cost_guard.check(model=reserve_model, auth_kind=config.auth_kind, max_tokens=config.max_tokens, extra_models=guard_models).current),
+                           "config": cost_guard.config_to_dict(cost_guard.get_config()), "est_cost_usd": 0.0,
+                           "message": "A model in this run has no verified price, so its cost is unknown. Use an explicit per-run override to continue."}
+                    await ws.send_json(evt)
+                    captured_events.append(evt)
+                    await ws.close(code=1008, reason="cost_guard_blocked")
+                    return
 
                 # CostGuard auto-reserve when the renderer didn't pre-reserve.
                 # Older renderer versions don't send reservation_id; rather
@@ -917,6 +932,7 @@ def build_app(*, token: str) -> FastAPI:
                             auth_kind=config.auth_kind,
                             max_tokens=config.max_tokens,
                             override=False,
+                            extra_models=guard_models,
                         )
                         reservation_id = auto.reservation_id
                     except cost_guard.CostGuardBlocked as exc:
@@ -1356,6 +1372,8 @@ class CostGuardConfigRequest(BaseModel):
 
 class CostGuardCheckRequest(BaseModel):
     model: str = Field(min_length=1, max_length=120)
+    # Other models the same run can bill (Pro quick model, ...): any unpriced one makes the run's cost unknown.
+    extra_models: list[str] = Field(default_factory=list, max_length=6)
     # Allowed auth kinds: api_key, oauth, local. Local runs are $0 and
     # bypass the USD caps the same way OAuth does (see cost_guard.py
     # `_exceeds_any_cap`); validating it here keeps the pattern + the

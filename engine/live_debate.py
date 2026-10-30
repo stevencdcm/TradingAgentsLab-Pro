@@ -754,10 +754,12 @@ async def live_debate(
                 # normal completion. OAuth always finalizes at 0.0.
                 final_cost = (
                     0.0
-                    if config.auth_kind == "oauth"
+                    if config.auth_kind in ("oauth", "local")
                     else estimate_cost(
                         config.model, state.input_tokens, state.output_tokens
                     )
+                    if is_priced(config.model)
+                    else None            # unknown price: settle as NULL (unknown), never as a fake 0
                 )
                 _cost_guard.finalize_reservation(
                     reservation_id, actual_cost_usd=final_cost

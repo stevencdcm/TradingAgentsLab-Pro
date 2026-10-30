@@ -117,6 +117,8 @@ export async function runAnalysis(
       model: cgModel,
       auth_kind: providerConfig.auth.type,
       max_tokens: maxTokens,
+      // Every other model this run can bill (Pro quick model, main model for Dexter): an unpriced one makes the cost unknown.
+      extra_models: [proConfig.quick_think_llm, providerConfig.model].filter((m): m is string => !!m && m !== cgModel),
     };
     try {
       const reservation = await reserveCostGuard(reserveReq);

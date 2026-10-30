@@ -103,6 +103,8 @@ async def dexter_stage(*, pack: dict, path: Path, out_dir: Path, config: Provide
     billable = config.auth_kind not in ("oauth", "local")
     worst = worst_case_job_cost(config.model, HARD_LIMITS["max_total_tokens"]) if billable else 0.0
     blocked = cost_guard.check_extra_usd(est_cost_usd=worst or 0.0, auth_kind=config.auth_kind) if model is not None else None
+    if model is not None and billable and not is_priced(config.model):
+        blocked = "unknown_price"          # never start an extra paid job whose cost cannot be bounded
     if not run_dexter or model is None or blocked:
         reason = unsupported or ("cost_guard_blocked:" + blocked if blocked else "disabled")
         dexter = {"schema": "her30.dexter.result/1", "status": "unsupported", "reason": reason, "findings": [],

@@ -372,6 +372,7 @@ def check(
     model: str,
     auth_kind: str,
     max_tokens: int,
+    extra_models: Optional[list[str]] = None,
 ) -> CheckResult:
     """Non-mutating preview: would this session be allowed under current caps?
 
@@ -394,7 +395,7 @@ def check(
             config=config,
             est_reservation_usd=est,
         )
-    over = "unknown_price" if unpriced_paid(model, auth_kind) else _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
+    over = "unknown_price" if unpriced_paid(model, auth_kind, extra_models) else _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
     return CheckResult(
         allow=over is None,
         over_dimension=over,
@@ -405,10 +406,13 @@ def check(
     )
 
 
-def unpriced_paid(model: str, auth_kind: str) -> bool:
-    """A per-token (API-key) run whose model has no verified price. Its cost is UNKNOWN, not zero, so
-    the USD caps cannot protect it; with caps enabled it is refused until the user overrides explicitly."""
-    return auth_kind not in ("oauth", "local") and model not in _COST_PER_M_TOKENS
+def unpriced_paid(model: str, auth_kind: str, extra_models: Optional[list[str]] = None) -> bool:
+    """A per-token (API-key) run in which ANY model (main, Pro deep, Pro quick, Dexter) has no verified price. Its
+    cost is UNKNOWN, not zero, so the USD caps cannot protect it; with caps enabled it is refused until the user
+    overrides explicitly."""
+    if auth_kind in ("oauth", "local"):
+        return False
+    return any(m and m not in _COST_PER_M_TOKENS for m in [model, *(extra_models or [])])
 
 
 def check_extra_usd(*, est_cost_usd: float, auth_kind: str) -> Optional[str]:
@@ -438,6 +442,7 @@ def reserve(
     auth_kind: str,
     max_tokens: int,
     override: bool = False,
+    extra_models: Optional[list[str]] = None,
 ) -> ReserveResult:
     """Atomically check-and-insert a reservation row.
 
@@ -456,7 +461,7 @@ def reserve(
         _sweep_expired_reservations(conn)
         spend = _compute_spend(conn)
         if config.enabled and not override:
-            over = "unknown_price" if unpriced_paid(model, auth_kind) else _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
+            over = "unknown_price" if unpriced_paid(model, auth_kind, extra_models) else _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
             if over is not None:
                 conn.rollback()
                 raise CostGuardBlocked(
@@ -484,8 +489,19 @@ def reserve(
     )
 
 
-def finalize_reservation(reservation_id: str, *, actual_cost_usd: float) -> bool:
-    """Mark a reservation as finalized with the real cost.
+def reservation_override(reservation_id: str) -> Optional[bool]:
+    """Whether the reservation was created with an explicit override (None = unknown id)."""
+    if not reservation_id:
+        return None
+    initialize()
+    with _connect() as conn:
+        row = conn.execute("SELECT override FROM cost_reservations WHERE id = ?", (reservation_id,)).fetchone()
+    return None if row is None else bool(row[0])
+
+
+def finalize_reservation(reservation_id: str, *, actual_cost_usd: Optional[float]) -> bool:
+    """Mark a reservation as finalized with the real cost. `None` = the cost is UNKNOWN (a model with no verified
+    price, run after an explicit override): it is stored as NULL, never as 0.
 
     Idempotent — calling twice is fine. Returns True if a row was updated,
     False if the reservation_id was unknown (which is logged but not raised
@@ -502,7 +518,7 @@ def finalize_reservation(reservation_id: str, *, actual_cost_usd: float) -> bool
                 SET finalized = 1, finalized_cost_usd = ?
                 WHERE id = ? AND finalized = 0
                 """,
-                (max(0.0, float(actual_cost_usd)), reservation_id),
+                (None if actual_cost_usd is None else max(0.0, float(actual_cost_usd)), reservation_id),
             )
             conn.commit()
             return cur.rowcount > 0

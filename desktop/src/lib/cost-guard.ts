@@ -66,6 +66,8 @@ export interface CostGuardCheckRequest {
   model: string;
   auth_kind: 'api_key' | 'oauth' | 'local';
   max_tokens: number;
+  /** Other models the same run can bill (Pro quick model, Dexter's model). Any unpriced one blocks without override. */
+  extra_models?: string[];
 }
 
 export interface CostGuardReserveRequest extends CostGuardCheckRequest {

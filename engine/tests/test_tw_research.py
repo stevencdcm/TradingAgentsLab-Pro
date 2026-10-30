@@ -189,10 +189,13 @@ def test_unmeasured_dexter_usage_is_never_recorded_as_zero(tmp_db, tmp_path, mon
 
 
 def test_unpriced_model_cost_is_unknown_not_zero(tmp_db, tmp_path, monkeypatch):
-    evs, _ = _collect(monkeypatch, tmp_path, model="some-unpriced-model", auth="api_key",
-                      dexter_usage={"input_tokens": 10, "output_tokens": 10, "measured": True})
+    evs, ran = _collect(monkeypatch, tmp_path, model="some-unpriced-model", auth="api_key",
+                        dexter_usage={"input_tokens": 10, "output_tokens": 10, "measured": True})
     done = next(e for e in evs if e["type"] == "session.complete")
-    assert done["usage_breakdown"]["dexter"]["est_cost_usd"] is None and done["cost_complete"] is False
+    # E10: an extra paid job whose cost cannot be bounded is never started; the skip is stated, the run total stays unknown.
+    dex = next(e for e in evs if e["type"] == "dexter.result")
+    assert ran["n"] == 0 and dex["status"] == "unsupported" and dex["reason"] == "cost_guard_blocked:unknown_price"
+    assert done["cost_complete"] is False and done["usage_breakdown"]["dexter"]["ran"] is False
 
 
 def test_cost_guard_block_skips_dexter_instead_of_overspending(tmp_db, tmp_path, monkeypatch):

@@ -39,6 +39,7 @@ from .llm_providers import (
     ProviderConfig,
     adapter_for,
     estimate_cost,
+    is_priced,
 )
 
 
@@ -723,11 +724,14 @@ async def live_debate(
             # OAuth (subscription) and local LLM runs both record 0 so the
             # cost ledger only reflects per-token API spend. Tokens still
             # recorded above for telemetry.
+            # Known-free (OAuth / local) is 0.0; a per-token model with no verified price is UNKNOWN (null),
+            # never 0.0, so the ledger and History cannot present it as free.
             "estimated_cost_usd": (
                 0.0
                 if config.auth_kind in ("oauth", "local")
-                else round(cost, 4)
+                else (round(cost, 4) if is_priced(config.model) else None)
             ),
+            "cost_known": config.auth_kind in ("oauth", "local") or is_priced(config.model),
         }
         yielded_complete = True
     finally:

@@ -253,7 +253,7 @@ interface DecisionMeta {
   model?: string;
   inputTokens?: number;
   outputTokens?: number;
-  estimatedCostUsd?: number;
+  estimatedCostUsd?: number | null;
 }
 
 function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
@@ -774,7 +774,8 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                   })}
                 </span>
               )}
-              {meta.estimatedCostUsd !== undefined && (
+              {meta.estimatedCostUsd === null && <span>{t('debate.decision.costUnknown')}</span>}
+              {typeof meta.estimatedCostUsd === 'number' && (
                 <span>
                   {t('debate.decision.cost', { cost: `$${meta.estimatedCostUsd.toFixed(4)}` })}
                 </span>

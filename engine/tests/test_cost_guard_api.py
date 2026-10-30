@@ -259,3 +259,49 @@ def test_ws_live_debate_blocked_by_cost_guard(client):
     assert blocked_event is not None
     assert blocked_event["over_dimension"] == "daily"
     assert "message" in blocked_event
+
+
+# ---- S8: a paid model with no verified price is UNKNOWN cost, never free ---------------------------------
+
+
+def test_unpriced_paid_model_is_refused_while_caps_are_enabled(client):
+    r = client.post("/cost-guard/check", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400}).json()
+    assert r["allow"] is False and r["over_dimension"] == "unknown_price"
+    res = client.post("/cost-guard/reserve", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400})
+    assert res.status_code == 402 and res.json()["detail"]["over_dimension"] == "unknown_price"
+
+
+def test_unpriced_paid_model_may_proceed_only_by_explicit_override_or_when_guard_is_off(client):
+    ok = client.post("/cost-guard/reserve", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400, "override": True})
+    assert ok.status_code == 200
+    client.put("/cost-guard/config", json={"enabled": False})
+    assert client.post("/cost-guard/check", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400}).json()["allow"] is True
+
+
+def test_free_and_priced_paths_are_unaffected(client):
+    for model, kind in (("gpt-4o-mini", "api_key"), ("Q3.8 Flash Next 原版", "local"), ("anything", "oauth")):
+        assert client.post("/cost-guard/check", json={"model": model, "auth_kind": kind, "max_tokens": 400}).json()["allow"] is True
+
+
+def test_session_complete_stores_null_cost_for_unpriced_models(monkeypatch, tmp_db):
+    import asyncio
+
+    from engine.llm_providers import ProviderConfig
+    from engine.live_debate import live_debate
+
+    class _A:
+        async def open(self, **_): ...
+        async def close(self): ...
+        async def complete(self, **_):
+            return ("ok", 100, 10)
+
+    monkeypatch.setattr("engine.live_debate.adapter_for", lambda c: _A())
+
+    async def run(model):
+        cfg = ProviderConfig(provider="anthropic", auth={"type": "api_key", "api_key": "k"}, model=model)
+        return [e async for e in live_debate(ticker="AAPL", trade_date="2026-10-30", summary=None, headlines=None, config=cfg)]
+
+    unknown = [e for e in asyncio.run(run("claude-sonnet-5-5")) if e["type"] == "session.complete"][0]
+    assert unknown["estimated_cost_usd"] is None and unknown["cost_known"] is False
+    known = [e for e in asyncio.run(run("gpt-4o-mini")) if e["type"] == "session.complete"][0]
+    assert known["estimated_cost_usd"] > 0 and known["cost_known"] is True

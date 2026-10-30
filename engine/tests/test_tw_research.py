@@ -218,7 +218,7 @@ def test_taiwan_run_is_refused_while_another_exclusive_run_is_active(tw_env, mon
         yield {"type": "session.complete", "decision": {"stance": "neutral"}, "live": True}
 
     monkeypatch.setattr(twr, "tw_research", slow)
-    frame = {"ticker": "2330", "trade_date": "2026-10-29", "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "m"}}
+    frame = {"ticker": "2330", "trade_date": "2026-10-29", "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "gpt-4o-mini"}}
     with TestClient(tw_env.build_app(token="t")) as c:
         with c.websocket_connect("/stream?token=t") as a:
             a.send_json(frame)

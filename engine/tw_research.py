@@ -176,7 +176,9 @@ async def tw_research(
                   # Totals include the Dexter job. Unmeasured Dexter usage stays flagged, never silently 0.
                   "input_tokens": (ev.get("input_tokens") or 0) + d_in,
                   "output_tokens": (ev.get("output_tokens") or 0) + d_out,
-                  "estimated_cost_usd": round((debate_cost or 0.0) + (d_cost or 0.0), 4),
+                  # null (unknown) when any billable component has no verified price; never a fake 0.0.
+                  "estimated_cost_usd": round(debate_cost + d_cost, 4) if (debate_cost is not None and d_cost is not None) else None,
+                  "cost_known": debate_cost is not None and d_cost is not None,
                   "cost_complete": bool(cost_known and (not billable or is_priced(config.model)) and (du.get("measured") or not dexter_ran or not billable)),
                   "usage_complete": bool(du.get("measured") or not dexter_ran)}
         yield ev

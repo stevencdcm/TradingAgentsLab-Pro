@@ -413,6 +413,19 @@ def _apply_report_language(merged: Dict[str, Any], report_language: str) -> Dict
     return merged
 
 
+def _run_cost_known(auth_kind: str, merged: Dict[str, Any]) -> bool:
+    """False when a per-token run used a model (deep or quick) with no verified price: its cost is
+    unknown and must be stored as null, not as 0.0."""
+    if auth_kind in ("oauth", "local"):
+        return True
+    try:
+        from .llm_providers import is_priced
+
+        return all(is_priced(m) for m in (merged.get("deep_think_llm"), merged.get("quick_think_llm")) if m)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run_cost(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") -> float:
     """Best-effort USD estimate for the metered run.
 
@@ -765,7 +778,10 @@ async def full_debate(
             "auth_kind": auth_kind,
             "input_tokens": meter.input_tokens,
             "output_tokens": meter.output_tokens,
-            "estimated_cost_usd": round(_run_cost(auth_kind, merged, meter), 4),
+            "estimated_cost_usd": (
+                round(_run_cost(auth_kind, merged, meter), 4) if _run_cost_known(auth_kind, merged) else None
+            ),
+            "cost_known": _run_cost_known(auth_kind, merged),
         }
     finally:
         _finalize_reservation(reservation_id, auth_kind, merged, meter)

@@ -18,7 +18,7 @@ import styles from './CostGuardModal.module.css';
 
 const COUNTDOWN_SECONDS = 3;
 
-export type OverDimension = 'daily' | 'weekly' | 'monthly' | 'rate';
+export type OverDimension = 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
 
 export interface CostGuardModalProps {
   /** Which cap fired. */
@@ -70,7 +70,7 @@ export function CostGuardModal({
     <div className={styles.scrim} role="dialog" aria-modal="true" aria-labelledby="cg-modal-title">
       <div className={styles.modal}>
         <h2 id="cg-modal-title" className={styles.title}>
-          {overDimension === 'rate' ? tr('costGuard.title.rate') : tr('costGuard.title.budget')}
+          {overDimension === 'rate' ? tr('costGuard.title.rate') : overDimension === 'unknown_price' ? tr('costGuard.title.unknownPrice') : tr('costGuard.title.budget')}
         </h2>
 
         <p className={styles.body}>{describePrimary(overDimension, spend, config, estCostUsd, tr)}</p>
@@ -141,6 +141,7 @@ function describePrimary(
   est: number,
   t: I18n['t'],
 ): string {
+  if (dim === 'unknown_price') return t('costGuard.body.unknownPrice');
   if (dim === 'rate') {
     return t('costGuard.body.rate', {
       used: spend.sessions_today,

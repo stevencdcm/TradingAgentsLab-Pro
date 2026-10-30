@@ -6,6 +6,8 @@ export const dialogs = {
   'providerCallout.cta': 'Set up a provider',
   'costGuard.title.rate': 'Session rate cap reached',
   'costGuard.title.budget': 'Budget cap reached',
+  'costGuard.title.unknownPrice': 'Model price unknown',
+  'costGuard.body.unknownPrice': 'This model has no verified price, so its cost cannot be checked against your caps. It is blocked unless you override; the run will be recorded with an unknown (not zero) cost.',
   'costGuard.dim.daily': 'Daily',
   'costGuard.dim.weekly': 'Weekly',
   'costGuard.dim.monthly': 'Monthly',

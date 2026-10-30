@@ -159,7 +159,8 @@ def _do_initialize() -> None:
                 created_at REAL NOT NULL, ended_at REAL, elapsed_s REAL,
                 input_tokens INTEGER, output_tokens INTEGER, estimated_cost_usd REAL, cost_known INTEGER,
                 session_id TEXT, terminal_code TEXT, error TEXT, last_seq INTEGER NOT NULL DEFAULT 0,
-                last_event_type TEXT, last_event_at REAL, steps_done INTEGER NOT NULL DEFAULT 0
+                last_event_type TEXT, last_event_at REAL, steps_done INTEGER NOT NULL DEFAULT 0,
+                reservation_id TEXT, engine_started INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_runs_owner_state ON runs (owner, state);
             CREATE TABLE IF NOT EXISTS run_events (

@@ -19,16 +19,20 @@ refresh, a dropped tunnel or a second tab never cancels the work, never re-reser
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import secrets as _secrets
 import sys
 import time
 from typing import Any, Awaitable, Callable, Optional
 
-from . import secret_refs, storage
+from . import cost_guard, secret_refs, storage
 
 MAX_EVENTS = 5000               # stored/replayable events per run (terminal events are always kept)
 MAX_EVENT_BYTES = 262_144
+MAX_REPLAY_BYTES = 8 * 1024 * 1024   # in-memory replay budget per run (oldest events are dropped first)
+KEEP_EVENTS_AFTER_END_S = 600        # a finished run keeps its replay buffer in memory this long, then reloads from the database
+EXTEND_EVERY_S = 60
 SUB_QUEUE_MAX = 2000
 MAX_ACTIVE_PER_OWNER = 4
 KEEP_IN_MEMORY = 50
@@ -118,7 +122,10 @@ class Run:
         self.state = "queued"
         self.created_at = _now()
         self.ended_at: Optional[float] = None
-        self.events: list[dict[str, Any]] = []
+        self.events: collections.deque = collections.deque()
+        self._sizes: collections.deque = collections.deque()
+        self.event_bytes = 0
+        self.first_kept_seq = 1
         self.seq = 0
         self.truncated = False
         self.subs: set[_Sub] = set()
@@ -139,6 +146,9 @@ class Run:
         self.terminal_code: Optional[str] = None
         self.elapsed_override: Optional[float] = None
         self.completed_seen = False
+        self.reservation_id: Optional[str] = None
+        self.engine_started = False
+        self.last_extend = 0.0
 
     # ---- derived -------------------------------------------------------------------------------------------------
     @property
@@ -165,7 +175,11 @@ class Run:
             "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
             "estimated_cost_usd": self.cost, "cost_known": self.cost_known,
             "session_id": self.session_id, "terminal_code": self.terminal_code, "error": self.error,
-            "replay_truncated": self.truncated, "subscribers": len(self.subs),
+            "replay_truncated": self.truncated, "replay_earliest_seq": self.first_kept_seq, "subscribers": len(self.subs),
+            # A user cancel is asked for but the run has not actually ended yet (a model call already in flight is awaited).
+            "cancelling": self.cancel_requested and self.active,
+            # Usage is complete only for a finished analysis; a stopped one is measured through the last completed model call.
+            "usage_complete": self.state == "completed",
         }
 
     # ---- events --------------------------------------------------------------------------------------------------
@@ -173,18 +187,29 @@ class Run:
         """Record + fan out one event. Synchronous on purpose: it is atomic with respect to `subscribe()`."""
         if not isinstance(event, dict):
             return
+        now = _now()
+        if self.reservation_id and self.active and now - self.last_extend >= EXTEND_EVERY_S:
+            # The run is alive (events / heartbeats keep coming): keep its budget hold from expiring mid-run.
+            self.last_extend = now
+            cost_guard.extend_reservation(self.reservation_id)
         if event.get("type") == "run.heartbeat":
-            self.heartbeat = {**event, "at": _now()}
+            self.heartbeat = {**event, "at": now}
             self._fan(event)                                   # liveness only: not sequenced, not stored
             return
         self.seq += 1
         ev = {**event, "seq": self.seq}
         self._track(ev)
-        if len(self.events) < MAX_EVENTS or ev.get("type") in ("run.finished", "session.complete", "run.error"):
-            self.events.append(ev)
-            self.mgr._persist_event(self, ev)
-        else:
+        size = len(json.dumps(ev, ensure_ascii=False, default=str))
+        self.events.append(ev)
+        self._sizes.append(size)
+        self.event_bytes += size
+        # Bounded replay: events AND bytes. The OLDEST are dropped first; a client that needs them is told (run.replay_truncated).
+        while len(self.events) > 1 and (len(self.events) > MAX_EVENTS or self.event_bytes > MAX_REPLAY_BYTES):
+            self.events.popleft()
+            self.event_bytes -= self._sizes.popleft()
             self.truncated = True
+        self.first_kept_seq = self.events[0]["seq"]
+        self.mgr._persist_event(self, ev)
         self._fan(ev)
 
     def _track(self, ev: dict[str, Any]) -> None:
@@ -230,6 +255,13 @@ class Run:
             sub.q.put_nowait(None)
         return snap, sub
 
+    def drop_events(self) -> None:
+        """Finished run: release the in-memory replay buffer (the database still has it)."""
+        if not self.active:
+            self.events.clear()
+            self._sizes.clear()
+            self.event_bytes = 0
+
     def unsubscribe(self, sub: _Sub) -> None:
         self.subs.discard(sub)
 
@@ -265,21 +297,26 @@ class RunManager:
         self._db(lambda c: c.execute(
             """INSERT INTO runs (run_id, owner, state, ticker, trade_date, provider, model, auth_kind, engine, created_at, ended_at, elapsed_s,
                    input_tokens, output_tokens, estimated_cost_usd, cost_known, session_id, terminal_code, error, last_seq, last_event_type,
-                   last_event_at, steps_done)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   last_event_at, steps_done, reservation_id, engine_started)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(run_id) DO UPDATE SET state=excluded.state, ended_at=excluded.ended_at, elapsed_s=excluded.elapsed_s,
                    input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, estimated_cost_usd=excluded.estimated_cost_usd,
                    cost_known=excluded.cost_known, session_id=excluded.session_id, terminal_code=excluded.terminal_code, error=excluded.error,
                    last_seq=excluded.last_seq, last_event_type=excluded.last_event_type, last_event_at=excluded.last_event_at,
-                   steps_done=excluded.steps_done""",
+                   steps_done=excluded.steps_done, reservation_id=excluded.reservation_id, engine_started=excluded.engine_started""",
             (run.id, run.owner, run.state, s["ticker"], s["trade_date"], s["provider"], s["model"], s["auth_kind"], s["engine"],
              run.created_at, run.ended_at, run.elapsed_s() if not run.active else None, run.input_tokens, run.output_tokens, run.cost,
              1 if run.cost_known else 0, run.session_id, run.terminal_code, run.error, run.seq, run.last_event_type, run.last_event_at,
-             run.steps_done)))
+             run.steps_done, run.reservation_id, 1 if run.engine_started else 0)))
 
     def _persist_event(self, run: Run, ev: dict[str, Any]) -> None:
-        self._db(lambda c: c.execute("INSERT OR IGNORE INTO run_events (run_id, seq, ts, etype, payload) VALUES (?,?,?,?,?)",
-                                     (run.id, ev["seq"], _now(), str(ev.get("type")), _clean_event(ev))))
+        def write(c):
+            c.execute("INSERT OR IGNORE INTO run_events (run_id, seq, ts, etype, payload) VALUES (?,?,?,?,?)",
+                      (run.id, ev["seq"], _now(), str(ev.get("type")), _clean_event(ev)))
+            if ev["seq"] > MAX_EVENTS and ev["seq"] % 100 == 0:          # rolling window in the database too
+                c.execute("DELETE FROM run_events WHERE run_id=? AND seq<=?", (run.id, ev["seq"] - MAX_EVENTS))
+
+        self._db(write)
         if ev.get("type") in ("session.complete", "run.error", "run.finished", "agent.message", "session.start", "cost.usage") or ev["seq"] % 20 == 0:
             self._save_meta(run)
 
@@ -290,9 +327,15 @@ class RunManager:
         rows = self._db(lambda c: c.execute("SELECT payload FROM run_events WHERE run_id=? ORDER BY seq LIMIT ?", (run.id, MAX_EVENTS + 5)).fetchall()) or []
         for r in rows:
             try:
-                run.events.append(json.loads(r["payload"]))
+                ev = json.loads(r["payload"])
             except ValueError:
                 continue
+            run.events.append(ev)
+            run._sizes.append(len(r["payload"]))
+            run.event_bytes += len(r["payload"])
+        if run.events:
+            run.first_kept_seq = run.events[0]["seq"]
+            run.truncated = run.truncated or run.first_kept_seq > 1
 
     def _load(self, run_id: str) -> Optional[Run]:
         row = self._db(lambda c: c.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
@@ -303,6 +346,7 @@ class RunManager:
         run.seq, run.input_tokens, run.output_tokens, run.cost = row["last_seq"], row["input_tokens"], row["output_tokens"], row["estimated_cost_usd"]
         run.cost_known, run.session_id, run.terminal_code, run.error = bool(row["cost_known"]), row["session_id"], row["terminal_code"], row["error"]
         run.last_event_type, run.last_event_at, run.steps_done = row["last_event_type"], row["last_event_at"], row["steps_done"]
+        run.reservation_id, run.engine_started = row["reservation_id"], bool(row["engine_started"])
         if run.elapsed_override is None and run.ended_at:
             run.elapsed_override = round(run.ended_at - run.created_at, 1)
         run.phase = "done" if run.state == "completed" else run.state
@@ -312,9 +356,13 @@ class RunManager:
         """Server start: unfinished runs of a previous process become `interrupted` (never re-run), old runs are purged."""
         now = _now()
         rows = self._db(lambda c: c.execute(
-            "SELECT r.run_id AS run_id, COALESCE((SELECT MAX(seq) FROM run_events e WHERE e.run_id = r.run_id), r.last_seq) AS last_seq "
+            "SELECT r.run_id AS run_id, r.reservation_id AS reservation_id, r.engine_started AS engine_started, "
+            "COALESCE((SELECT MAX(seq) FROM run_events e WHERE e.run_id = r.run_id), r.last_seq) AS last_seq "
             "FROM runs r WHERE r.state IN ('queued','running')").fetchall()) or []
         for r in rows:
+            # Settle the budget hold FIRST (before any expiry sweep can turn it into an uncounted NULL): nothing billable
+            # started -> released at 0; otherwise the measured cost, or the reserved estimate as a conservative hold.
+            cost_guard.settle_run_end(r["reservation_id"], billable_started=bool(r["engine_started"]))
             payload = json.dumps({"type": "run.finished", "seq": r["last_seq"] + 1, "state": "interrupted", "code": "server_restart",
                                   "message": "The engine restarted while this analysis was running. It was NOT re-run automatically."}, separators=(",", ":"))
             self._db(lambda c, r=r, payload=payload: (
@@ -354,6 +402,8 @@ class RunManager:
             if existing is not None:
                 return existing, False                           # repeated start: same run, no second reservation / model call
         run = Run(self, "run_" + _secrets.token_hex(8), owner, start_meta(raw), key)
+        rid = raw.get("reservation_id") if isinstance(raw, dict) else None
+        run.reservation_id = rid if isinstance(rid, str) and 4 <= len(rid) <= 80 else None
         self.runs[run.id] = run
         if key:
             self._keys[(owner, key)] = run.id
@@ -408,15 +458,21 @@ class RunManager:
         run.state, run.terminal_code, run.ended_at = state, code, _now()
         run.emit({"type": "run.finished", "state": state, "code": code, "elapsed_s": run.elapsed_s(), "input_tokens": run.input_tokens,
                   "output_tokens": run.output_tokens, "estimated_cost_usd": run.cost, "cost_known": run.cost_known, "session_id": run.session_id})
+        if state != "completed":
+            cost_guard.settle_run_end(run.reservation_id, billable_started=run.engine_started)
         self._save_meta(run)
         run.finish_subs()
+        try:
+            asyncio.get_running_loop().call_later(KEEP_EVENTS_AFTER_END_S, run.drop_events)
+        except RuntimeError:
+            pass
         done = sorted((r for r in self.runs.values() if not r.active), key=lambda r: r.created_at)
         for r in done[:max(0, len(done) - KEEP_IN_MEMORY)]:
             self.runs.pop(r.id, None)
             if r.key:
                 self._keys.pop((r.owner, r.key), None)
 
-    async def cancel(self, run: Run, timeout: float = 30.0) -> Run:
+    async def cancel(self, run: Run, timeout: float = 5.0) -> Run:
         """Explicit stop. The run body's own `finally` blocks settle the cost reservation with the measured usage."""
         if run.active and run.task is not None and not run.task.done():
             run.cancel_requested = True
@@ -435,6 +491,8 @@ class RunManager:
                 keep = ("state", "ticker", "trade_date", "provider", "model", "engine", "elapsed_s", "started_at", "last_seq", "replay_truncated")
                 await ws.send_json({"type": "run.attached", "run_id": run.id, "resumed": resumed, "after": after,
                                     **{k: v for k, v in run.status().items() if k in keep}})
+            if announce and after + 1 < run.first_kept_seq:
+                await ws.send_json({"type": "run.replay_truncated", "earliest_seq": run.first_kept_seq, "after": after})
             for ev in snap:
                 if announce or ev.get("type") != "run.finished":      # legacy /stream clients never saw run.finished
                     await ws.send_json(ev)

@@ -464,7 +464,7 @@ def test_subscribe_snapshot_and_live_registration_are_atomic():
     asyncio.run(go())
 
 
-def test_event_count_is_bounded_but_terminal_events_are_kept(monkeypatch):
+def test_replay_is_bounded_by_events_and_bytes_dropping_the_oldest_and_saying_so(monkeypatch):
     monkeypatch.setattr(rm, "MAX_EVENTS", 10)
 
     async def go():
@@ -474,7 +474,40 @@ def test_event_count_is_bounded_but_terminal_events_are_kept(monkeypatch):
         for i in range(100):
             run.emit({"type": "agent.message", "content": str(i)})
         run.emit({"type": "session.complete", "decision": {}})
-        assert len(run.events) == 11 and run.truncated and run.events[-1]["type"] == "session.complete" and run.seq == 101
+        assert len(run.events) == 10 and run.truncated and run.events[-1]["type"] == "session.complete" and run.seq == 101
+        assert run.first_kept_seq == 92 and [e["seq"] for e in run.events] == list(range(92, 102))
+
+        class WS:
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, ev):
+                self.sent.append(ev)
+
+            async def close(self, code=1000, reason=""):
+                pass
+
+        run.state = "completed"
+        ws = WS()
+        await mgr.serve(ws, run, 0)
+        kinds = [e["type"] for e in ws.sent]
+        assert kinds[0] == "run.attached" and kinds[1] == "run.replay_truncated" and ws.sent[1]["earliest_seq"] == 92
+        ws2 = WS()
+        await mgr.serve(ws2, run, 95)                                          # a client that is up to date is not told
+        assert "run.replay_truncated" not in [e["type"] for e in ws2.sent]
+
+    asyncio.run(go())
+
+
+def test_replay_byte_budget_drops_oldest_first(monkeypatch):
+    monkeypatch.setattr(rm, "MAX_REPLAY_BYTES", 2000)
+
+    async def go():
+        run = rm.Run(rm.RunManager(), "run_c", "local", {}, None)
+        run.state = "running"
+        for i in range(50):
+            run.emit({"type": "agent.message", "content": "x" * 300})
+        assert run.event_bytes <= 2000 + 400 and run.first_kept_seq > 1 and run.truncated and run.events[-1]["seq"] == 50
 
     asyncio.run(go())
 
@@ -537,3 +570,276 @@ def test_taiwan_full_graph_with_dexter_and_pro_runs_are_managed_runs(tmp_db, mon
         assert st["state"] == "completed" and st["engine"] == "pro" and st["ticker"] == "2330"
         # Dexter usage folded into the completed run's totals (11+7 in, 4+3 out)
         assert (st["input_tokens"], st["output_tokens"]) == (18, 7)
+
+
+# ---- D8 acceptance: settlement, budget, restart, secrets, busy, webhook --------------------------------------------------------
+
+
+def spend_today():
+    spend, _cfg = cost_guard.get_state()
+    return spend.daily_usd
+
+
+def test_cancelled_run_spend_counts_toward_the_caps_and_a_completed_run_is_not_double_counted(world):
+    """R3/A5: a run without a session row (cancelled) still spent money; a completed run is counted once (via its session)."""
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        assert spend_today() == 0
+        rid = reservation(c)
+        run_id, _, _ = start_and_get_two_messages(c, frame(reservation_id=rid))
+        c.post(f"/runs/{run_id}/cancel", headers=H)
+        wait_state(c, run_id, ("cancelled",))
+        cancelled_cost = spend_today()
+        assert cancelled_cost > 0                                                  # measured partial cost is no longer invisible
+        with cost_guard._connect() as conn:
+            row = conn.execute("SELECT finalized, finalized_cost_usd, settled_as FROM cost_reservations WHERE id=?", (rid,)).fetchone()
+        assert row[0] == 1 and row[1] == pytest.approx(cancelled_cost) and row[2] == "incomplete"
+        # now a completed run: its cost is the session row only (the finalized reservation is NOT added on top)
+        world.free = 10_000
+        rid2 = reservation(c)
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(frame(key="second", reservation_id=rid2))
+            drain(ws)
+        with storage._connect() as conn:
+            session_cost = conn.execute("SELECT SUM(estimated_cost_usd) FROM sessions").fetchone()[0]
+        assert session_cost > 0 and spend_today() == pytest.approx(cancelled_cost + session_cost, rel=1e-6)
+
+
+def test_failed_run_before_anything_billable_releases_its_hold_at_zero(world):
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        rid = reservation(c)
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json({"ticker": "???", "trade_date": "2026-10-30", "resumable": True, "client_run_key": "bad", "reservation_id": rid})
+            drain(ws)
+        assert res_row(rid) == (1, 0.0) and spend_today() == 0
+
+
+def test_long_run_keeps_its_budget_hold_alive_past_the_ttl(world, monkeypatch):
+    """R4/A6: the 15-minute TTL must not release the budget while the run is still going."""
+    monkeypatch.setattr(cost_guard, "RESERVATION_TTL_SECONDS", 1)
+    monkeypatch.setattr(rm, "EXTEND_EVERY_S", 0.0)
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        rid = reservation(c)
+        run_id, _, _ = start_and_get_two_messages(c, frame(reservation_id=rid))
+        time.sleep(1.6)                                                            # longer than the 1 s TTL
+        cost_guard.get_state()                                                     # any cost-guard call sweeps expired holds
+        assert res_row(rid)[0] == 0                                                # still held: the run renewed it
+        assert spend_today() > 0
+        world.hold.set()
+        wait_state(c, run_id, ("completed",))
+        assert res_row(rid)[0] == 1
+
+
+def test_restart_settles_interrupted_runs_conservatively_and_releases_unstarted_ones(world):
+    """R5/A7: unknown cost is a conservative hold (the reserved estimate), never 0 and never an excluded NULL."""
+    with TestClient(srv.build_app(token=TOKEN)) as boot:                           # create the schema
+        a = cost_guard.reserve(model="gpt-4o-mini", auth_kind="api_key", max_tokens=50).reservation_id
+        b = cost_guard.reserve(model="gpt-4o-mini", auth_kind="api_key", max_tokens=50).reservation_id
+        est = cost_guard.reserve(model="gpt-4o-mini", auth_kind="api_key", max_tokens=50).est_cost_usd
+        with storage._connect() as conn:
+            for run_id, res, started in (("run_old_started", a, 1), ("run_old_idle", b, 0)):
+                conn.execute("INSERT INTO runs (run_id, owner, state, created_at, last_seq, reservation_id, engine_started) VALUES (?,?,?,?,?,?,?)",
+                             (run_id, "local", "running", time.time() - 60, 0, res, started))
+            conn.commit()
+        base = spend_today()
+        with TestClient(srv.build_app(token=TOKEN)) as new:                        # "restart"
+            for rid_ in ("run_old_started", "run_old_idle"):
+                assert new.get(f"/runs/{rid_}", headers=H).json()["state"] == "interrupted"
+            assert new.get("/runs/active", headers=H).json()["runs"] == []
+        assert res_row(b) == (1, 0.0)                                              # nothing billable had started: released
+        with cost_guard._connect() as conn:
+            row = conn.execute("SELECT finalized, finalized_cost_usd, settled_as FROM cost_reservations WHERE id=?", (a,)).fetchone()
+        assert row[0] == 1 and row[1] is None and row[2] == "incomplete"           # unknown cost kept as the estimate, flagged
+        assert spend_today() >= est - 1e-9 and spend_today() > 0                   # counted at the conservative hold, not 0
+        assert world.calls == 0                                                    # and nothing was re-run
+
+
+def test_secrets_never_reach_the_run_tables_replay_status_or_logs(world, monkeypatch, capfd):
+    """R6/A10: every kind of secret a start frame can carry stays out of storage, replay and /runs/* responses."""
+    secrets_ = {
+        "api_key": "APIKEY-1f2e3d4c5b6a79880011223344", "oauth_access": "OAUTHACCESS-9a8b7c6d5e4f3a2b1c0d", "oauth_refresh": "OAUTHREFRESH-0a1b2c3d4e5f60718293",
+        "alpaca_key": "ALPACAKEY-AAAABBBBCCCCDDDD1111", "alpaca_secret": "ALPACASECRET-EEEEFFFFGGGGHHHH2222",
+        "av": "AVKEY-ZZZZYYYYXXXXWWWW3333", "finmind": "FINMIND-QQQQRRRRSSSSTTTT4444", "webhook": "https://hooks.example/bot123456:WEBHOOKTOKEN-abcdef0123456789/send",
+    }
+
+    async def chatty(**kw):
+        yield {"type": "session.start", "ticker": "AAPL", "trade_date": "2026-10-30"}
+        yield {"type": "agent.message", "agent": "a", "phase": "analyst", "content": "fine"}
+        yield {"type": "session.complete", "decision": {"stance": "neutral", "conviction": 0.5, "reasoning": "x"}, "live": True, "provider": "openai",
+               "auth_kind": "api_key", "model": "gpt-4o-mini", "input_tokens": 5, "output_tokens": 2, "estimated_cost_usd": 0.0}
+
+    monkeypatch.setattr(srv, "live_debate", chatty)
+    async def no_dispatch(**kw):
+        return []
+
+    monkeypatch.setattr(srv.webhook_dispatcher, "dispatch_all", no_dispatch)
+    f = frame()
+    f["provider_config"]["auth"] = {"type": "api_key", "api_key": secrets_["api_key"]}
+    f["data_config"] = {"provider": "alpaca", "key_id": secrets_["alpaca_key"], "secret": secrets_["alpaca_secret"]}
+    f["alpha_vantage_key"], f["finmind_token"] = secrets_["av"], secrets_["finmind"]
+    f["webhooks"] = [{"id": "w1", "url": secrets_["webhook"], "kind": "generic"}]
+    f["telegram_chat_ids"] = {"w1": "-100123456789"}
+    f["oauth_probe"] = {"access": secrets_["oauth_access"], "refresh": secrets_["oauth_refresh"]}
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(f)
+            evs = drain(ws)
+        rid = evs[0]["run_id"]
+        wait_state(c, rid, ("completed",))
+        responses = [json.dumps(evs), c.get(f"/runs/{rid}", headers=H).text, c.get("/runs/active", headers=H).text,
+                     c.get(f"/runs/{rid}/events?limit=2000", headers=H).text]
+        with c.websocket_connect(f"/runs/{rid}/stream?token={TOKEN}&after=0") as ws2:
+            responses.append(json.dumps(drain(ws2)))
+    with sqlite3.connect(storage.db_path()) as conn:
+        dump = json.dumps([list(r) for t in ("runs", "run_events") for r in conn.execute(f"SELECT * FROM {t}")])
+    logs = capfd.readouterr()
+    haystack = dump + "\n".join(responses) + logs.out + logs.err
+    for name, value in secrets_.items():
+        assert value not in haystack and value.split("-")[0] not in haystack, name
+    assert "provider_config" not in dump and "webhooks" not in dump and "telegram" not in dump
+
+
+def test_busy_slot_hands_the_same_owner_the_active_run_id(tmp_db, monkeypatch):
+    """R8/A12: a second Pro/Taiwan run is refused with the id of the run holding the slot, so the page can attach to it."""
+    pytest.importorskip("tradingagents")
+    from engine import full_debate as fd
+
+    release = threading.Event()
+
+    async def fake_full(*_a, **_k):
+        yield {"type": "session.start", "ticker": "AAPL", "trade_date": "2026-10-30"}
+        while not release.is_set():
+            await asyncio.sleep(0.02)
+        yield {"type": "session.complete", "decision": {"stance": "neutral", "conviction": 0.5, "reasoning": "ok"}, "live": True, "input_tokens": 1,
+               "output_tokens": 1, "estimated_cost_usd": 0.0}
+
+    async def none(**_):
+        return None
+
+    async def empty(**_):
+        return []
+
+    monkeypatch.setattr(fd, "full_debate", fake_full)
+    monkeypatch.setattr(srv, "_fetch_summary_safe", none)
+    monkeypatch.setattr(srv, "_fetch_news_safe", empty)
+    pro = lambda key: frame(key=key, engine="pro", pro_config={"selected_analysts": ["market"]})
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        with c.websocket_connect(f"/stream?token={TOKEN}") as first:
+            first.send_json(pro("pro-one"))
+            first_id = read_until(first, lambda e: e["type"] == "session.start")[0]["run_id"]
+            with c.websocket_connect(f"/stream?token={TOKEN}") as second:
+                second.send_json(pro("pro-two"))
+                err = read_until(second, lambda e: e["type"] == "run.error")[-1]
+            assert err["code"] == "run_busy" and err["active_run_id"] == first_id
+        release.set()
+        wait_state(c, first_id, ("completed",))
+
+
+def test_webhook_and_history_happen_once_however_often_the_page_reattaches(world, monkeypatch):
+    """R10/A3."""
+    world.free = 10_000
+    hits = []
+
+    async def counting(**kw):
+        hits.append(kw["ticker"])
+        return []
+
+    monkeypatch.setattr(srv.webhook_dispatcher, "dispatch_all", counting)
+    f = frame()
+    f["webhooks"] = [{"id": "w1", "url": "https://hooks.example/x", "kind": "generic"}]
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(f)
+            evs = drain(ws)
+        rid = evs[0]["run_id"]
+        for _ in range(3):
+            with c.websocket_connect(f"/runs/{rid}/stream?token={TOKEN}&after=0") as ws2:
+                drain(ws2)
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws3:               # a retried start with the same key
+            ws3.send_json(f)
+            drain(ws3)
+        assert len(hits) == 1 and n_sessions() == 1
+
+
+# ---- R2/A4: a cancelled graph waits for the model call already in flight before it settles -------------------------------------
+
+
+def test_full_graph_cancel_waits_for_the_in_flight_call_and_counts_its_late_usage(tmp_db, monkeypatch):
+    pytest.importorskip("tradingagents")
+    from engine import full_debate as fd
+
+    landed = threading.Event()
+    order: list[str] = []
+    started = threading.Event()
+
+    class Resp:
+        llm_output = {"usage": {"input_tokens": 1000, "output_tokens": 200}}
+        generations: list = []
+
+    class FakeGraph:
+        def __init__(self, *, callbacks, **_):
+            self.meter = callbacks[0]
+            self.propagator = type("P", (), {"create_initial_state": staticmethod(lambda *a, **k: {})})()
+            self.memory_log = type("M", (), {"get_past_context": staticmethod(lambda t: "")})()
+            graph = self
+
+            class G:
+                async def astream(self, state, **kw):
+                    def node_call():                                                # a sync node: runs on a worker thread
+                        graph.meter.on_chat_model_start({}, [])
+                        started.set()
+                        time.sleep(0.8)                                             # the model call is in flight...
+                        order.append("llm_end")
+                        graph.meter.on_llm_end(Resp())                              # ...and lands AFTER the cancel
+                        landed.set()
+
+                    await asyncio.get_running_loop().run_in_executor(None, node_call)
+                    yield "values", {}
+
+            self.graph = G()
+
+    monkeypatch.setattr(fd, "TradingAgentsGraph", FakeGraph)
+    monkeypatch.setattr(fd, "CANCEL_DRAIN_S", 10.0)
+    res = cost_guard.reserve(model="gpt-4o", auth_kind="api_key", max_tokens=50).reservation_id
+    cancelled = {"v": False}
+    real_finalize = cost_guard.finalize_reservation
+
+    def spy_finalize(rid, *, actual_cost_usd):
+        order.append("finalize")
+        return real_finalize(rid, actual_cost_usd=actual_cost_usd)
+
+    monkeypatch.setattr(cost_guard, "finalize_reservation", spy_finalize)
+
+    async def go():
+        async def consume():
+            async for _ in fd.full_debate("AAPL", "2026-10-30", config={"llm_provider": "openai", "deep_think_llm": "gpt-4o", "quick_think_llm": "gpt-4o-mini"},
+                                          selected_analysts=["market"], api_key="k", auth_kind="api_key", reservation_id=res,
+                                          cancel_check=lambda: cancelled["v"]):
+                pass
+
+        task = asyncio.create_task(consume())
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        cancelled["v"] = True
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert order == ["llm_end", "finalize"]                                         # settled only AFTER the in-flight call landed
+    row = res_row(res)
+    assert row[0] == 1 and row[1] > 0                                               # and the late tokens are in the settled cost
+
+
+def test_cancel_flag_stops_new_model_calls_from_starting():
+    from engine import full_debate as fd
+
+    flag = {"v": False}
+    meter = fd._TokenMeter(None, lambda: flag["v"])
+    meter.on_chat_model_start({}, [])
+    assert meter.inflight == 1
+    flag["v"] = True
+    with pytest.raises(fd.RunCancelled):
+        meter.on_chat_model_start({}, [])
+    assert meter.inflight == 1                                                      # the refused call is not counted as in flight

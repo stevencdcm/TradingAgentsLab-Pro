@@ -700,10 +700,16 @@ def build_app(*, token: str) -> FastAPI:
                 if run_slot["busy"]:
                     evt = {"type": "run.error", "code": "run_busy",
                            "error": "Another full-graph / Taiwan research run is already in progress. Wait for it to finish, then retry."}
+                    # Same owner only: hand over the id of the run that holds the slot so the page can attach to it.
+                    _run = getattr(ws, "run", None)
+                    _holder = _run.mgr.get(_run.owner, run_slot.get("run_id") or "") if _run is not None else None
+                    if _holder is not None and _holder.active:
+                        evt["active_run_id"] = _holder.id
                     await ws.send_json(evt)
                     await ws.close(code=1008, reason="run_busy")
                     return
                 run_slot["busy"] = True
+                run_slot["run_id"] = getattr(getattr(ws, "run", None), "id", None)
                 slot_held = True
 
             # Optional. Per-stream webhook configs (Phase 8a). Renderer sends
@@ -950,6 +956,13 @@ def build_app(*, token: str) -> FastAPI:
                         await ws.close(code=1008, reason="cost_guard_blocked")
                         return
 
+                # From here on something billable can start (Dexter, the graph, model calls): a run that ends abnormally is
+                # accounted for (measured or estimated), not silently released. The run also knows which hold to keep alive.
+                if getattr(ws, "run", None) is not None:
+                    ws.run.reservation_id = reservation_id
+                    ws.run.engine_started = True
+                _cancel_check = (lambda: ws.run.cancel_requested) if getattr(ws, "run", None) is not None else None
+
                 # Both engines are async generators yielding the same event
                 # shapes, so the send/capture loop is uniform. Pro routes to the
                 # real LangGraph graph; free routes to the simplified reimpl.
@@ -1060,6 +1073,7 @@ def build_app(*, token: str) -> FastAPI:
                         reservation_id=reservation_id,
                         alpha_vantage_key=av_key,
                         report_language=report_language,
+                        cancel_check=_cancel_check,
                     )
                 else:
                     debate_events = live_debate(
@@ -1195,6 +1209,7 @@ def build_app(*, token: str) -> FastAPI:
                 tw_graph_tools.end_run()
             if slot_held:
                 run_slot["busy"] = False
+                run_slot["run_id"] = None
 
     def _owner(scope) -> str:
         """`local` for the loopback entry; the verified owner login behind the workbench proxy (set by the web guard)."""

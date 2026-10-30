@@ -396,7 +396,9 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   // Reset state when the menu fires "New analysis".
   useEffect(() => {
     if (resetSignal === 0) return;
-    handleRef.current?.close();
+    // "New analysis" is an explicit stop: cancel the engine-side run (leaving or reloading the page never does).
+    void handleRef.current?.cancel();
+    forgetRun();
     setEvents([]);
     setStreamError(null);
     setCopied(false);

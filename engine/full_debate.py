@@ -44,6 +44,7 @@ import math
 import os
 import re
 import sys
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -185,6 +186,13 @@ class TokenCapExceeded(Exception):
     """Raised by the in-run token meter when the running total crosses the cap."""
 
 
+class RunCancelled(Exception):
+    """Raised inside a graph worker thread once the user cancelled the run: no new model call may start."""
+
+
+CANCEL_DRAIN_S = float(os.environ.get("TAL_CANCEL_DRAIN_S", "240"))
+
+
 class _TokenMeter(BaseCallbackHandler):
     """Meter token usage across the whole graph run and abort when over cap.
 
@@ -195,11 +203,30 @@ class _TokenMeter(BaseCallbackHandler):
 
     raise_error = True
 
-    def __init__(self, cap: Optional[int]) -> None:
+    def __init__(self, cap: Optional[int], cancel_check: Optional[Any] = None) -> None:
         self.cap = cap
         self.input_tokens = 0
         self.output_tokens = 0
         self.calls = 0
+        # Explicit user cancel: no NEW model call may start; calls already in flight cannot be interrupted (they run on
+        # worker threads), so they are counted (`inflight`) and awaited before the reservation is settled.
+        self.cancel_check = cancel_check
+        self.inflight = 0
+
+    def _starting(self) -> None:
+        self.inflight += 1
+        if self.cancel_check is not None and self.cancel_check():
+            self.inflight -= 1
+            raise RunCancelled("run cancelled by the user")
+
+    def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
+        self._starting()
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        self._starting()
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        self.inflight = max(0, self.inflight - 1)
 
     @property
     def total(self) -> int:
@@ -207,6 +234,7 @@ class _TokenMeter(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         self.calls += 1
+        self.inflight = max(0, self.inflight - 1)
         in_tok = out_tok = 0
         # langchain_anthropic / openai surface usage in a couple of shapes.
         try:
@@ -491,6 +519,7 @@ async def full_debate(
     reservation_id: Optional[str] = None,
     alpha_vantage_key: Optional[str] = None,
     report_language: str = "en",
+    cancel_check: Optional[Any] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Drive the full LangGraph diligence graph, yielding UI-compatible events.
 
@@ -509,7 +538,7 @@ async def full_debate(
     pass ``None`` (the default) to run without CostGuard, as the headless tests do.
     """
     analysts = selected_analysts or ["market", "social", "news", "fundamentals"]
-    meter = _TokenMeter(token_cap)
+    meter = _TokenMeter(token_cap, cancel_check)
     merged: Dict[str, Any] = {}
     final_state: Optional[Dict[str, Any]] = None
     last_phase: Optional[str] = None
@@ -786,6 +815,14 @@ async def full_debate(
             "cost_known": _run_cost_known(auth_kind, merged),
         }
     finally:
+        # A cancelled graph can still have a model call in flight on a worker thread: wait (bounded) for it to land so its
+        # tokens are counted before the reservation is settled and the run slot is released. Never settle early.
+        deadline = time.monotonic() + CANCEL_DRAIN_S
+        while meter.inflight > 0 and time.monotonic() < deadline:
+            try:
+                await asyncio.sleep(0.25)
+            except BaseException:  # noqa: BLE001 — a second cancel must not skip the settlement
+                break
         _finalize_reservation(reservation_id, auth_kind, merged, meter)
 
 

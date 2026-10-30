@@ -86,7 +86,7 @@ def run_dexter_job(
     }
     env = {k: os.environ[k] for k in _BASE_ENV if k in os.environ}
     env.update({
-        "HOME": str(job_dir), "DEXTER_ROOT": str(dexter_root), "TAL_DEXTER_JOB_DIR": str(job_dir),
+        "DEXTER_ROOT": str(dexter_root), "TAL_DEXTER_JOB_DIR": str(job_dir),
         "NO_COLOR": "1", "CI": "1",
     })
     env.update({k: v for k, v in (provider_env or {}).items()})

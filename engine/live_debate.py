@@ -29,7 +29,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from .data_providers import Headline, QuoteSummary
 from .secret_refs import redact as redact_secrets
@@ -360,6 +360,34 @@ _AGENTS: list[_Agent] = [
 assert len(_AGENTS) == MAX_AGENTS_PER_SESSION, "agent count must match the cap"
 
 
+def _record_usage(ledger: Any, agent: str, config: Any, adapter: Any, in_tok: int, out_tok: int) -> None:
+    """One finished call into the official-price ledger (best-effort: the report must never fail a run)."""
+    try:
+        d = getattr(adapter, "last_usage", None) or {}
+        adapter.last_usage = None            # never let a later call that reports nothing inherit this call's detail
+        if not (in_tok or out_tok):
+            ledger.record_no_usage(stage="debate", agent=agent, provider=config.provider, model=config.model)
+            return
+        ledger.record(
+            stage="debate", agent=agent, provider=config.provider, model_requested=config.model,
+            model_billed=d.get("model") or config.model, input_tokens=in_tok, output_tokens=out_tok,
+            cached_input_tokens=d.get("cached"), cache_write_tokens=d.get("cache_write"),
+            cache_write_30m_tokens=d.get("cache_write_30m"), cache_write_12h_tokens=d.get("cache_write_12h"), reasoning_tokens=d.get("reasoning"),
+            service_tier=d.get("service_tier"), tier_reported=bool(d.get("service_tier")),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _report(ledger: Any, config: Any, state: str) -> Optional[dict]:
+    try:
+        from .cost_report import build_report
+
+        return build_report(ledger, billing=config.auth_kind or "api_key", run_state=state)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @dataclass
 class _DebateState:
     transcript: list[dict] = field(default_factory=list)  # {agent, content}
@@ -530,6 +558,7 @@ async def live_debate(
     sentiment: Optional[SentimentBlock] = None,
     report_language: str = "en",
     extra_context: str = "",
+    report_sink: Optional[Any] = None,
 ) -> AsyncIterator[dict]:
     """Real-LLM debate. Yields the same event shapes as `canned_debate`.
 
@@ -575,6 +604,9 @@ async def live_debate(
     language_suffix = free_engine_suffix(language_code)
     started_at = time.time()
     state = _DebateState()
+    from .cost_report import UsageLedger
+
+    ledger = UsageLedger(provider=config.provider)
     # `bearer_token` works for both api_key and oauth auth shapes; the
     # adapter's `api_key` kwarg is named for Protocol consistency but
     # accepts any Bearer token. For OpenAI's standard chat-completions
@@ -654,6 +686,7 @@ async def live_debate(
 
             state.input_tokens += in_tok
             state.output_tokens += out_tok
+            _record_usage(ledger, agent.name, config, adapter, in_tok, out_tok)
             state.transcript.append({"agent": agent.name, "content": content})
 
             if agent.name == "portfolio_manager":
@@ -679,13 +712,27 @@ async def live_debate(
                     config.model, state.input_tokens, state.output_tokens
                 )
             )
-            yield {
+            if report_sink is not None:
+                try:
+                    report_sink(_report(ledger, config, "running"))
+                except Exception:  # noqa: BLE001
+                    pass
+            usage_evt = {
                 "type": "cost.usage",
                 "input_tokens": state.input_tokens,
                 "output_tokens": state.output_tokens,
                 "est_cost_usd": round(running_cost, 4),
                 "free": free,
             }
+            try:
+                from .cost_report import brief
+
+                b = brief(_report(ledger, config, "running"))
+                if b:
+                    usage_evt["official_cost"] = b
+            except Exception:  # noqa: BLE001
+                pass
+            yield usage_evt
 
         cost = estimate_cost(config.model, state.input_tokens, state.output_tokens)
         duration = time.time() - started_at
@@ -732,9 +779,16 @@ async def live_debate(
                 else (round(cost, 4) if is_priced(config.model) else None)
             ),
             "cost_known": config.auth_kind in ("oauth", "local") or is_priced(config.model),
+            # Official-API price estimate from measured usage (separate from the ceiling-based figures above).
+            "cost_report": _report(ledger, config, "completed"),
         }
         yielded_complete = True
     finally:
+        if report_sink is not None:
+            try:
+                report_sink(_report(ledger, config, "running"))
+            except Exception:  # noqa: BLE001
+                pass
         # Best-effort adapter cleanup. Runs on normal exit AND on
         # GeneratorExit (client disconnect mid-stream) — without this the
         # pooled httpx client inside Anthropic / OpenAI adapters leaks for

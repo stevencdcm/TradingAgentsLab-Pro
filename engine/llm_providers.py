@@ -20,6 +20,9 @@ quarterly and this table will drift. **Subscription-billed routes
 (OpenAI Codex / OAuth) are NOT per-token billed**; the engine's logged
 cost estimate overstates true cost for OAuth sessions. The founder's
 billing dashboard is the source of truth.
+
+The official OpenAI list prices used for the after-the-fact cost REPORT live elsewhere (`official_pricing.py`, see
+`docs/official-cost-report.md`); this table stays the conservative budget ceiling.
 """
 
 from __future__ import annotations
@@ -127,6 +130,39 @@ def local_auth_hint(config: "ProviderConfig | None", error_text: str) -> str:
     if (config.auth or {}).get("api_key"):
         return f"{error_text} [local server rejected the stored API key: it is wrong or was rotated; re-enter it in Settings → Local LLM]"
     return f"{error_text} [this local server requires an API key but none is stored: add it in Settings → Local LLM → manual entry, then Save]"
+
+
+def _field(obj: Any, name: str) -> Any:
+    """getattr-or-key lookup that tolerates SDK objects, dicts and None."""
+    if obj is None:
+        return None
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def usage_detail(usage: Any, *, model: Any = None, service_tier: Any = None) -> dict[str, Any]:
+    """Cache / reasoning split of an OpenAI-shaped usage object (chat-completions or Responses naming).
+
+    A value the provider did not report is None (unknown) - callers must not read it as 0. `cached` is the part of the
+    input that was served from the prompt cache (already INCLUDED in the input count); `reasoning` is part of the output.
+    """
+    in_d = _field(usage, "prompt_tokens_details") or _field(usage, "input_tokens_details")
+    out_d = _field(usage, "completion_tokens_details") or _field(usage, "output_tokens_details")
+    cached = _field(in_d, "cached_tokens")
+    write = _field(in_d, "cache_write_tokens")
+    if write is None:
+        write = _field(in_d, "cache_creation_tokens")
+    # OpenAI reports a cache write's TTL split here; the two rates differ (30m = 1.25x input, 12h = 2.5x), so it must be read.
+    ttl = _field(in_d, "cache_write_tokens_details")
+    t30, t12 = _field(ttl, "ttl_30m_tokens"), _field(ttl, "ttl_12h_tokens")
+    return {
+        "cached": cached if isinstance(cached, int) else None,
+        "cache_write": write if isinstance(write, int) else None,
+        "cache_write_30m": t30 if isinstance(t30, int) else None,
+        "cache_write_12h": t12 if isinstance(t12, int) else None,
+        "reasoning": (lambda r: r if isinstance(r, int) else None)(_field(out_d, "reasoning_tokens")),
+        "model": model if isinstance(model, str) else None,
+        "service_tier": service_tier if isinstance(service_tier, str) else None,
+    }
 
 
 def is_priced(model: str) -> bool:
@@ -372,6 +408,7 @@ class OpenAIAdapter:
     """Direct OpenAI Chat Completions. Single client per session."""
 
     name = "openai"
+    last_usage: Optional[dict] = None       # cache/reasoning/model/tier detail of the latest call (None = not reported)
     _base_url: Optional[str] = None
     _extra_headers: dict[str, str] = {}
     # Subclasses (e.g. LocalLLMAdapter) override this for a different regime.
@@ -430,6 +467,9 @@ class OpenAIAdapter:
         usage = resp.usage
         in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
         out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
+        # Extra usage detail for the official-price report; the (text, in, out) contract above is unchanged.
+        self.last_usage = usage_detail(usage, model=getattr(resp, "model", None),
+                                       service_tier=getattr(resp, "service_tier", None)) if usage else None
         return choice.strip(), in_tok, out_tok
 
 
@@ -597,6 +637,8 @@ class OpenAICodexAdapter:
     is the source of truth.
     """
 
+    last_usage: Optional[dict] = None       # see OpenAIAdapter.last_usage
+
     name = "openai-codex"
     BASE_URL = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -744,6 +786,7 @@ class OpenAICodexAdapter:
                         usage = resp.get("usage") or {}
                         in_tokens = int(usage.get("input_tokens") or 0)
                         out_tokens = int(usage.get("output_tokens") or 0)
+                        self.last_usage = usage_detail(usage, model=resp.get("model"), service_tier=resp.get("service_tier")) if usage else None
                         # If we missed the deltas (unlikely but possible),
                         # extract text from the completed output as fallback.
                         if not content_parts:

@@ -7,6 +7,7 @@ import type {
 } from './engine-client';
 import { isReview, riskLabel, stanceLabel } from './stance';
 import { makeTranslator, type Locale } from '../i18n';
+import { costReportMarkdown, type CostReport } from './cost-report';
 import { findNotices, findResearch, researchMarkdown } from './research-notes';
 import type { MessageKey } from '../i18n/messages';
 
@@ -154,7 +155,7 @@ export function groupByPhase(events: DebateEvent[]): PhaseGroup[] {
 }
 
 /** `locale` defaults to English so callers/tests that omit it keep the original output. */
-export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 'en'): string {
+export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 'en', costReportOverride: CostReport | null = null): string {
   const t = makeTranslator(locale);
   const start = findStart(events);
   const summary = findSummary(events);
@@ -244,6 +245,11 @@ export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 
     }
   }
 
+  const doneEv = events.find((e) => e.type === 'session.complete');
+  const report = costReportOverride ?? (doneEv && doneEv.type === 'session.complete' ? (doneEv.cost_report ?? null) : null);
+  if (report) {
+    lines.push(...costReportMarkdown(report, t, (n) => n.toLocaleString(locale === 'en' ? 'en' : 'zh-Hant-TW')));
+  }
   lines.push('---', '');
   lines.push(t('export.md.footer'), '');
   return lines.join('\n');

@@ -16,6 +16,8 @@ import { exportMsgs } from './en/export';
 import { modelNotes } from './en/modelNotes';
 import { evidence } from './en/evidence';
 import { runStatus } from './en/runStatus';
+import { costReport } from './en/costReport';
+import { costReportZhTW } from './zh-TW/costReport';
 import { runStatusZhTW } from './zh-TW/runStatus';
 import { evidenceZhTW } from './zh-TW/evidence';
 import { modelNotesZhTW } from './zh-TW/modelNotes';
@@ -54,6 +56,7 @@ export const en = {
   ...modelNotes,
   ...evidence,
   ...runStatus,
+  ...costReport,
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -75,6 +78,7 @@ export const zhTW: Record<MessageKey, string> = {
   ...modelNotesZhTW,
   ...evidenceZhTW,
   ...runStatusZhTW,
+  ...costReportZhTW,
 };
 
 const CATALOGS: Record<Locale, Record<string, string>> = {

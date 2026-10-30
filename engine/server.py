@@ -969,6 +969,17 @@ def build_app(*, token: str) -> FastAPI:
                     ws.run.engine_started = True
                 _cancel_check = (lambda: ws.run.cancel_requested) if getattr(ws, "run", None) is not None else None
 
+                def _report_sink(rep: Optional[dict[str, Any]]) -> None:
+                    """Latest partial official-price report -> the run record (persisted; shown if the run ends without a result)."""
+                    run = getattr(ws, "run", None)
+                    if run is None:
+                        return
+                    if tw_dexter_res is not None and not tw_simple:
+                        from .tw_research import _report_with_dexter
+
+                        rep = _report_with_dexter(rep, config, tw_dexter_res.get("ran", False), tw_dexter_res.get("raw_usage"))
+                    run.set_cost_report(rep)
+
                 # Both engines are async generators yielding the same event
                 # shapes, so the send/capture loop is uniform. Pro routes to the
                 # real LangGraph graph; free routes to the simplified reimpl.
@@ -981,6 +992,7 @@ def build_app(*, token: str) -> FastAPI:
                         config=config,
                         report_language=report_language,
                         reservation_id=reservation_id,
+                        report_sink=_report_sink,
                     )
                 elif is_pro:
                     # Imported lazily: the full graph pulls in langchain +
@@ -1061,6 +1073,7 @@ def build_app(*, token: str) -> FastAPI:
                             enabled=start.get("tw_dexter") is not False,
                         )
                         tw_graph_tools.set_dexter(tw_dexter_res["block"])
+                        _report_sink(None)                  # Dexter-only partial report until the graph reports its own
                         await ws.send_json(tw_dexter_res["event"])
                         captured_events.append(tw_dexter_res["event"])
                     debate_events = full_debate(
@@ -1080,6 +1093,7 @@ def build_app(*, token: str) -> FastAPI:
                         alpha_vantage_key=av_key,
                         report_language=report_language,
                         cancel_check=_cancel_check,
+                        report_sink=_report_sink,
                     )
                 else:
                     debate_events = live_debate(
@@ -1091,6 +1105,7 @@ def build_app(*, token: str) -> FastAPI:
                         reservation_id=reservation_id,
                         sentiment=sentiment,
                         report_language=report_language,
+                        report_sink=_report_sink,
                     )
 
                 # Each agent.message arrives as the LLM response completes — we

@@ -4,6 +4,7 @@ import type { DebateEvent } from '../lib/engine-client';
 import { deriveRunStatus, type RunClock } from '../lib/run-status';
 import { agentLabelFor } from '../lib/transcript';
 import { derivePhaseTotals } from './DebateStream';
+import CostReportPanel from './CostReportPanel';
 import styles from './RunStatus.module.css';
 
 interface Props {
@@ -100,6 +101,7 @@ export default function RunStatus({ events, clock, streaming, provider, model }:
       {clock.usagePartial && !clock.cancelling && (
         <p className={styles.note} data-testid="run-status-usage-partial">{t('runStatus.usagePartial')}</p>
       )}
+      {clock.usagePartial && clock.costReport ? <CostReportPanel report={clock.costReport} /> : null}
       {(clock.connection === 'reconnecting' || clock.connection === 'offline' || clock.resumed) && (
         <p className={`${styles.note} ${clock.connection === 'connected' || !clock.connection ? '' : styles.noteWarn}`} data-testid="run-status-connection" data-connection={clock.connection ?? 'connected'}>
           {clock.connection === 'reconnecting'

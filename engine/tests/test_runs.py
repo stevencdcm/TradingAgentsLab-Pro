@@ -1100,3 +1100,57 @@ def test_two_tabs_see_one_cancelling_event_and_the_same_end(world):
             assert t.count("run.cancelling") <= 1 and "run.cancelled" in t and t[-1] == "run.finished"
         st = c.get(f"/runs/{run_id}", headers=H).json()
         assert st["state"] == "cancelled" and st["usage_partial"] is True and st["usage_complete"] is False
+
+
+# ---- D17: a run that ends without a result still has a visible, persisted, partial usage report ---------------------------------
+
+
+def test_cancelled_run_has_a_partial_per_agent_report_on_status_finish_event_and_after_restart(world):
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        run_id, _, _ = start_and_get_two_messages(c, frame())
+        out = c.post(f"/runs/{run_id}/cancel", headers=H).json()
+        rep = out["cost_report"]
+        assert rep["run_state"] == "cancelled" and rep["totals"]["complete"] is False
+        assert "run_cancelled_usage_is_partial" in rep["totals"]["incomplete_reasons"]
+        assert rep["lines"] and {ln["agent"] for ln in rep["lines"]} and rep["totals"]["input_tokens"] >= 200       # what was metered
+        evs = c.get(f"/runs/{run_id}/events?limit=2000", headers=H).json()["events"]
+        fin = evs[-1]
+        assert fin["type"] == "run.finished" and fin["cost_report"]["run_state"] == "cancelled"
+    with TestClient(srv.build_app(token=TOKEN)) as later:                                                  # persisted: survives a restart
+        again = later.get(f"/runs/{run_id}", headers=H).json()["cost_report"]
+        assert again["run_state"] == "cancelled" and again["totals"]["input_tokens"] == rep["totals"]["input_tokens"]
+    world.hold.set()
+
+
+def test_interrupted_run_report_survives_the_restart_and_is_marked_partial(world):
+    with TestClient(srv.build_app(token=TOKEN)) as old:
+        run_id, _, _ = start_and_get_two_messages(old, frame())
+        time.sleep(0.2)
+        old.app.state.run_manager._db = lambda fn: None                                                   # the old process dies
+        with TestClient(srv.build_app(token=TOKEN)) as new:
+            st = new.get(f"/runs/{run_id}", headers=H).json()
+            assert st["state"] == "interrupted"
+            assert st["cost_report"]["run_state"] == "interrupted" and st["cost_report"]["totals"]["complete"] is False
+            assert st["cost_report"]["totals"]["input_tokens"] >= 200
+            evs = new.get(f"/runs/{run_id}/events?limit=2000", headers=H).json()["events"]
+            assert evs[-1]["type"] == "run.finished" and evs[-1]["cost_report"]["run_state"] == "interrupted"
+    world.hold.set()
+
+
+def test_completed_run_status_does_not_duplicate_the_report_it_already_carries_on_session_complete(world):
+    world.free = 10_000
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(frame())
+            evs = read_until(ws, lambda e: e["type"] == "run.finished")
+        comp = next(e for e in evs if e["type"] == "session.complete")
+        assert comp["cost_report"]["run_state"] == "completed"
+        run_id = evs[0]["run_id"]
+        assert c.get(f"/runs/{run_id}", headers=H).json()["cost_report"] is None
+
+
+def test_runs_table_gets_the_report_column_on_an_existing_database(tmp_db):
+    with storage._connect() as conn:
+        storage._ensure_initialized()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+    assert "cost_report" in cols

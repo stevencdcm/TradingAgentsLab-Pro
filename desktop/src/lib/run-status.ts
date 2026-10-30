@@ -1,3 +1,4 @@
+import type { CostReport } from './cost-report';
 /**
  * Live run status for the Analyze page. Pure derivation (no timers, no I/O) so it can be tested.
  *
@@ -39,6 +40,8 @@ export interface RunClock {
   cancelling?: boolean;
   /** The run ended without completing: token / cost figures are partial. */
   usagePartial?: boolean;
+  /** Per-agent official-price usage report of a run that ended without a result (flagged partial by the engine). */
+  costReport?: CostReport | null;
 }
 
 export type RunState =

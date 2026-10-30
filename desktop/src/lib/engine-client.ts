@@ -1,3 +1,4 @@
+import type { CostReport } from './cost-report';
 import { apiBase, authHeader, wsBase } from './endpoints';
 export interface EngineHandshake {
   port: number;
@@ -386,6 +387,8 @@ export interface SessionCompleteEvent {
   /** null = unknown (a paid model with no verified price); never to be shown as $0. */
   estimated_cost_usd?: number | null;
   cost_known?: boolean;
+  /** Official-API price estimate from measured usage (per agent + Dexter). Not an invoice; see lib/cost-report.ts. */
+  cost_report?: CostReport | null;
   /** Whole-run wall seconds (data fetch + Dexter + debate), frozen when the run completed. */
   elapsed_s?: number;
   /** Pro-only: `'full'` marks the real LangGraph engine; the free engine
@@ -658,6 +661,8 @@ export interface SessionSummary {
   created_at: string;
   /** Whole-run wall seconds recorded by the engine; null for sessions saved before it was recorded. */
   elapsed_s?: number | null;
+  /** Detail view only: the saved report, or a clearly labelled recomputation at today's list prices for older sessions. */
+  cost_report?: CostReport | null;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -1214,6 +1219,8 @@ export interface RunStatusSnapshot {
   active: boolean;
   /** A stop was requested but the engine is still waiting for the model call in flight to finish. */
   cancelling?: boolean;
+  /** Per-agent official-price report of a run that ended without a result (partial); null otherwise. */
+  cost_report?: CostReport | null;
   /** Finished without completing: tokens/cost are what was measured, not a final figure. */
   usage_partial?: boolean;
   ticker: string | null;

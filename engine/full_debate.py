@@ -223,6 +223,17 @@ class _TokenMeter(BaseCallbackHandler):
         # worker threads), so they are counted (`inflight`) and awaited before the reservation is settled.
         self.cancel_check = cancel_check
         self.inflight = 0
+        # Per-call usage for the official-price report (separate from the token cap above, which is unchanged).
+        self.ledger = None            # set by full_debate() once the provider is known
+        self._calls: dict[Any, tuple[Optional[str], Optional[str]]] = {}
+
+    def _remember(self, run_id: Any, metadata: Any, kwargs: Any) -> None:
+        try:
+            agent = (metadata or {}).get("langgraph_node") if isinstance(metadata, dict) else None
+            inv = kwargs.get("invocation_params") or {}
+            self._calls[run_id] = (agent, inv.get("model") or inv.get("model_name"))
+        except Exception:  # noqa: BLE001 - metering detail is best-effort
+            pass
 
     def _starting(self) -> None:
         self.inflight += 1
@@ -232,12 +243,15 @@ class _TokenMeter(BaseCallbackHandler):
 
     def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
         self._starting()
+        self._remember(kwargs.get("run_id"), kwargs.get("metadata"), kwargs)
 
     def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
         self._starting()
+        self._remember(kwargs.get("run_id"), kwargs.get("metadata"), kwargs)
 
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
         self.inflight = max(0, self.inflight - 1)
+        self._calls.pop(kwargs.get("run_id"), None)
 
     @property
     def total(self) -> int:
@@ -266,8 +280,34 @@ class _TokenMeter(BaseCallbackHandler):
                 pass
         self.input_tokens += in_tok
         self.output_tokens += out_tok
+        self._record_ledger(response, in_tok, out_tok, kwargs.get("run_id"))
         if self.cap is not None and self.total >= self.cap:
             raise TokenCapExceeded(f"token cap {self.cap} exceeded ({self.total})")
+
+    def _record_ledger(self, response: Any, in_tok: int, out_tok: int, run_id: Any) -> None:
+        """Feed the official-price ledger. Never raises: the report is secondary to the run and to the cap."""
+        agent, requested = self._calls.pop(run_id, (None, None))
+        if self.ledger is None:
+            return
+        try:
+            if not (in_tok or out_tok):
+                # A finished call that reported no usage must stay visible as a gap; dropping it would let the report call itself complete.
+                self.ledger.record_no_usage(stage="debate", agent=agent, provider=None, model=requested)
+                return
+            from .cost_report import usage_from_langchain
+
+            r_in, r_out, d = usage_from_langchain(response)
+            if not (r_in or r_out):                # the cap's own numbers won (llm_output shape): no detail is available
+                r_in, r_out, d = in_tok, out_tok, {}
+            self.ledger.record(
+                stage="debate", agent=agent, model_requested=requested, model_billed=d.get("model") or requested,
+                input_tokens=r_in, output_tokens=r_out, cached_input_tokens=d.get("cached"),
+                cache_write_tokens=d.get("cache_write"), cache_write_30m_tokens=d.get("cache_write_30m"),
+                cache_write_12h_tokens=d.get("cache_write_12h"), reasoning_tokens=d.get("reasoning"),
+                service_tier=d.get("service_tier"), tier_reported=bool(d.get("service_tier")),
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _last_message_has_tool_calls(delta: Dict[str, Any]) -> bool:
@@ -532,6 +572,7 @@ async def full_debate(
     alpha_vantage_key: Optional[str] = None,
     report_language: str = "en",
     cancel_check: Optional[Any] = None,
+    report_sink: Optional[Any] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Drive the full LangGraph diligence graph, yielding UI-compatible events.
 
@@ -556,8 +597,27 @@ async def full_debate(
     last_phase: Optional[str] = None
     aborted = False
 
+    def _cost_report(state: str = "completed") -> Optional[Dict[str, Any]]:
+        try:
+            from .cost_report import build_report
+
+            return build_report(meter.ledger, billing=auth_kind or "api_key", run_state=state)
+        except Exception:  # noqa: BLE001 - the report is secondary; never fail the run over it
+            return None
+
+    def _publish_report() -> None:
+        """Hand the current PARTIAL report (per agent, no secrets) to the run record so a run that ends without a
+        session.complete (cancelled / failed / interrupted) still has a persisted, visible usage report."""
+        if report_sink is None:
+            return
+        try:
+            report_sink(_cost_report("running"))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _cost_event() -> Dict[str, Any]:
-        return {
+        _publish_report()
+        evt = {
             "type": "cost.usage",
             "input_tokens": meter.input_tokens,
             "output_tokens": meter.output_tokens,
@@ -566,6 +626,16 @@ async def full_debate(
             "est_cost_usd": 0.0,
             "free": merged.get("llm_provider") in ("local", "openai_compatible"),
         }
+        try:
+            from .cost_report import brief
+
+            # Totals-only, running (so always flagged incomplete until the run ends); per-agent lines ride on session.complete.
+            b = brief(_cost_report("running"))
+            if b:
+                evt["official_cost"] = b
+        except Exception:  # noqa: BLE001
+            pass
+        return evt
 
     # Outer try/finally guarantees the CostGuard reservation is settled on EVERY
     # exit path: a config or construction failure before the first yield, a
@@ -574,6 +644,12 @@ async def full_debate(
     # pre-config failure still finalizes cleanly (priced at zero: no LLM calls).
     try:
         merged = _apply_report_language(_build_config(config), report_language)
+        try:
+            from .cost_report import UsageLedger
+
+            meter.ledger = UsageLedger(provider=(merged.get("llm_provider") or "").lower() or None)
+        except Exception:  # noqa: BLE001
+            meter.ledger = None
 
         # Data-tool key (Alpha Vantage) must be in the environment for the WHOLE
         # run: the library's dataflows tools (news / social / fundamentals) read
@@ -825,6 +901,8 @@ async def full_debate(
                 round(_run_cost(auth_kind, merged, meter), 4) if _run_cost_known(auth_kind, merged) else None
             ),
             "cost_known": _run_cost_known(auth_kind, merged),
+            # Official-API price estimate from measured usage (separate from the ceiling-based figures above).
+            "cost_report": _cost_report("completed"),
         }
     finally:
         # A cancelled graph can still have a model call in flight on a worker thread: wait (bounded) for it to land so its
@@ -843,6 +921,7 @@ async def full_debate(
                 await asyncio.shield(drain)
             except asyncio.CancelledError:
                 continue
+        _publish_report()                    # includes a call that landed during the drain
         still_running = meter.inflight > 0
         if still_running:
             meter.zombie_since = time.monotonic()

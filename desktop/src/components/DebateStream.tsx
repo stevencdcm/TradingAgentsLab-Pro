@@ -10,6 +10,8 @@ import type {
   NewsHeadlinesEvent,
 } from '../lib/engine-client';
 import Markdown from './Markdown';
+import CostReportPanel from './CostReportPanel';
+import type { CostReport } from '../lib/cost-report';
 import { isReview, normalizeStance, riskLabel, stanceLabel, stanceLean } from '../lib/stance';
 import { useI18n, type I18n } from '../i18n';
 import { localizeEngineError } from '../lib/engine-errors';
@@ -20,6 +22,8 @@ type Tr = I18n['t'];
 interface DebateStreamProps {
   events: DebateEvent[];
   isStreaming: boolean;
+  /** History detail passes the server's report (it also recomputes one for sessions saved before reports existed). */
+  costReport?: CostReport | null;
 }
 
 /**
@@ -257,6 +261,7 @@ interface DecisionMeta {
   outputTokens?: number;
   estimatedCostUsd?: number | null;
   elapsedS?: number | null;
+  costReport?: CostReport | null;
 }
 
 function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
@@ -270,6 +275,7 @@ function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
       outputTokens: complete.output_tokens,
       estimatedCostUsd: complete.estimated_cost_usd,
       elapsedS: complete.elapsed_s ?? null,
+      costReport: complete.cost_report ?? null,
     };
   }
   return { live: false };
@@ -332,7 +338,7 @@ const isKnownAgent = (a: string): a is KnownAgent => (KNOWN_AGENTS as readonly s
 // analysts): ~11m30s on Anthropic API; OAuth/OpenAI in the same band.
 // Varies with provider, model split, debate rounds, and analyst count,
 // so the copy quotes a range rather than a point estimate.
-function DebateStream({ events, isStreaming }: DebateStreamProps) {
+function DebateStream({ events, isStreaming, costReport }: DebateStreamProps) {
   const i18n = useI18n();
   const { t, tp } = i18n;
   const start = findStart(events);
@@ -818,6 +824,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
               )}
             </div>
           )}
+          {(costReport ?? meta.costReport) ? <CostReportPanel report={(costReport ?? meta.costReport) as CostReport} /> : null}
           <div className={styles.decisionDisclaimer}>
             {t('debate.decision.disclaimer')}
           </div>

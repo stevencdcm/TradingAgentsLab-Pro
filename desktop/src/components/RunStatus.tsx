@@ -94,6 +94,15 @@ export default function RunStatus({ events, clock, streaming, provider, model }:
           </dd>
         </div>
       </dl>
+      {(clock.connection === 'reconnecting' || clock.connection === 'offline' || clock.resumed) && (
+        <p className={`${styles.note} ${clock.connection === 'connected' || !clock.connection ? '' : styles.noteWarn}`} data-testid="run-status-connection" data-connection={clock.connection ?? 'connected'}>
+          {clock.connection === 'reconnecting'
+            ? t('runStatus.conn.reconnecting')
+            : clock.connection === 'offline'
+              ? t('runStatus.conn.offline')
+              : t('runStatus.conn.resumed')}
+        </p>
+      )}
       <p className={styles.line} data-testid="run-status-heartbeat">
         {streaming
           ? v.heartbeatAgeMs === null

@@ -22,6 +22,8 @@ import {
   type SpendState,
 } from '../lib/cost-guard';
 import { runAnalysis } from '../lib/run-analysis';
+import { forgetRun, recallRun, rememberRun } from '../lib/run-memory';
+import { getActiveRuns, getRunStatus, resumeRun, type RunConnection, type RunStatusSnapshot } from '../lib/engine-client';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { listSecrets, onSecretsChanged } from '../lib/secrets';
 import { consumePendingTicker } from '../lib/handoff';
@@ -591,11 +593,117 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     }
   }, [codexModels.models]);
 
+  // Event / error / connection handlers shared by a fresh run and a re-attached one (page reload, second tab).
+  const handleRunEvent = (event: DebateEvent) => {
+    const type = (event as { type: string }).type;
+    // Heartbeats are liveness only: keep them out of the transcript/event list.
+    if (type === 'run.heartbeat') {
+      const hb = event as unknown as HeartbeatEvent;
+      setRunClock((c) => ({ ...c, lastHeartbeatAt: Date.now(), heartbeat: hb }));
+      return;
+    }
+    // Run bookkeeping events update the clock, they are not part of the debate transcript.
+    if (type === 'run.attached' || type === 'run.finished' || type === 'run.resync') {
+      if (type === 'run.finished') setRunClock((c) => (c.endedAt ? c : { ...c, endedAt: Date.now() }));
+      return;
+    }
+    setRunClock((c) => ({ ...c, lastEventAt: Date.now() }));
+    setEvents((prev) => [...prev, event]);
+  };
+  const handleRunError = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : t('analyze.err.stream');
+    setRunClock((c) => ({ ...c, streamError: msg }));
+    setStreamError(msg);
+  };
+  const handleConnection = (state: RunConnection) => {
+    setRunClock((c) => ({ ...c, connection: state, streamError: state === 'connected' ? null : c.streamError }));
+    if (state === 'connected') setStreamError(null);
+  };
+
+  /** Re-attach to an engine-side run and replay it from the start (reload, second tab, finished run shown again). */
+  const resumeFromEngine = async (st: RunStatusSnapshot) => {
+    isStreamingRef.current = st.active;
+    setEvents([]);
+    setStreamError(null);
+    setAssetClass(null);
+    if (st.ticker) setTicker(st.ticker);
+    if (st.trade_date) setDate(st.trade_date);
+    setIsStreaming(st.active);
+    setRunCtx({ provider: st.provider, model: st.model });
+    const startedAt = st.started_at * 1000;
+    setRunClock({
+      ...EMPTY_CLOCK,
+      startedAt,
+      endedAt: st.ended_at ? st.ended_at * 1000 : null,
+      lastEventAt: st.since_last_event_s === null ? null : Date.now() - st.since_last_event_s * 1000,
+      resumed: st.active,
+      connection: 'connected',
+    });
+    rememberRun({ runId: st.run_id, ticker: st.ticker ?? '' });
+    try {
+      const handle = await resumeRun(
+        st.run_id,
+        (event) => {
+          const t0 = (event as { type: string }).type;
+          if (t0 === 'run.heartbeat') return handleRunEvent(event);
+          // Replayed events must not make a long-quiet run look freshly active: only live ones touch the clock.
+          const seq = (event as { seq?: number }).seq;
+          if (typeof seq === 'number' && seq <= st.last_seq) {
+            if (t0 === 'run.attached' || t0 === 'run.finished' || t0 === 'run.resync') return;
+            setEvents((prev) => [...prev, event]);
+            return;
+          }
+          handleRunEvent(event);
+        },
+        handleRunError,
+        handleConnection,
+        0,
+      );
+      handleRef.current = handle;
+      await handle.done;
+    } catch (err) {
+      handleRunError(err);
+    } finally {
+      setRunClock((c) => (c.startedAt && !c.endedAt ? { ...c, endedAt: Date.now() } : c));
+      handleRef.current = null;
+      isStreamingRef.current = false;
+      setIsStreaming(false);
+    }
+  };
+
+  // On open / reload: re-attach to the run this tab was showing, else to the one active run (second tab).
+  const resumeTriedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (isStreamingRef.current || resumeTriedRef.current) return;
+        resumeTriedRef.current = true;
+        const last = recallRun();
+        let st: RunStatusSnapshot | null = last ? await getRunStatus(last.runId) : null;
+        if (!st && last) forgetRun();
+        if (!st) {
+          const { runs } = await getActiveRuns();
+          st = runs[0] ?? null;
+        }
+        if (!st || cancelled || isStreamingRef.current) return;
+        await resumeFromEngine(st);
+      } catch {
+        // No engine yet / nothing to resume: the normal empty page.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const onAnalyze = async () => {
     if (!engineReadyRef.current || isStreamingRef.current) return;
     setEvents([]);
     setStreamError(null);
     setCopied(false);
+    forgetRun();
     // Reset asset class so the previous run's "crypto" badge doesn't bleed
     // into a new equity analysis (or vice versa) before the first
     // data.summary event arrives. dataProvider stays as-is — it's the
@@ -628,21 +736,9 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           twDexter,
         },
         {
-          onEvent: (event) => {
-            // Heartbeats are liveness only: keep them out of the transcript/event list.
-            if ((event as { type: string }).type === 'run.heartbeat') {
-              const hb = event as unknown as HeartbeatEvent;
-              setRunClock((c) => ({ ...c, lastHeartbeatAt: Date.now(), heartbeat: hb }));
-              return;
-            }
-            setRunClock((c) => ({ ...c, lastEventAt: Date.now() }));
-            setEvents((prev) => [...prev, event]);
-          },
-          onError: (err) => {
-            const msg = err instanceof Error ? err.message : t('analyze.err.stream');
-            setRunClock((c) => ({ ...c, streamError: msg }));
-            setStreamError(msg);
-          },
+          onEvent: handleRunEvent,
+          onError: handleRunError,
+          onConnection: handleConnection,
           // Open the existing CostGuard modal and await the user's choice.
           // Preserves the established UX where Cancel aborts and Override
           // re-tries the reservation with override=true (handled inside
@@ -679,8 +775,9 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     }
   };
 
+  // Stop is an explicit cancel: the engine stops the analysis and settles its cost. (Leaving the page only unsubscribes.)
   const onStop = () => {
-    handleRef.current?.close();
+    void handleRef.current?.cancel();
   };
 
   // Listen for the App menu "Stop streaming" command.
@@ -688,7 +785,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     const bridge = window.tradingAgentsLab;
     if (!bridge?.onMenuCommand) return;
     return bridge.onMenuCommand('menu:stop-stream', () => {
-      handleRef.current?.close();
+      void handleRef.current?.cancel();
     });
   }, []);
 
@@ -705,7 +802,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         if (engineReadyRef.current && !isStreamingRef.current) onAnalyze();
       } else if (e.key === '.') {
         e.preventDefault();
-        handleRef.current?.close();
+        void handleRef.current?.cancel();
       }
     };
     window.addEventListener('keydown', onKey);

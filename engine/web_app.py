@@ -182,6 +182,7 @@ class LocalOnly:
         # Verified hop (secret + owner + Host/Origin): the page / handshake may use the proxy base path. Local loopback
         # requests never get this flag, so the local launch-link entry keeps working while proxy mode is on.
         scope["tal_via_proxy"] = True
+        scope["tal_owner"] = owner                      # verified owner login: run/status/cancel are scoped to it
         if has_cookie:
             scope["tal_session_authenticated"] = True
         if scope["type"] == "http" and not has_cookie:

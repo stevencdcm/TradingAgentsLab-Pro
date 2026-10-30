@@ -46,6 +46,7 @@ from .live_debate import ProviderConfig, SentimentBlock, live_debate
 from .report_language import normalize_report_language
 from .llm_providers import adapter_for
 from . import cost_guard, llm_providers, local_llm_detect, secret_refs, sentiment_sources, storage
+from .run_manager import RunManager
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
@@ -605,16 +606,12 @@ def build_app(*, token: str) -> FastAPI:
 
     run_slot = {"busy": False}
 
-    @app.websocket("/stream")
-    async def stream(ws: WebSocket) -> None:
-        # WS auth via query param (browsers cannot set Authorization headers on WS).
-        provided = ws.query_params.get("token")
-        # Trusted workbench proxy (cookie + shared-secret hop + owner, checked by the web guard) authenticates the
-        # socket without a token in the URL; everything else still needs the engine token.
-        if provided != token and ws.scope.get("tal_session_authenticated") is not True:
-            await ws.close(code=1008, reason="invalid token")
-            return
-        await ws.accept()
+    run_manager = RunManager()
+    run_manager.recover()          # unfinished runs of a previous process -> interrupted (never re-run)
+    app.state.run_manager = run_manager
+
+    async def _execute_run(ws) -> None:
+        """The analysis itself. `ws` is a RunSink: events go to the run (replayable, multi-subscriber), not to one socket."""
 
         captured_events: list[dict] = []
         slot_held = False
@@ -1125,6 +1122,8 @@ def build_app(*, token: str) -> FastAPI:
                 trade_date=trade_date,
                 events=captured_events,
             )
+            if getattr(ws, "run", None) is not None:
+                ws.run.session_id = session_id          # exactly one history row per run; the run record points at it
 
             # Phase 8a — fire webhooks. After persist (so we have a session_id)
             # and before ws.close(1000) (so the renderer is still listening for
@@ -1174,6 +1173,21 @@ def build_app(*, token: str) -> FastAPI:
         except WebSocketDisconnect:
             sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
             return
+        except Exception as exc:  # noqa: BLE001 — never end a run silently: say what failed (redacted) and release the hold
+            import traceback
+
+            msg = secret_refs.scrub_key_shapes(secret_refs.redact(f"{type(exc).__name__}: {exc}"))
+            sys.stderr.write(f"[ws] ERROR ticker={ticker} {msg}\n" + secret_refs.scrub_key_shapes(secret_refs.redact(traceback.format_exc(limit=6))) + "\n")
+            if reservation_id:
+                # Local / OAuth cost nothing; a paid run that died mid-flight has an unknown cost (NULL), not 0.
+                free = config is None or config.auth_kind in ("oauth", "local")
+                cost_guard.finalize_reservation(reservation_id, actual_cost_usd=0.0 if free else None)
+            try:
+                await ws.send_json({"type": "run.error", "code": "engine_exception", "error": llm_providers.local_auth_hint(config, f"分析中斷（引擎內部錯誤）：{msg}")})
+                await ws.close(code=1011, reason="engine_exception")
+            except Exception:  # noqa: BLE001
+                pass
+            return
         finally:
             if tw_run_started:
                 from . import tw_graph_tools
@@ -1181,6 +1195,80 @@ def build_app(*, token: str) -> FastAPI:
                 tw_graph_tools.end_run()
             if slot_held:
                 run_slot["busy"] = False
+
+    def _owner(scope) -> str:
+        """`local` for the loopback entry; the verified owner login behind the workbench proxy (set by the web guard)."""
+        return str(scope.get("tal_owner") or "local")
+
+    def _ws_authorized(ws: WebSocket) -> bool:
+        return ws.query_params.get("token") == token or ws.scope.get("tal_session_authenticated") is True
+
+    async def _first_frame(ws: WebSocket):
+        try:
+            return await ws.receive_json()
+        except WebSocketDisconnect:
+            sys.stderr.write("[ws] DISCONNECT ticker= before the start frame\n")
+            return None
+
+    @app.websocket("/stream")
+    async def stream(ws: WebSocket) -> None:
+        # Compatible entry: start frame in, the same events out. The run now lives in the RunManager, so closing this
+        # socket (refresh, network drop) no longer cancels it; the first event is `run.attached` with the run id.
+        if not _ws_authorized(ws):
+            await ws.close(code=1008, reason="invalid token")
+            return
+        await ws.accept()
+        raw = await _first_frame(ws)
+        if not isinstance(raw, dict):
+            return
+        run, created = await run_manager.start_or_attach(_owner(ws.scope), raw, _execute_run)
+        await run_manager.serve(ws, run, 0, resumed=not created, announce=bool(raw.get("resumable")))
+
+    @app.websocket("/runs/{run_id}/stream")
+    async def run_stream(ws: WebSocket, run_id: str) -> None:
+        """Re-subscribe to a run: `?after=<last seq seen>` replays what was missed, then follows live."""
+        if not _ws_authorized(ws):
+            await ws.close(code=1008, reason="invalid token")
+            return
+        run = run_manager.get(_owner(ws.scope), run_id)
+        if run is None:
+            await ws.close(code=1008, reason="run_not_found")
+            return
+        try:
+            after = max(0, int(ws.query_params.get("after", "0")))
+        except ValueError:
+            after = 0
+        await ws.accept()
+        await run_manager.serve(ws, run, after, resumed=True)
+
+    @app.get("/runs/active", dependencies=bearer)
+    async def runs_active(request: Request) -> dict[str, Any]:
+        runs = run_manager.list_for(_owner(request.scope), 10)
+        return {"runs": [r.status() for r in runs if r.active], "recent": [r.status() for r in runs if not r.active][:3]}
+
+    @app.get("/runs/{run_id}", dependencies=bearer)
+    async def run_status(run_id: str, request: Request) -> dict[str, Any]:
+        run = run_manager.get(_owner(request.scope), run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return run.status()
+
+    @app.get("/runs/{run_id}/events", dependencies=bearer)
+    async def run_events(run_id: str, request: Request, after: int = 0, limit: int = 500) -> dict[str, Any]:
+        run = run_manager.get(_owner(request.scope), run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        run_manager._ensure_events(run)
+        evs = [e for e in run.events if e["seq"] > max(0, after)][: max(1, min(limit, 2000))]
+        return {"run_id": run.id, "state": run.state, "events": evs, "last_seq": run.seq, "replay_truncated": run.truncated}
+
+    @app.post("/runs/{run_id}/cancel", dependencies=bearer)
+    async def run_cancel(run_id: str, request: Request) -> dict[str, Any]:
+        run = run_manager.get(_owner(request.scope), run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        await run_manager.cancel(run)
+        return run.status()
 
     return app
 

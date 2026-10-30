@@ -42,7 +42,7 @@ from .data_providers import (
 from .live_debate import ProviderConfig, SentimentBlock, live_debate
 from .report_language import normalize_report_language
 from .llm_providers import adapter_for
-from . import cost_guard, local_llm_detect, sentiment_sources, storage
+from . import cost_guard, local_llm_detect, secret_refs, sentiment_sources, storage
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
@@ -268,7 +268,7 @@ def build_app(*, token: str) -> FastAPI:
         the OAuth row in Settings already shows live connection state
         via `oauth:openai:status`.
         """
-        config = ProviderConfig.from_dict(req.provider_config)
+        config = ProviderConfig.from_dict(secret_refs.resolve(req.provider_config))
         if config is None:
             return {"ok": False, "error": "invalid provider_config"}
         if config.auth.get("type") == "oauth":
@@ -310,7 +310,7 @@ def build_app(*, token: str) -> FastAPI:
         """
         from . import codex_models
 
-        config = ProviderConfig.from_dict(req.provider_config)
+        config = ProviderConfig.from_dict(secret_refs.resolve(req.provider_config))
         if config is None or config.provider != "openai" or config.auth_kind != "oauth":
             return {"ok": False, "error": "model discovery is only for OpenAI OAuth"}
         try:
@@ -418,7 +418,8 @@ def build_app(*, token: str) -> FastAPI:
         base = req.base_url.strip().rstrip("/")
         if not base.startswith(("http://", "https://")):
             return {"ok": False, "error": "base_url must start with http:// or https://"}
-        headers = {"Authorization": f"Bearer {req.api_key.strip()}"} if req.api_key and req.api_key.strip() else {}
+        api_key = secret_refs.resolve(req.api_key) if req.api_key else None
+        headers = {"Authorization": f"Bearer {api_key.strip()}"} if api_key and api_key.strip() else {}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
                 res = await client.get(f"{base}/models", headers=headers)
@@ -518,7 +519,9 @@ def build_app(*, token: str) -> FastAPI:
             #       "max_tokens": 400
             #     }
             #   }
-            start = await ws.receive_json()
+            # Web version: references to server-held secrets become real values here
+            # (no-op in the desktop build). The browser never held the values.
+            start = secret_refs.resolve(await ws.receive_json())
             ticker = (start.get("ticker") or "").upper()
             trade_date = start.get("trade_date") or ""
             config = ProviderConfig.from_dict(start.get("provider_config"))

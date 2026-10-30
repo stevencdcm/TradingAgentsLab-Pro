@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Analyze.module.css';
 import DebateStream from '../components/DebateStream';
+import RunStatus from '../components/RunStatus';
+import type { RunClock, HeartbeatEvent } from '../lib/run-status';
 import { CostGuardModal, type OverDimension } from '../components/CostGuardModal';
 import {
   getHandshake,
@@ -63,6 +65,9 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   const [assetClass, setAssetClass] = useState<'equity' | 'crypto' | null>(null);
   const [events, setEvents] = useState<DebateEvent[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const EMPTY_CLOCK: RunClock = { startedAt: 0, endedAt: null, lastEventAt: null, lastHeartbeatAt: null, heartbeat: null, streamError: null };
+  const [runClock, setRunClock] = useState<RunClock>(EMPTY_CLOCK);
+  const [runCtx, setRunCtx] = useState<{ provider: string | null; model: string | null }>({ provider: null, model: null });
   const [streamError, setStreamError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   /**
@@ -596,6 +601,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     setAssetClass(null);
     isStreamingRef.current = true;
     setIsStreaming(true);
+    setRunClock({ ...EMPTY_CLOCK, startedAt: Date.now() });
 
     // Snapshot the provider/auth/model at click-time through refs so a
     // Settings-tab state change racing with the multiple awaits inside
@@ -606,6 +612,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       activeModelRef.current ??
       (provider ? getRecommendedModel(provider, authKind) : '');
 
+    setRunCtx({ provider, model: model || null });
     try {
       const result = await runAnalysis(
         {
@@ -617,9 +624,20 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           reportLanguage: locale,
         },
         {
-          onEvent: (event) => setEvents((prev) => [...prev, event]),
+          onEvent: (event) => {
+            // Heartbeats are liveness only: keep them out of the transcript/event list.
+            if ((event as { type: string }).type === 'run.heartbeat') {
+              const hb = event as unknown as HeartbeatEvent;
+              setRunClock((c) => ({ ...c, lastHeartbeatAt: Date.now(), heartbeat: hb }));
+              return;
+            }
+            setRunClock((c) => ({ ...c, lastEventAt: Date.now() }));
+            setEvents((prev) => [...prev, event]);
+          },
           onError: (err) => {
-            setStreamError(err instanceof Error ? err.message : t('analyze.err.stream'));
+            const msg = err instanceof Error ? err.message : t('analyze.err.stream');
+            setRunClock((c) => ({ ...c, streamError: msg }));
+            setStreamError(msg);
           },
           // Open the existing CostGuard modal and await the user's choice.
           // Preserves the established UX where Cancel aborts and Override
@@ -646,8 +664,11 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       handleRef.current = result.handle;
       await result.handle.done;
     } catch (err) {
-      setStreamError(err instanceof Error ? err.message : t('analyze.err.streamFailed'));
+      const msg = err instanceof Error ? err.message : t('analyze.err.streamFailed');
+      setRunClock((c) => ({ ...c, streamError: msg }));
+      setStreamError(msg);
     } finally {
+      setRunClock((c) => (c.startedAt ? { ...c, endedAt: Date.now() } : c));
       handleRef.current = null;
       isStreamingRef.current = false;
       setIsStreaming(false);
@@ -971,6 +992,8 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           {rich('analyze.engineError', { error: describeEngineError(engineError, i18n) })}
         </div>
       )}
+
+      <RunStatus events={events} clock={runClock} streaming={isStreaming} provider={runCtx.provider} model={runCtx.model} />
 
       <DebateStream events={events} isStreaming={isStreaming} />
 

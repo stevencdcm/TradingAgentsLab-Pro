@@ -46,15 +46,37 @@
         return baseName;
       },
     },
-    oauth: {
-      openaiStart: async () => ({ success: false, error: 'OpenAI OAuth sign-in is not available in the web version yet.' }),
-      openaiStatus: async () => ({ connected: false }),
-      openaiDisconnect: async () => true,
-      openaiPromptResponse: () => {},
-      openaiCredentials: async () => null,
-      onProgress: noop,
-      onPrompt: noop,
-    },
+    oauth: (() => {
+      const progress = new Set(); const prompt = new Set(); let timer = null;
+      const pump = async () => {
+        try {
+          const d = await getJson('/web/oauth/events');
+          for (const ev of d.events) {
+            if (ev.type === 'progress') progress.forEach((h) => h({ message: ev.message }));
+            if (ev.type === 'prompt') prompt.forEach((h) => h({ message: ev.message, placeholder: ev.placeholder ?? undefined }));
+          }
+          return d;
+        } catch { return { state: 'error', error: 'bridge unreachable', events: [] }; }
+      };
+      return {
+        openaiStart: async () => {
+          const s = await (await post('/web/oauth/start')).json();
+          if (!s.success) return s;
+          for (;;) {
+            await new Promise((r) => setTimeout(r, 1000));
+            const d = await pump();
+            if (d.state === 'done') { const st = await getJson('/web/oauth/status'); return { success: true, email: st.email }; }
+            if (d.state === 'error') return { success: false, error: d.error || 'Login failed.' };
+          }
+        },
+        openaiStatus: () => getJson('/web/oauth/status'),
+        openaiDisconnect: async () => (await post('/web/oauth/disconnect')).json(),
+        openaiPromptResponse: (value) => { void post('/web/oauth/prompt', { value }); },
+        openaiCredentials: () => getJson('/web/oauth/credentials'),
+        onProgress: (h) => { progress.add(h); return () => progress.delete(h); },
+        onPrompt: (h) => { prompt.add(h); return () => prompt.delete(h); },
+      };
+    })(),
     onMenuCommand: noop,
     checkUpstream: async () => ({ status: 'error', latestTag: '', upstreamHead: '', ourHead: '', behindCount: 0, aheadCount: 0, behindCommits: [], checkedAt: new Date().toISOString(), error: 'Not available in the web version.', compareUrl: 'https://github.com/TauricResearch/TradingAgents' }),
     setLocale: async (l) => l,

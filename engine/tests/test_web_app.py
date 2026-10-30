@@ -210,3 +210,105 @@ def test_engine_resolves_the_reference_server_side(web):
         assert all("@@secret" not in (s or "") for s in _Auth.seen)
     finally:
         srv.shutdown()
+
+
+# ---- OpenAI OAuth (server side; the page never gets tokens) -----------------------------
+
+FAKE_HELPER = r'''
+import json, sys, time
+mode = sys.argv[1]
+def out(o): print(json.dumps(o), flush=True)
+if mode == "login":
+    out({"type": "auth", "url": "https://auth.example/authorize?x=1", "instructions": None})
+    out({"type": "progress", "message": "waiting"})
+    out({"type": "done", "credentials": {"access": "ACCESS-TOKEN-AAAA", "refresh": "REFRESH-TOKEN-BBBB",
+         "expires": int(time.time() * 1000) + 3600_000, "email": "me@example.com", "accountId": "acct-123", "planType": "plus"}})
+elif mode == "refresh":
+    req = json.loads(sys.stdin.readline())
+    out({"type": "done", "credentials": {"access": "ACCESS-NEW", "refresh": "REFRESH-NEW", "expires": int(time.time() * 1000) + 3600_000,
+         "email": req.get("email"), "accountId": "acct-123", "planType": "plus"}})
+'''
+
+
+@pytest.fixture
+def oauth_web(tmp_path, tmp_db, monkeypatch):
+    import sys
+
+    helper = tmp_path / "helper.py"
+    helper.write_text(FAKE_HELPER)
+    monkeypatch.setenv("TAL_NODE", sys.executable)
+    monkeypatch.setenv("TAL_OAUTH_HELPER", str(helper))
+    opened: list[str] = []
+    static = tmp_path / "dist"; (static / "assets").mkdir(parents=True); (static / "index.html").write_text("<head></head>")
+    kr = MemKeyring()
+    store = SecretStore(kr)
+    from engine.web_oauth import OpenAIOAuth
+
+    oauth = OpenAIOAuth(store, open_url=opened.append)
+    app = build_web_app(token="engine-token", port=PORT, data_dir=tmp_path / "d", static_dir=static,
+                        launch_secret=LAUNCH, cookie_value=COOKIE, store=store, oauth=oauth)
+    with TestClient(app, base_url=BASE) as c:
+        c.cookies.set(COOKIE_NAME, COOKIE)
+        c.kr, c.opened, c.oauth = kr, opened, oauth  # type: ignore[attr-defined]
+        yield c
+    secret_refs.configure(None)
+
+
+def _wait_login(c):
+    import time
+
+    for _ in range(100):
+        d = c.get("/web/oauth/events").json()
+        if d["state"] in ("done", "error"):
+            return d
+        time.sleep(0.05)
+    raise AssertionError("login did not finish")
+
+
+def test_oauth_login_stores_tokens_only_in_the_keychain(oauth_web):
+    c = oauth_web
+    assert c.get("/web/oauth/status").json() == {"connected": False}
+    assert c.post("/web/oauth/start").json()["success"] is True
+    done = _wait_login(c)
+    assert done["state"] == "done"
+    assert c.opened == ["https://auth.example/authorize?x=1"]          # server opened the browser
+    assert ("TradingAgentsLab-Web", "oauth:openai") in c.kr.d           # stored in the keychain
+    st = c.get("/web/oauth/status")
+    assert st.json()["connected"] is True and st.json()["email"] == "me@example.com"
+    creds = c.get("/web/oauth/credentials")
+    assert creds.json()["access"] == "@@secret:oauth:openai:access@@"
+    assert creds.json()["accountId"] == "acct-123"
+    for resp in (st, creds, c.get("/web/secrets/list"), c.get("/web/oauth/events")):
+        assert "ACCESS-TOKEN-AAAA" not in resp.text and "REFRESH-TOKEN-BBBB" not in resp.text
+    from engine import secret_refs as sr
+
+    assert sr.resolve("@@secret:oauth:openai:access@@") == "ACCESS-TOKEN-AAAA"
+    assert sr.resolve("@@secret:oauth:openai:refresh@@") == "REFRESH-TOKEN-BBBB"
+
+
+def test_page_cannot_write_or_overwrite_oauth_entries(oauth_web):
+    r = oauth_web.post("/web/secrets/set", json={"key": "oauth:openai", "value": "{}"})
+    assert r.status_code == 403
+    assert oauth_web.post("/web/secrets/delete", json={"key": "oauth:openai"}).status_code == 403
+
+
+def test_expired_token_is_refreshed_server_side_before_use(oauth_web):
+    c = oauth_web
+    c.kr.d[("TradingAgentsLab-Web", "oauth:openai")] = json.dumps(
+        {"access": "OLD", "refresh": "REFRESH-OLD", "expires": 1, "email": "me@example.com", "accountId": "acct-123"}
+    )
+    assert c.get("/web/oauth/status").json()["needsRefresh"] is True
+    creds = c.get("/web/oauth/credentials").json()
+    assert creds["access"] == "@@secret:oauth:openai:access@@"
+    from engine import secret_refs as sr
+
+    assert sr.resolve(creds["access"]) == "ACCESS-NEW"
+    assert c.get("/web/oauth/status").json()["needsRefresh"] is False
+
+
+def test_disconnect_removes_credentials(oauth_web):
+    c = oauth_web
+    c.post("/web/oauth/start"); _wait_login(c)
+    assert c.post("/web/oauth/disconnect").json() is True
+    assert c.get("/web/oauth/status").json() == {"connected": False}
+    assert c.get("/web/oauth/credentials").json() is None

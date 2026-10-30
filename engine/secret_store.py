@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 SERVICE = "TradingAgentsLab-Web"
 _INDEX = "__index__"
+_OAUTH_FIELD = re.compile(r"^oauth:openai:(access|refresh)$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9:_.\-]{1,80}$")
 
 # Plain configuration the UI must read back (not secrets).
@@ -70,11 +71,15 @@ class SecretStore:
             raise SecretStoreError("secure storage (macOS Keychain) is unavailable", 503)
 
     @staticmethod
-    def _check(name: str) -> None:
+    def _check(name: str, internal: bool = False) -> None:
         if not _NAME_RE.match(name or ""):
             raise SecretStoreError("invalid secret name")
         if name == _INDEX:
             raise SecretStoreError("reserved name")
+        # OAuth credentials are written by the server's own login flow only; the
+        # page can neither set nor overwrite them.
+        if name.startswith("oauth:") and not internal:
+            raise SecretStoreError("managed by the server", 403)
         if name.startswith(BLOCKED_PREFIXES):
             raise SecretStoreError("not supported in the web version", 403)
 
@@ -95,9 +100,9 @@ class SecretStore:
 
     # ---- operations -----------------------------------------------------------
 
-    def set(self, name: str, value: str) -> dict[str, str]:
+    def set(self, name: str, value: str, *, _internal: bool = False) -> dict[str, str]:
         self._require()
-        self._check(name)
+        self._check(name, internal=_internal)
         if not isinstance(value, str) or not value:
             raise SecretStoreError("empty value")
         with self._lock:
@@ -112,11 +117,19 @@ class SecretStore:
         self._require()
         if not _NAME_RE.match(name or "") or name == _INDEX:
             return None
+        # Field references into the OAuth credential blob (never returned to the page).
+        m = _OAUTH_FIELD.match(name)
+        if m:
+            raw = self._kr.get_password(SERVICE, "oauth:openai")
+            try:
+                return (json.loads(raw) or {}).get(m.group(1)) if raw else None
+            except ValueError:
+                return None
         return self._kr.get_password(SERVICE, name)
 
-    def delete(self, name: str) -> bool:
+    def delete(self, name: str, *, _internal: bool = False) -> bool:
         self._require()
-        self._check(name)
+        self._check(name, internal=_internal)
         with self._lock:
             existed = self._kr.get_password(SERVICE, name) is not None
             if existed:

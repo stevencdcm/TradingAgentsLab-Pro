@@ -32,9 +32,11 @@ from urllib.parse import parse_qs
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from . import __version__, secret_refs
 from .secret_store import PLAIN_CONFIG, SecretStore, SecretStoreError, ref_for
+from .web_oauth import OpenAIOAuth
 from .server import build_app
 
 COOKIE_NAME = "tal_web"
@@ -105,6 +107,7 @@ def build_web_app(
     launch_secret: str,
     cookie_value: str,
     store: SecretStore | None = None,
+    oauth: OpenAIOAuth | None = None,
 ) -> FastAPI:
     data_dir.mkdir(parents=True, exist_ok=True)
     store = store or SecretStore()
@@ -177,6 +180,43 @@ def build_web_app(
             return store.delete(str(body.get("key", "")))
         except SecretStoreError as exc:
             return _json_error(exc)
+
+    oauth = oauth or OpenAIOAuth(store)
+
+    @app.get("/web/oauth/status")
+    async def oauth_status() -> dict[str, Any]:
+        return oauth.status()
+
+    @app.post("/web/oauth/start")
+    async def oauth_start() -> dict[str, Any]:
+        return oauth.start_login()
+
+    @app.get("/web/oauth/events")
+    async def oauth_events() -> dict[str, Any]:
+        return oauth.drain_events()
+
+    @app.post("/web/oauth/prompt")
+    async def oauth_prompt(body: dict[str, Any] = Body(...)) -> dict[str, bool]:
+        oauth.prompt_response(str(body.get("value", "")))
+        return {"ok": True}
+
+    @app.post("/web/oauth/disconnect")
+    async def oauth_disconnect() -> bool:
+        return oauth.disconnect()
+
+    @app.get("/web/oauth/credentials")
+    async def oauth_credentials():
+        """References only — the tokens stay on the server; the engine resolves them."""
+        d = await run_in_threadpool(oauth.ensure_fresh)
+        if not d:
+            return None
+        return {
+            "access": ref_for("oauth:openai:access"),
+            "refresh": ref_for("oauth:openai:refresh"),
+            "expires": d.get("expires"),
+            "email": d.get("email"),
+            "accountId": d.get("accountId"),
+        }
 
     @app.post("/web/shutdown")
     async def shutdown() -> dict[str, bool]:

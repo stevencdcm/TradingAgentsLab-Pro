@@ -16,11 +16,11 @@
   window.tradingAgentsLab = {
     version: 'web',
     platform: 'web',
-    getEngineHandshake: async () => (handshake ??= await getJson('/web/handshake')),
+    getEngineHandshake: async () => (handshake ??= await getJson('web/handshake')),
     onEngineExited: noop,
     consent: {
-      get: () => getJson('/web/consent'),
-      accept: async () => (await post('/web/consent/accept')).json(),
+      get: () => getJson('web/consent'),
+      accept: async () => (await post('web/consent/accept')).json(),
       decline: async () => { document.body.textContent = 'You declined the agreement. Close this tab.'; },
     },
     updates: {
@@ -31,11 +31,11 @@
       onStatus: noop,
     },
     secrets: {
-      availability: () => getJson('/web/secrets/availability'),
-      set: async (key, value) => checked(await post('/web/secrets/set', { key, value })),
-      get: async (key) => checked(await post('/web/secrets/get', { key })),
-      list: () => getJson('/web/secrets/list'),
-      delete: async (key) => checked(await post('/web/secrets/delete', { key })),
+      availability: () => getJson('web/secrets/availability'),
+      set: async (key, value) => checked(await post('web/secrets/set', { key, value })),
+      get: async (key) => checked(await post('web/secrets/get', { key })),
+      list: () => getJson('web/secrets/list'),
+      delete: async (key) => checked(await post('web/secrets/delete', { key })),
       onRecovered: noop,
     },
     avSignup: { getFreeKey: async () => null },
@@ -50,7 +50,7 @@
       const progress = new Set(); const prompt = new Set(); let timer = null;
       const pump = async () => {
         try {
-          const d = await getJson('/web/oauth/events');
+          const d = await getJson('web/oauth/events');
           for (const ev of d.events) {
             if (ev.type === 'progress') progress.forEach((h) => h({ message: ev.message }));
             if (ev.type === 'prompt') prompt.forEach((h) => h({ message: ev.message, placeholder: ev.placeholder ?? undefined }));
@@ -60,19 +60,19 @@
       };
       return {
         openaiStart: async () => {
-          const s = await (await post('/web/oauth/start')).json();
+          const s = await (await post('web/oauth/start')).json();
           if (!s.success) return s;
           for (;;) {
             await new Promise((r) => setTimeout(r, 1000));
             const d = await pump();
-            if (d.state === 'done') { const st = await getJson('/web/oauth/status'); return { success: true, email: st.email }; }
+            if (d.state === 'done') { const st = await getJson('web/oauth/status'); return { success: true, email: st.email }; }
             if (d.state === 'error') return { success: false, error: d.error || 'Login failed.' };
           }
         },
-        openaiStatus: () => getJson('/web/oauth/status'),
-        openaiDisconnect: async () => (await post('/web/oauth/disconnect')).json(),
-        openaiPromptResponse: (value) => { void post('/web/oauth/prompt', { value }); },
-        openaiCredentials: () => getJson('/web/oauth/credentials'),
+        openaiStatus: () => getJson('web/oauth/status'),
+        openaiDisconnect: async () => (await post('web/oauth/disconnect')).json(),
+        openaiPromptResponse: (value) => { void post('web/oauth/prompt', { value }); },
+        openaiCredentials: () => getJson('web/oauth/credentials'),
         onProgress: (h) => { progress.add(h); return () => progress.delete(h); },
         onPrompt: (h) => { prompt.add(h); return () => prompt.delete(h); },
       };
@@ -80,7 +80,7 @@
     onMenuCommand: noop,
     checkUpstream: async () => ({ status: 'error', latestTag: '', upstreamHead: '', ourHead: '', behindCount: 0, aheadCount: 0, behindCommits: [], checkedAt: new Date().toISOString(), error: 'Not available in the web version.', compareUrl: 'https://github.com/TauricResearch/TradingAgents' }),
     setLocale: async (l) => l,
-    shutdown: async () => { await post('/web/shutdown'); document.body.textContent = 'Server stopped. You can close this tab.'; },
+    shutdown: async () => { await post('web/shutdown'); document.body.textContent = 'Server stopped. You can close this tab.'; },
     restart: async () => { location.reload(); },
   };
 })();

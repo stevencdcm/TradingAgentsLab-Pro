@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> None:
 
     import uvicorn
 
-    from .web_app import build_web_app
+    from .web_app import ProxyConfig, build_web_app
 
     token = secrets.token_urlsafe(24)
     launch_secret = secrets.token_urlsafe(24)
@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> None:
         static_dir=args.static,
         launch_secret=launch_secret,
         cookie_value=cookie_value,
+        proxy=ProxyConfig.from_env(),
     )
     # build_web_app wrote the single-use nonce to launch-url.txt (0600). SIGUSR1 issues a fresh
     # one (used by tools/open-web.sh after the first one was consumed) without printing it.

@@ -179,6 +179,9 @@ class LocalOnly:
         # verified AND the session cookie was presented. The engine API's bearer gate and the WebSocket accept this
         # instead of the engine token, which therefore never has to reach a remote browser or pass through the proxy.
         # A first page load (no cookie yet) is NOT marked: it can only fetch the page and receive the cookie.
+        # Verified hop (secret + owner + Host/Origin): the page / handshake may use the proxy base path. Local loopback
+        # requests never get this flag, so the local launch-link entry keeps working while proxy mode is on.
+        scope["tal_via_proxy"] = True
         if has_cookie:
             scope["tal_session_authenticated"] = True
         if scope["type"] == "http" and not has_cookie:
@@ -246,10 +249,10 @@ def build_web_app(
     # ---- /web/* : the real bridge -------------------------------------------
 
     @app.get("/web/handshake")
-    async def handshake() -> dict[str, Any]:
+    async def handshake(request: Request) -> dict[str, Any]:
         # `proxy`: the page is served through the trusted workbench proxy: it must use same-origin relative
         # URLs and the WebSocket authenticates by cookie, so no token is ever put in a URL.
-        return {"port": port, "token": token, "proxy": proxy is not None}
+        return {"port": port, "token": token, "proxy": bool(proxy is not None and request.scope.get("tal_via_proxy"))}
 
     consent_file = data_dir / "consent.json"
 
@@ -361,14 +364,16 @@ def build_web_app(
 
     index_html = (static_dir / "index.html").read_text(encoding="utf-8")
     index_html = index_html.replace("</head>", '    <script src="web-bridge.js"></script>\n  </head>', 1)
+    index_html_proxied = index_html
     if proxy is not None:
         # <base> must precede every relative URL in the document so assets/bridge resolve under the base path.
-        index_html = index_html.replace("<head>", f'<head>\n    <base href="{proxy.base_path}/">', 1)
+        # Only requests that arrived over a verified proxy hop get it (see LocalOnly); loopback pages stay at "/".
+        index_html_proxied = index_html.replace("<head>", f'<head>\n    <base href="{proxy.base_path}/">', 1)
     bridge_js = (HERE / "web" / "web-bridge.js").read_text(encoding="utf-8")
 
     @app.get("/", response_class=HTMLResponse)
-    async def index() -> str:
-        return index_html
+    async def index(request: Request) -> str:
+        return index_html_proxied if request.scope.get("tal_via_proxy") else index_html
 
     @app.get("/web-bridge.js")
     async def bridge() -> PlainTextResponse:

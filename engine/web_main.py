@@ -57,7 +57,9 @@ def main(argv: list[str] | None = None) -> None:
     lf = data_dir / "launch-url.txt"
     lf.write_text(url + "\n")
     os.chmod(lf, 0o600)
-    print(f"Trading Agents Lab Pro (web) -> {url}", flush=True)
+    # Never print the one-time nonce (terminals/logs get copied around): it lives in a
+    # 0600 file that tools/open-web.sh hands straight to `open`.
+    print(f"Trading Agents Lab Pro (web) on http://127.0.0.1:{args.port}/  -  run tools/open-web.sh to open it", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
 
 

@@ -117,6 +117,12 @@ export const test = base.extend<TalFixtures>({
         console.error('[renderer error]', msg.text());
       }
     });
+    // The app defaults to Traditional Chinese; the e2e specs assert the English
+    // source strings, so pin the UI language to English for the run. (The i18n
+    // unit tests cover zh-TW.) NOTE: not executed in the PR environment — the
+    // e2e suite needs the built engine + Electron display.
+    await win.evaluate(() => localStorage.setItem('tal.locale', 'en'));
+    await win.reload();
     await use(win);
   },
 });

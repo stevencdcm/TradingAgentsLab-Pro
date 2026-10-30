@@ -21,6 +21,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './BatchRunner.module.css';
+import { useI18n, type I18n } from '../i18n';
+import { describeEngineError } from '../lib/engine-errors';
 import {
   PROVIDER_PRIORITY,
   PROVIDER_SECRET_KEY,
@@ -54,6 +56,8 @@ interface PerTickerState {
 }
 
 function BatchRunner({ tickers }: BatchRunnerProps) {
+  const i18n = useI18n();
+  const { t, tp, locale } = i18n;
   const [phase, setPhase] = useState<BatchPhase>('idle');
   const [rows, setRows] = useState<PerTickerState[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
@@ -103,13 +107,13 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
     // ticker — the user's intent at click time governs the whole batch.
     const active = await resolveActiveProvider();
     if (!active.provider) {
-      setBatchError('No LLM provider configured. Open Settings → LLM Providers.');
+      setBatchError(t('batch.err.noProvider'));
       setPhase('cancelled');
       return;
     }
 
-    const initial: PerTickerState[] = tickers.map((t) => ({
-      ticker: t,
+    const initial: PerTickerState[] = tickers.map((tk) => ({
+      ticker: tk,
       status: 'pending',
     }));
     setRows(initial);
@@ -155,6 +159,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
             provider: active.provider,
             openaiAuthKind: active.openaiAuthKind ?? 'api_key',
             model: active.model,
+            reportLanguage: locale,
           },
           {
             onEvent,
@@ -171,13 +176,11 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
           setRows((prev) =>
             prev.map((r, idx) =>
               idx === i
-                ? { ...r, status: 'failed', error: 'Cost guard cap reached' }
+                ? { ...r, status: 'failed', error: t('batch.err.costCapShort') }
                 : r,
             ),
           );
-          setBatchError(
-            `Cost guard blocked ${ticker}, adjust caps in Settings or stop the batch.`,
-          );
+          setBatchError(t('batch.err.costBlocked', { ticker }));
           setPhase('cancelled');
           return;
         }
@@ -232,15 +235,15 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
 
     setCurrentIndex(-1);
     setPhase('complete');
-  }, [tickers]);
+  }, [tickers, t, locale]);
 
   const summary = useSummary(rows);
 
   return (
     <div className={styles.batchCard} data-testid="batch-runner">
       <div className={styles.batchHeader}>
-        <h2 className={styles.batchTitle}>The Diligence, in bulk</h2>
-        <div className={styles.batchStatus}>{statusLine(phase, currentIndex, tickers.length, rows, elapsedTick)}</div>
+        <h2 className={styles.batchTitle}>{t('batch.title')}</h2>
+        <div className={styles.batchStatus}>{statusLine(phase, currentIndex, tickers.length, rows, elapsedTick, t, tp)}</div>
         <div className={styles.batchActions}>
           {phase === 'running' ? (
             <button
@@ -249,7 +252,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
               onClick={onStop}
               data-testid="batch-stop-button"
             >
-              Stop batch
+              {t('batch.stop')}
             </button>
           ) : (
             <button
@@ -259,7 +262,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
               disabled={tickers.length === 0}
               data-testid="batch-run-button"
             >
-              Run all ({tickers.length})
+              {t('batch.runAll', { count: tickers.length })}
             </button>
           )}
         </div>
@@ -275,15 +278,18 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
             >
               <span className={styles.progressTicker}>{row.ticker}</span>
               <span className={styles.progressState}>
-                {row.status === 'pending' && 'queued'}
-                {row.status === 'running' && 'running…'}
-                {row.status === 'done' && 'done'}
-                {row.status === 'failed' && `failed: ${row.error ?? 'unknown'}`}
-                {row.status === 'skipped' && 'skipped'}
+                {row.status === 'pending' && t('batch.row.queued')}
+                {row.status === 'running' && t('batch.row.running')}
+                {row.status === 'done' && t('batch.row.done')}
+                {row.status === 'failed' &&
+                  t('batch.row.failed', {
+                    error: row.error ? describeEngineError(row.error, i18n) : t('status.unknown'),
+                  })}
+                {row.status === 'skipped' && t('batch.row.skipped')}
               </span>
               <span className={`${styles.progressDecision} ${row.decisionStance ? styles[`progressDecision_${stanceLean(row.decisionStance)}`] : ''}`}>
                 {row.decisionStance
-                  ? `${stanceLabel(row.decisionStance)}${typeof row.decisionConviction === 'number' ? ` ${Math.round(row.decisionConviction * 100)}%` : ''}`
+                  ? `${stanceLabel(row.decisionStance, t)}${typeof row.decisionConviction === 'number' ? ` ${Math.round(row.decisionConviction * 100)}%` : ''}`
                   : ''}
               </span>
               <span className={styles.progressMeta}>
@@ -293,9 +299,9 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
               </span>
               <span className={styles.progressMeta}>
                 {idx === currentIndex && phase === 'running'
-                  ? `${Math.max(0, Math.round((Date.now() - currentStartRef.current) / 1000))}s`
+                  ? t('batch.secondsShort', { n: Math.max(0, Math.round((Date.now() - currentStartRef.current) / 1000)) })
                   : typeof row.elapsedSec === 'number'
-                    ? `${row.elapsedSec}s`
+                    ? t('batch.secondsShort', { n: row.elapsedSec })
                     : ''}
               </span>
             </li>
@@ -308,14 +314,14 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
       {(phase === 'complete' || phase === 'cancelled') && rows.length > 0 && (
         <div className={styles.summaryBar}>
           <span>
-            {summary.done} of {tickers.length} complete
+            {t('batch.summary.complete', { done: summary.done, total: tickers.length })}
           </span>
-          {summary.bullish > 0 && <span>Bullish: {summary.bullish}</span>}
-          {summary.bearish > 0 && <span>Bearish: {summary.bearish}</span>}
-          {summary.neutral > 0 && <span>Neutral: {summary.neutral}</span>}
-          {summary.failed > 0 && <span>Failed: {summary.failed}</span>}
+          {summary.bullish > 0 && <span>{t('batch.summary.bullish', { n: summary.bullish })}</span>}
+          {summary.bearish > 0 && <span>{t('batch.summary.bearish', { n: summary.bearish })}</span>}
+          {summary.neutral > 0 && <span>{t('batch.summary.neutral', { n: summary.neutral })}</span>}
+          {summary.failed > 0 && <span>{t('batch.summary.failed', { n: summary.failed })}</span>}
           {summary.totalCostUsd > 0 && (
-            <span>Cost: {formatUsdShort(summary.totalCostUsd)}</span>
+            <span>{t('batch.summary.cost', { cost: formatUsdShort(summary.totalCostUsd) })}</span>
           )}
         </div>
       )}
@@ -329,11 +335,15 @@ function statusLine(
   total: number,
   _rows: PerTickerState[],
   _tick: number,
+  t: I18n['t'],
+  tp: I18n['tp'],
 ): string {
-  if (phase === 'idle') return total === 0 ? 'No tickers in watchlist' : `${total} tickers ready`;
-  if (phase === 'running' && currentIndex >= 0) return `Running ${currentIndex + 1} of ${total}`;
-  if (phase === 'complete') return 'Batch complete';
-  if (phase === 'cancelled') return 'Batch cancelled';
+  if (phase === 'idle') return total === 0 ? t('batch.noTickers') : tp('batch.ready', total);
+  if (phase === 'running' && currentIndex >= 0) {
+    return t('batch.running', { current: currentIndex + 1, total });
+  }
+  if (phase === 'complete') return t('batch.complete');
+  if (phase === 'cancelled') return t('batch.cancelled');
   return '';
 }
 

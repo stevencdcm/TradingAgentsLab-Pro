@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
 from .data_providers import Headline, QuoteSummary
+from .report_language import free_engine_suffix, normalize_report_language
 from .llm_providers import (
     LLMAdapter,
     ProviderConfig,
@@ -516,8 +517,12 @@ async def live_debate(
     config: ProviderConfig,
     reservation_id: Optional[str] = None,
     sentiment: Optional[SentimentBlock] = None,
+    report_language: str = "en",
 ) -> AsyncIterator[dict]:
     """Real-LLM debate. Yields the same event shapes as `canned_debate`.
+
+    ``report_language`` ("en" | "zh-TW") is appended to every agent's system
+    prompt so the generated report itself is written in that language.
 
     Caller is responsible for sending these events down the WebSocket and
     enforcing per-event delays — this generator does NOT include `_delay`
@@ -554,6 +559,8 @@ async def live_debate(
         }
         return
 
+    language_code = normalize_report_language(report_language)
+    language_suffix = free_engine_suffix(language_code)
     started_at = time.time()
     state = _DebateState()
     # `bearer_token` works for both api_key and oauth auth shapes; the
@@ -579,6 +586,7 @@ async def live_debate(
             "type": "session.start",
             "ticker": ticker,
             "trade_date": trade_date,
+            "report_language": language_code,
         }
 
         last_phase: Optional[str] = None
@@ -603,7 +611,7 @@ async def live_debate(
                 content, in_tok, out_tok = await _complete_with_retry(
                     adapter,
                     provider=config.provider,
-                    system=agent.system_prompt,
+                    system=agent.system_prompt + language_suffix,
                     user=user_msg,
                     model=config.model,
                     max_tokens=config.max_tokens,

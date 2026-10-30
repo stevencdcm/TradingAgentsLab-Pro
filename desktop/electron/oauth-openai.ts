@@ -34,6 +34,7 @@ import {
   isEncryptionAvailable,
   setSecret,
 } from './secrets';
+import { tm } from './i18n-main';
 
 /** Storage key — single entry for the whole credential blob. */
 export const OPENAI_OAUTH_SECRET_KEY = 'oauth:openai';
@@ -147,19 +148,16 @@ function persist(credentials: StoredOAuthCredentials): void {
 function friendlyError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (/EADDRINUSE|address already in use|1455/i.test(raw)) {
-    return (
-      'Port 1455 is in use — close any other OpenAI-account login windows ' +
-      'and try again.'
-    );
+    return tm('oauth.port1455');
   }
   if (/timeout|ETIMEDOUT/i.test(raw)) {
-    return 'Authentication timed out. Please try again.';
+    return tm('oauth.timeout');
   }
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i.test(raw)) {
-    return 'Network error reaching OpenAI. Check your internet connection.';
+    return tm('oauth.network');
   }
   if (/cancel/i.test(raw)) {
-    return 'Login cancelled.';
+    return tm('oauth.cancelled');
   }
   return raw;
 }
@@ -205,7 +203,7 @@ export class OpenAIOAuthService {
     if (pendingPromptResolver) {
       return {
         success: false,
-        error: 'Another OpenAI login is already in progress.',
+        error: tm('oauth.inProgress'),
       };
     }
     try {
@@ -217,8 +215,8 @@ export class OpenAIOAuthService {
           void shell.openExternal(url);
           this.emitProgress({
             message: instructions
-              ? `Opening browser… ${instructions}`
-              : 'Opening browser to complete sign-in…',
+              ? tm('oauth.openingBrowserWith', { instructions })
+              : tm('oauth.openingBrowser'),
           });
         },
         onPrompt: async (prompt) => {
@@ -243,10 +241,8 @@ export class OpenAIOAuthService {
             // (reviewer B1).
             const timer = setTimeout(() => {
               this.emitPrompt({
-                message:
-                  'Browser callback not received. Paste the code from the ' +
-                  'OpenAI page here:',
-                placeholder: 'paste code',
+                message: tm('oauth.pasteCode'),
+                placeholder: tm('oauth.pastePlaceholder'),
               });
               pendingPromptResolver = resolve;
             }, MANUAL_PASTE_FALLBACK_MS);
@@ -257,7 +253,7 @@ export class OpenAIOAuthService {
       });
       const stored = this.toStored(credentials);
       persist(stored);
-      this.emitProgress({ message: 'Connected.' });
+      this.emitProgress({ message: tm('oauth.connected') });
       return { success: true, email: stored.email };
     } catch (err) {
       pendingPromptResolver = null;
@@ -332,7 +328,7 @@ export class OpenAIOAuthService {
         // which routes through the engine's adapter error path. We keep
         // what we have so the user can re-login manually.
         this.emitProgress({
-          message: `Refresh failed: ${friendlyError(err)}`,
+          message: tm('oauth.refreshFailed', { error: friendlyError(err) }),
         });
         return stored;
       } finally {

@@ -8,7 +8,10 @@ import LearnAI from './pages/LearnAI';
 import StatusStrip from './components/StatusStrip';
 import { UpstreamCheckModal } from './components/UpstreamCheckModal';
 import { checkUpstream, type UpstreamCheckResult } from './lib/upstream';
+import { useI18n, LOCALES, type Locale } from './i18n';
 import styles from './App.module.css';
+
+const LOCALE_NAMES: Record<Locale, string> = { 'zh-TW': '繁體中文', en: 'English' };
 
 type Route = 'analyze' | 'watchlist' | 'history' | 'learn' | 'settings';
 
@@ -20,6 +23,7 @@ function parseHash(hash: string): Route {
 }
 
 function App() {
+  const { t, locale, setLocale } = useI18n();
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   const [newAnalysisTick, setNewAnalysisTick] = useState(0);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
@@ -135,14 +139,28 @@ function App() {
             <span className={styles.brandPro}>Pro</span>
           </span>
           <div className={styles.titleBarRight}>
-            <span className={styles.connectionPill}>Standalone</span>
+            <span className={styles.connectionPill}>{t('app.connection.standalone')}</span>
+            <select
+              className={`${styles.langSelect} app-no-drag`}
+              value={locale}
+              onChange={(e) => setLocale(e.target.value as Locale)}
+              title={t('app.language.title')}
+              aria-label={t('app.language.label')}
+              data-testid="language-select"
+            >
+              {LOCALES.map((l) => (
+                <option key={l} value={l}>
+                  {LOCALE_NAMES[l]}
+                </option>
+              ))}
+            </select>
             <div className={`${styles.appMenuWrapper} app-no-drag`}>
               <button
                 type="button"
                 className={`${styles.titleBarButton} ${appMenuOpen ? styles.titleBarButtonActive : ''}`}
                 onClick={() => setAppMenuOpen((open) => !open)}
-                title="App actions: Restart or Shut down"
-                aria-label="App actions"
+                title={t('app.menu.title')}
+                aria-label={t('app.menu.aria')}
                 aria-haspopup="menu"
                 aria-expanded={appMenuOpen}
               >
@@ -160,8 +178,8 @@ function App() {
                     }}
                   >
                     <span className={styles.appMenuIcon}>↻</span>
-                    <span className={styles.appMenuLabel}>Restart</span>
-                    <span className={styles.appMenuHint}>Relaunch with a fresh engine</span>
+                    <span className={styles.appMenuLabel}>{t('app.menu.restart')}</span>
+                    <span className={styles.appMenuHint}>{t('app.menu.restartHint')}</span>
                   </button>
                   <button
                     type="button"
@@ -173,8 +191,8 @@ function App() {
                     }}
                   >
                     <span className={styles.appMenuIcon}>⏻</span>
-                    <span className={styles.appMenuLabel}>Shut down</span>
-                    <span className={styles.appMenuHint}>Stop engine and quit</span>
+                    <span className={styles.appMenuLabel}>{t('app.menu.shutdown')}</span>
+                    <span className={styles.appMenuHint}>{t('app.menu.shutdownHint')}</span>
                   </button>
                 </div>
               )}
@@ -188,12 +206,12 @@ function App() {
       </div>
 
       <nav className={`${styles.sidebar} app-no-drag`}>
-        {navItem('analyze', 'Analyze')}
-        {navItem('watchlist', 'Watchlist')}
-        {navItem('history', 'History')}
-        {navItem('learn', 'Learn AI')}
+        {navItem('analyze', t('nav.analyze'))}
+        {navItem('watchlist', t('nav.watchlist'))}
+        {navItem('history', t('nav.history'))}
+        {navItem('learn', t('nav.learn'))}
         <div className={styles.navSpacer} />
-        {navItem('settings', 'Settings')}
+        {navItem('settings', t('nav.settings'))}
       </nav>
 
       <main className={`${styles.main} app-no-drag`}>
@@ -222,10 +240,8 @@ function App() {
       )}
 
       <footer className={styles.footer}>
-        <span>Trading Agents Lab Pro v{__APP_VERSION__} · AGPL-3.0</span>
-        <span className={styles.footerRight}>
-          Educational research only · Not a registered investment advisor · Not investment advice
-        </span>
+        <span>{t('footer.version', { version: __APP_VERSION__ })}</span>
+        <span className={styles.footerRight}>{t('footer.disclaimer')}</span>
       </footer>
     </div>
   );

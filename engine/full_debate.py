@@ -51,6 +51,8 @@ from langchain_core.callbacks import BaseCallbackHandler
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+from .report_language import library_output_language, normalize_report_language
+
 
 # ---------------------------------------------------------------------------
 # Node -> wire vocabulary mapping
@@ -387,6 +389,19 @@ def _build_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
+def _apply_report_language(merged: Dict[str, Any], report_language: str) -> Dict[str, Any]:
+    """Point the upstream library's `output_language` at the requested report language.
+
+    The library appends `get_language_instruction()` to every analyst / researcher /
+    debater / manager / trader prompt, so this one key localises the whole report.
+    English leaves the library default untouched (no extra prompt text).
+    """
+    language = library_output_language(report_language)
+    if language:
+        merged["output_language"] = language
+    return merged
+
+
 def _run_cost(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") -> float:
     """Best-effort USD estimate for the metered run.
 
@@ -449,6 +464,7 @@ async def full_debate(
     oauth_account_id: Optional[str] = None,
     reservation_id: Optional[str] = None,
     alpha_vantage_key: Optional[str] = None,
+    report_language: str = "en",
 ) -> AsyncIterator[Dict[str, Any]]:
     """Drive the full LangGraph diligence graph, yielding UI-compatible events.
 
@@ -490,7 +506,7 @@ async def full_debate(
     # at ANY yield, including the two early ones). `merged` starts empty so a
     # pre-config failure still finalizes cleanly (priced at zero: no LLM calls).
     try:
-        merged = _build_config(config)
+        merged = _apply_report_language(_build_config(config), report_language)
 
         # Data-tool key (Alpha Vantage) must be in the environment for the WHOLE
         # run: the library's dataflows tools (news / social / fundamentals) read
@@ -573,7 +589,12 @@ async def full_debate(
                 else:
                     os.environ[env_var] = _prev_env
 
-        yield {"type": "session.start", "ticker": ticker, "trade_date": trade_date}
+        yield {
+            "type": "session.start",
+            "ticker": ticker,
+            "trade_date": trade_date,
+            "report_language": normalize_report_language(report_language),
+        }
         # graph.plan lets the UI render honest totals for the deterministic
         # phases. Analyst per-phase counts are NOT included: their tool loops make
         # the count non-deterministic, so the UI tracks analysts by explicit

@@ -300,3 +300,21 @@
 .footerRight {
   color: var(--tal-text-muted);
 }
+
+/* Language selector (i18n). Same visual weight as the title-bar buttons. */
+.langSelect {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--tal-border-default);
+  color: var(--tal-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.langSelect:hover,
+.langSelect:focus-visible {
+  background: var(--tal-bg-overlay);
+  color: var(--tal-text-primary);
+}

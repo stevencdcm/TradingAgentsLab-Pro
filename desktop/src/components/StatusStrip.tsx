@@ -18,7 +18,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  PROVIDER_LABEL,
   PROVIDER_PRIORITY,
   PROVIDER_SECRET_KEY,
   getHealth,
@@ -31,6 +30,8 @@ import {
 } from '../lib/cost-guard';
 import { listSecrets } from '../lib/secrets';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
+import { useT } from '../i18n';
+import { providerLabel } from '../lib/provider-label';
 import styles from './StatusStrip.module.css';
 
 const HEALTH_POLL_MS = 10_000;
@@ -62,18 +63,20 @@ export interface CostUsageEventDetail {
 type PillState = 'ok' | 'warn' | 'error' | 'off' | 'pending';
 
 interface PillProps {
+  /** Stable id for data-testid (never translated). */
+  id: string;
   label: string;
   detail?: string;
   state: PillState;
   title?: string;
 }
 
-function Pill({ label, detail, state, title }: PillProps) {
+function Pill({ id, label, detail, state, title }: PillProps) {
   return (
     <span
       className={`${styles.pill} ${styles[`pill_${state}`]}`}
       title={title ?? `${label}${detail ? `: ${detail}` : ''}`}
-      data-testid={`status-pill-${label.toLowerCase()}`}
+      data-testid={`status-pill-${id}`}
       data-state={state}
     >
       <span className={styles.dot} />
@@ -84,6 +87,7 @@ function Pill({ label, detail, state, title }: PillProps) {
 }
 
 function StatusStrip() {
+  const t = useT();
   const [engineState, setEngineState] = useState<PillState>('pending');
   const [engineError, setEngineError] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState<string | null>(null);
@@ -329,15 +333,16 @@ function StatusStrip() {
   // rather than a silent dot. Once running, the dot alone communicates state.
   const enginePill = (
     <Pill
-      label="Engine"
-      detail={engineState === 'pending' ? 'starting…' : undefined}
+      id="engine"
+      label={t('status.engine')}
+      detail={engineState === 'pending' ? t('status.engine.starting') : undefined}
       state={engineState}
       title={
         engineState === 'error'
-          ? `Engine error: ${engineError ?? 'unknown'}`
+          ? t('status.engine.titleError', { error: engineError ?? t('status.unknown') })
           : engineState === 'pending'
-            ? 'Engine starting, waiting for Python sidecar handshake'
-            : 'Python sidecar running'
+            ? t('status.engine.titleStarting')
+            : t('status.engine.titleOk')
       }
     />
   );
@@ -345,18 +350,19 @@ function StatusStrip() {
   // Data pill — green when any source resolved; pending otherwise
   const dataDetail = dataSource
     ? dataAssetClass === 'crypto'
-      ? `${dataSource} · crypto`
+      ? t('status.data.crypto', { source: dataSource })
       : dataSource
-    : 'pending';
+    : t('status.data.pending');
   const dataPill = (
     <Pill
-      label="Data"
+      id="data"
+      label={t('status.data')}
       detail={dataDetail}
       state={dataSource ? 'ok' : 'pending'}
       title={
         dataSource
-          ? `Data provider: ${dataDetail}`
-          : 'Waiting for engine handshake'
+          ? t('status.data.title', { detail: dataDetail })
+          : t('status.data.titleWaiting')
       }
     />
   );
@@ -364,18 +370,19 @@ function StatusStrip() {
   // LLM pill
   const llmDetail = llmProvider
     ? llmIsOauth
-      ? 'OpenAI · OAuth'
-      : PROVIDER_LABEL[llmProvider]
-    : 'unconfigured';
+      ? t('status.llm.oauth')
+      : providerLabel(llmProvider, t)
+    : t('status.llm.unconfigured');
   const llmPill = (
     <Pill
-      label="LLM"
+      id="llm"
+      label={t('status.llm')}
       detail={llmDetail}
       state={llmProvider ? 'ok' : 'off'}
       title={
         llmProvider
-          ? `Active provider: ${llmDetail}`
-          : 'No LLM provider configured; debates will run as stub'
+          ? t('status.llm.titleActive', { detail: llmDetail })
+          : t('status.llm.titleNone')
       }
     />
   );
@@ -385,9 +392,9 @@ function StatusStrip() {
   // bare daily total with neutral colour. During a stream, runCost is shown
   // inline (e.g. "$0.42 + $0.0012"); free runs show "subscription" so the
   // tick doesn't read as alarmingly static.
-  let spendDetail = 'pending';
+  let spendDetail = t('status.spend.pending');
   let spendState: PillState = 'pending';
-  let spendTitle = 'Loading cost-guard state…';
+  let spendTitle = t('status.spend.loading');
   if (spend && cgConfig) {
     const daily = spend.daily_usd;
     const cap = cgConfig.cap_daily_usd;
@@ -395,26 +402,42 @@ function StatusStrip() {
     const live =
       runCost !== null
         ? runIsFree
-          ? ' · subscription'
+          ? t('status.spend.subscription')
           : ` + $${runCost.toFixed(4)}`
         : '';
     if (!cgConfig.enabled || cap <= 0) {
       spendDetail = `${base}${live}`;
       spendState = 'ok';
-      spendTitle = `Spent today: ${base}${
-        runCost !== null && !runIsFree ? ` (in-flight: $${runCost.toFixed(4)})` : ''
-      } · no daily cap`;
+      spendTitle = t('status.spend.titleNoCap', {
+        base,
+        inflight:
+          runCost !== null && !runIsFree
+            ? t('status.spend.inflightNoCap', { cost: `$${runCost.toFixed(4)}` })
+            : '',
+      });
     } else {
       const pct = cap > 0 ? daily / cap : 0;
       spendDetail = `${base} / $${cap.toFixed(2)}${live}`;
       spendState = pct >= 0.9 ? 'error' : pct >= 0.5 ? 'warn' : 'ok';
-      spendTitle = `Spent today: ${base} of $${cap.toFixed(2)} cap (${Math.round(
-        pct * 100,
-      )}%)${runCost !== null && !runIsFree ? ` · in-flight $${runCost.toFixed(4)}` : ''}`;
+      spendTitle = t('status.spend.titleCap', {
+        base,
+        cap: `$${cap.toFixed(2)}`,
+        pct: Math.round(pct * 100),
+        inflight:
+          runCost !== null && !runIsFree
+            ? t('status.spend.inflightCap', { cost: `$${runCost.toFixed(4)}` })
+            : '',
+      });
     }
   }
   const spendPill = (
-    <Pill label="Spend" detail={spendDetail} state={spendState} title={spendTitle} />
+    <Pill
+      id="spend"
+      label={t('status.spend')}
+      detail={spendDetail}
+      state={spendState}
+      title={spendTitle}
+    />
   );
 
   return (

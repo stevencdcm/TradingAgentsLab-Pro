@@ -9,6 +9,7 @@ import '@fontsource-variable/jetbrains-mono';
 import App from './App';
 import ConsentGate from './components/ConsentGate';
 import ErrorBoundary from './components/ErrorBoundary';
+import { I18nProvider } from './i18n';
 import './styles/tokens.css';
 import './styles/global.css';
 
@@ -17,10 +18,12 @@ import './styles/global.css';
 // behind the gate. Decline quits the app.
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <ConsentGate>
-        <App />
-      </ConsentGate>
-    </ErrorBoundary>
+    <I18nProvider>
+      <ErrorBoundary>
+        <ConsentGate>
+          <App />
+        </ConsentGate>
+      </ErrorBoundary>
+    </I18nProvider>
   </React.StrictMode>,
 );

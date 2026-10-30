@@ -39,6 +39,7 @@ from .data_providers import (
     provider_from_data_config,
 )
 from .live_debate import ProviderConfig, SentimentBlock, live_debate
+from .report_language import normalize_report_language
 from .llm_providers import adapter_for
 from . import cost_guard, local_llm_detect, sentiment_sources, storage
 from . import webhooks as webhook_dispatcher
@@ -498,6 +499,9 @@ def build_app(*, token: str) -> FastAPI:
             # check. If absent on a live debate, the WS handler auto-reserves
             # below for backward compatibility.
             reservation_id = start.get("reservation_id") or None
+            # UI language -> report language. Reaches the prompts of BOTH engines
+            # (and therefore every provider path); unknown values mean English.
+            report_language = normalize_report_language(start.get("report_language"))
             # Pro engine selection. The free renderer never sends `engine`, so
             # the full-graph path is opt-in and the free path stays byte-for-byte
             # identical. `pro_config` carries the deep/quick model split, debate
@@ -786,6 +790,7 @@ def build_app(*, token: str) -> FastAPI:
                         oauth_account_id=config.auth.get("account_id") or None,
                         reservation_id=reservation_id,
                         alpha_vantage_key=av_key,
+                        report_language=report_language,
                     )
                 else:
                     debate_events = live_debate(
@@ -796,6 +801,7 @@ def build_app(*, token: str) -> FastAPI:
                         config=config,
                         reservation_id=reservation_id,
                         sentiment=sentiment,
+                        report_language=report_language,
                     )
 
                 # Each agent.message arrives as the LLM response completes — we

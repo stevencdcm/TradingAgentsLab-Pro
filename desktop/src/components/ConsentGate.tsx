@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useI18n } from '../i18n';
 import styles from './ConsentGate.module.css';
 
 /**
@@ -13,6 +14,7 @@ import styles from './ConsentGate.module.css';
 type Status = 'loading' | 'needed' | 'ok';
 
 export default function ConsentGate({ children }: { children: React.ReactNode }) {
+  const { t, rich } = useI18n();
   const [status, setStatus] = useState<Status>('loading');
   const [busy, setBusy] = useState(false);
 
@@ -56,27 +58,18 @@ export default function ConsentGate({ children }: { children: React.ReactNode })
   return (
     <div className={styles.overlay} role="dialog" aria-modal="true" aria-labelledby="consent-title">
       <div className={styles.card}>
-        <h1 id="consent-title" className={styles.title}>Before you begin</h1>
+        <h1 id="consent-title" className={styles.title}>{t('consent.title')}</h1>
         <div className={styles.body}>
-          <p>
-            <strong>Trading Agents Lab is an educational research tool, not financial advice.</strong>{' '}
-            It uses multi-agent LLM analysis to surface multiple perspectives on a ticker. The
-            analysis can be wrong or incomplete. Any decision you make is your own.
-          </p>
-          <p>
-            This app is for personal, educational use. It is free and open source (AGPL-3.0) and is
-            provided without warranty of any kind.
-          </p>
-          <p>
-            <strong>Zero data collection.</strong> Nothing about you leaves your machine. The only
-            outbound calls the app initiates are an optional update check and the data and LLM
-            providers you configure with your own keys.
-          </p>
+          <p>{rich('consent.p1')}</p>
+          <p>{t('consent.p2')}</p>
+          <p>{rich('consent.p3')}</p>
           <p className={styles.links}>
-            Full terms:{' '}
-            <a href="https://tradingagentslab.ai/legal/terms" target="_blank" rel="noreferrer">Terms</a>,{' '}
-            <a href="https://tradingagentslab.ai/legal/privacy" target="_blank" rel="noreferrer">Privacy</a>,{' '}
-            <a href="https://tradingagentslab.ai/legal/disclaimer" target="_blank" rel="noreferrer">Disclaimer</a>.
+            {t('consent.fullTerms')}{' '}
+            <a href="https://tradingagentslab.ai/legal/terms" target="_blank" rel="noreferrer">{t('consent.terms')}</a>{t('consent.listSep')}
+            <a href="https://tradingagentslab.ai/legal/privacy" target="_blank" rel="noreferrer">{t('consent.privacy')}</a>{t('consent.listSep')}
+            <a href="https://tradingagentslab.ai/legal/disclaimer" target="_blank" rel="noreferrer">{t('consent.disclaimer')}</a>{t('consent.listEnd')}
+            <br />
+            {t('consent.englishNote')}
           </p>
         </div>
         <div className={styles.actions}>
@@ -86,7 +79,7 @@ export default function ConsentGate({ children }: { children: React.ReactNode })
             onClick={onDecline}
             disabled={busy}
           >
-            Decline and Quit
+            {t('consent.decline')}
           </button>
           <button
             type="button"
@@ -94,7 +87,7 @@ export default function ConsentGate({ children }: { children: React.ReactNode })
             onClick={onAgree}
             disabled={busy}
           >
-            I Agree
+            {t('consent.agree')}
           </button>
         </div>
       </div>

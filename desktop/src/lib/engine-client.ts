@@ -281,6 +281,10 @@ export interface ProConfig {
 }
 
 export interface AnalyzeRequest {
+  /** Language the GENERATED report is written in ('zh-TW' | 'en'); follows the UI
+   * language. The engine turns it into prompt instructions for every provider
+   * path. Absent / unknown means English. */
+  report_language?: string;
   ticker: string;
   trade_date: string;
   provider_config?: ProviderConfig;
@@ -1080,6 +1084,7 @@ export async function streamDebate(
         pro_config: req.pro_config,
         // Optional Alpha Vantage data key (unlocks non-market analysts).
         alpha_vantage_key: req.alpha_vantage_key,
+        report_language: req.report_language,
       }),
     );
   });

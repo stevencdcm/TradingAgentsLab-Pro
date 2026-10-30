@@ -5,6 +5,23 @@ import type {
   NewsHeadlinesEvent,
 } from './engine-client';
 import { riskLabel, stanceLabel } from './stance';
+import { makeTranslator, type Locale } from '../i18n';
+import type { MessageKey } from '../i18n/messages';
+
+const KNOWN_PHASES = ['analysts', 'researchers', 'trader', 'risk'];
+const KNOWN_AGENTS = [
+  'technical_analyst', 'fundamental_analyst', 'news_analyst', 'sentiment_analyst',
+  'bull_researcher', 'bear_researcher', 'research_manager', 'trader',
+  'risk_aggressive', 'risk_conservative', 'risk_neutral', 'portfolio_manager',
+];
+
+/** Localised phase / agent labels for exports; unknown ids pass through unchanged. */
+export function phaseLabelFor(phase: string, t: (k: MessageKey) => string): string {
+  return KNOWN_PHASES.includes(phase) ? t(`debate.phase.${phase}` as MessageKey) : phase;
+}
+export function agentLabelFor(agent: string, t: (k: MessageKey) => string): string {
+  return KNOWN_AGENTS.includes(agent) ? t(`agent.${agent}` as MessageKey) : agent;
+}
 
 // Shared with the standalone-HTML transcript generator (transcript-html.tsx),
 // which walks the same event stream — hence the exports below.
@@ -134,7 +151,9 @@ export function groupByPhase(events: DebateEvent[]): PhaseGroup[] {
   return groups;
 }
 
-export function buildTranscriptMarkdown(events: DebateEvent[]): string {
+/** `locale` defaults to English so callers/tests that omit it keep the original output. */
+export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 'en'): string {
+  const t = makeTranslator(locale);
   const start = findStart(events);
   const summary = findSummary(events);
   const decision = findDecision(events);
@@ -142,51 +161,60 @@ export function buildTranscriptMarkdown(events: DebateEvent[]): string {
 
   const lines: string[] = [];
   const header = start
-    ? `# TradingAgentsLab: ${start.ticker} · ${start.trade_date}`
-    : '# TradingAgentsLab: debate transcript';
+    ? t('export.md.title', { ticker: start.ticker, date: start.trade_date })
+    : t('export.md.titleNone');
   lines.push(header, '');
-  lines.push(`_Generated ${new Date().toISOString()}_`, '');
-  lines.push(
-    '> **For educational research and paper trading.** TradingAgentsLab does not provide investment advice.',
-    '',
-  );
+  lines.push(t('export.md.generated', { time: new Date().toISOString() }), '');
+  lines.push(t('export.md.banner'), '');
 
   if (decision) {
-    lines.push('## Committee Assessment', '');
+    lines.push(`## ${t('debate.decision.label')}`, '');
     const facts = [
-      `**${stanceLabel(decision.stance)}**, conviction ${(decision.conviction * 100).toFixed(0)}%`,
+      t('export.md.facts.stance', {
+        stance: stanceLabel(decision.stance, t),
+        pct: (decision.conviction * 100).toFixed(0),
+      }),
     ];
     if (decision.bull_strength != null && decision.bear_strength != null) {
       facts.push(
-        `bull thesis ${decision.bull_strength}/100, bear thesis ${decision.bear_strength}/100`,
+        t('export.md.facts.bullBear', {
+          bull: decision.bull_strength,
+          bear: decision.bear_strength,
+        }),
       );
     }
     if (decision.risk_level != null) {
-      facts.push(`risk ${riskLabel(decision.risk_level).toLowerCase()}`);
+      facts.push(t('export.md.facts.risk', { risk: riskLabel(decision.risk_level, t).toLowerCase() }));
     }
     lines.push(facts.join(' · '), '');
     lines.push(decision.reasoning, '');
-    lines.push(
-      '_Analytical output of a simulated research committee, not a recommendation. Any investment decision is yours alone._',
-      '',
-    );
+    lines.push(`_${t('debate.decision.ownership')}_`, '');
   }
 
   if (summary) {
-    lines.push('## Data summary', '');
-    lines.push(`- Last close: **${summary.last_close.toFixed(2)}**`);
+    lines.push(`## ${t('export.dataSummary')}`, '');
+    lines.push(`- ${t('debate.summary.lastClose')}: **${summary.last_close.toFixed(2)}**`);
     const sign = summary.period_change_pct >= 0 ? '+' : '';
-    lines.push(`- Period change: **${sign}${summary.period_change_pct.toFixed(2)}%**`);
-    lines.push(`- Range: ${summary.period_low.toFixed(2)} to ${summary.period_high.toFixed(2)}`);
-    lines.push(`- Avg daily volume: ${Math.round(summary.avg_volume).toLocaleString()}`);
-    lines.push(`- Sessions: ${summary.sessions}`);
-    lines.push(`- Source: ${summary.source} · as of ${summary.as_of}`);
+    lines.push(`- ${t('debate.summary.periodChange')}: **${sign}${summary.period_change_pct.toFixed(2)}%**`);
+    lines.push(
+      `- ${t('debate.summary.range')}: ${t('debate.summary.rangeValue', {
+        low: summary.period_low.toFixed(2),
+        high: summary.period_high.toFixed(2),
+      })}`,
+    );
+    lines.push(
+      `- ${t('export.avgDailyVolume')}: ${Math.round(summary.avg_volume).toLocaleString(locale === 'en' ? 'en' : 'zh-Hant-TW')}`,
+    );
+    lines.push(`- ${t('export.sessions')}: ${summary.sessions}`);
+    lines.push(
+      `- ${t('export.source')}: ${t('export.sourceLine', { source: summary.source, asOf: summary.as_of })}`,
+    );
     lines.push('');
   }
 
   const news = findNews(events);
   if (news && news.headlines.length > 0) {
-    lines.push('## News headlines', '');
+    lines.push(`## ${t('export.news')}`, '');
     for (const h of news.headlines) {
       const meta = [h.publisher, h.pub_date].filter(Boolean).join(' · ');
       const heading = h.url ? `- [${h.title}](${h.url})` : `- ${h.title}`;
@@ -196,14 +224,14 @@ export function buildTranscriptMarkdown(events: DebateEvent[]): string {
   }
 
   for (const group of groups) {
-    lines.push(`## ${PHASE_LABEL[group.phase] ?? group.phase}`, '');
+    lines.push(`## ${phaseLabelFor(group.phase, t)}`, '');
     for (const msg of group.messages) {
-      lines.push(`### ${msg.agent}`, '');
+      lines.push(`### ${agentLabelFor(msg.agent, t)}`, '');
       lines.push(stripChatArtifacts(msg.content), '');
     }
   }
 
   lines.push('---', '');
-  lines.push('Transcript exported from TradingAgentsLab.', '');
+  lines.push(t('export.md.footer'), '');
   return lines.join('\n');
 }

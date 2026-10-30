@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Settings.module.css';
 import UpdatesSection from '../components/UpdatesSection';
+import { useI18n, type I18n, type MessageKey } from '../i18n';
+import { describeEngineError } from '../lib/engine-errors';
+import { formatRelativeTime } from '../lib/relative-time';
 import { STANCES, stanceLabel } from '../lib/stance';
 import {
   deleteSecret,
@@ -57,18 +60,14 @@ import {
   saveWebhooks,
   newWebhookId,
   newWebhookFilter,
-  KIND_LABEL,
-  KIND_HINT,
   type WebhookConfig,
   type WebhookKind,
 } from '../lib/webhooks';
 import {
   ALL_ANALYSTS,
-  ANALYST_LABEL,
   ANALYSTS_NEEDING_DATA_KEY,
   EFFORT_LEVELS,
   NEWS_SOURCES,
-  NEWS_SOURCE_LABEL,
   loadProConfig,
   saveProConfig,
   type AnalystId,
@@ -92,74 +91,39 @@ type Tab =
 
 interface TabDef {
   id: Tab;
-  label: string;
-  description: string;
+  labelKey: MessageKey;
+  descKey: MessageKey;
 }
 
 const TABS: TabDef[] = [
-  {
-    id: 'llm',
-    label: 'LLM Providers',
-    description:
-      'Bring your own API key for OpenAI, Anthropic, OpenRouter, or Google Gemini, or auto-detect a local runtime (Ollama / LM Studio).',
-  },
-  {
-    id: 'data',
-    label: 'Data Providers',
-    description:
-      'Where market data comes from. yfinance is the free default, no key required. Optionally connect Alpaca Markets for higher-quality real-time data.',
-  },
-  {
-    id: 'analysis',
-    label: 'Analysis',
-    description:
-      'Tune the multi-agent diligence: which analysts run, how many debate rounds, reasoning effort, and a token-cap backstop. These apply to every run.',
-  },
-  {
-    id: 'webhooks',
-    label: 'Webhooks',
-    description:
-      'Push the decision to Telegram, Slack, Discord, or any HTTPS endpoint when a debate finishes. Analysis only. Trading Agents Lab never executes trades; users bridge to their own brokerage on the receiving side.',
-  },
-  {
-    id: 'channels',
-    label: 'Channels',
-    description:
-      'Two-way integrations where you can message Trading Agents Lab from outside the desktop app and get a Diligence back. Telegram is the first channel. More may follow as users ask.',
-  },
-  {
-    id: 'costguard',
-    label: 'Cost Guard',
-    description:
-      'Daily / weekly / monthly USD caps + optional sessions-per-day rate cap. Applies to live LLM debates only; stub mode is always free.',
-  },
-  {
-    id: 'updates',
-    label: 'Updates',
-    description:
-      'Your installed version and app updates. Updates install automatically for the packaged app; you can also check manually.',
-  },
-  {
-    id: 'about',
-    label: 'About',
-    description: 'What this app is, who makes it, and the legal essentials.',
-  },
+  { id: 'llm', labelKey: 'settings.tab.llm', descKey: 'settings.tab.llm.desc' },
+  { id: 'data', labelKey: 'settings.tab.data', descKey: 'settings.tab.data.desc' },
+  { id: 'analysis', labelKey: 'settings.tab.analysis', descKey: 'settings.tab.analysis.desc' },
+  { id: 'webhooks', labelKey: 'settings.tab.webhooks', descKey: 'settings.tab.webhooks.desc' },
+  { id: 'channels', labelKey: 'settings.tab.channels', descKey: 'settings.tab.channels.desc' },
+  { id: 'costguard', labelKey: 'settings.tab.costguard', descKey: 'settings.tab.costguard.desc' },
+  { id: 'updates', labelKey: 'settings.tab.updates', descKey: 'settings.tab.updates.desc' },
+  { id: 'about', labelKey: 'settings.tab.about', descKey: 'settings.tab.about.desc' },
 ];
 
 interface SecretRow {
   /** Stable key in `secrets.json` — e.g. "llm:openai", "data:alpaca". */
   secretKey: string;
-  /** Human label for the row. */
+  /** Human label for the row (provider brand; not translated). */
   name: string;
-  /** Sub-line explaining the provider. */
-  note: string;
-  /** Pill content (no functional meaning yet). */
-  pillLabel: string;
+  /** Translated label (overrides `name`) for rows whose name is a descriptor. */
+  nameKey?: MessageKey;
+  /** Sub-line explaining the provider (i18n key). */
+  noteKey: MessageKey;
+  /** Pill content key (no functional meaning yet). */
+  pillKey: MessageKey;
   pillVariant: 'default' | 'planned' | 'optional';
   /** Input affordance — `password` (default) or `text` for non-secret URLs. */
   fieldType?: 'password' | 'text';
-  /** Placeholder for the input. */
+  /** Placeholder for the input (API-key formats are not translated). */
   placeholder?: string;
+  /** Translated placeholder (overrides `placeholder`). */
+  placeholderKey?: MessageKey;
   /** When set, a "Test" button appears once the key is stored. Clicking
    * runs a 1-token completion against the live provider to validate the
    * credential. Only meaningful for LLM rows. */
@@ -170,8 +134,8 @@ const LLM_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'llm:openai',
     name: 'OpenAI',
-    note: 'GPT-5 and GPT-4o family via API key.',
-    pillLabel: 'API key',
+    noteKey: 'settings.row.openai.note',
+    pillKey: 'settings.pill.apiKey',
     pillVariant: 'default',
     placeholder: 'sk-…',
     testProvider: 'openai',
@@ -179,8 +143,8 @@ const LLM_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'llm:anthropic',
     name: 'Anthropic',
-    note: 'Claude family. API key only (Anthropic OAuth is banned by their TOS).',
-    pillLabel: 'API key only',
+    noteKey: 'settings.row.anthropic.note',
+    pillKey: 'settings.pill.apiKeyOnly',
     pillVariant: 'default',
     placeholder: 'sk-ant-…',
     testProvider: 'anthropic',
@@ -188,8 +152,8 @@ const LLM_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'llm:openrouter',
     name: 'OpenRouter',
-    note: 'Provider-agnostic gateway. One key, many models, defaults to openai/gpt-4o-mini.',
-    pillLabel: 'Compatible',
+    noteKey: 'settings.row.openrouter.note',
+    pillKey: 'settings.pill.compatible',
     pillVariant: 'default',
     placeholder: 'sk-or-…',
     testProvider: 'openrouter',
@@ -197,8 +161,8 @@ const LLM_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'llm:gemini',
     name: 'Google Gemini',
-    note: 'Gemini 2.x and 3.x family. Cheap and fast, good for high-volume runs.',
-    pillLabel: 'Compatible',
+    noteKey: 'settings.row.gemini.note',
+    pillKey: 'settings.pill.compatible',
     pillVariant: 'default',
     placeholder: 'AIza…',
     testProvider: 'gemini',
@@ -206,8 +170,8 @@ const LLM_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'llm:xai',
     name: 'xAI Grok',
-    note: 'Grok 4.3 and the Grok 4.20 family. API key only. Get a key at console.x.ai.',
-    pillLabel: 'API key only',
+    noteKey: 'settings.row.xai.note',
+    pillKey: 'settings.pill.apiKeyOnly',
     pillVariant: 'default',
     placeholder: 'xai-…',
     testProvider: 'xai',
@@ -215,8 +179,8 @@ const LLM_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'llm:minimax',
     name: 'MiniMax',
-    note: 'MiniMax M2.x family (Global region), 204K context. API key only. Get a key at platform.minimax.io.',
-    pillLabel: 'API key only',
+    noteKey: 'settings.row.minimax.note',
+    pillKey: 'settings.pill.apiKeyOnly',
     pillVariant: 'default',
     placeholder: 'eyJ… (JWT)',
     testProvider: 'minimax',
@@ -239,30 +203,36 @@ const DATA_PROVIDERS: SecretRow[] = [
   {
     secretKey: 'data:alpaca-key-id',
     name: 'Alpaca Markets: Key ID',
-    note: 'Public key for high-quality market data (APCA-API-KEY-ID). Looks like PKxxxxxxxxxxxxxxxx. Paste alongside the Secret below. Use a paper-trading key. Trading Agents Lab connects only to data + paper-read endpoints; live keys will not function.',
-    pillLabel: 'Key ID',
+    nameKey: 'settings.row.alpacaKeyId.name',
+    noteKey: 'settings.row.alpacaKeyId.note',
+    pillKey: 'settings.pill.keyId',
     pillVariant: 'default',
     placeholder: 'PKxxxxxxxxxxxxxxxx',
   },
   {
     secretKey: 'data:alpaca-secret',
     name: 'Alpaca Markets: Secret',
-    note: 'Data secret (APCA-API-SECRET-KEY). Shown once at key generation on the Alpaca dashboard. Regenerate the pair if you missed it.',
-    pillLabel: 'Secret',
+    nameKey: 'settings.row.alpacaSecret.name',
+    noteKey: 'settings.row.alpacaSecret.note',
+    pillKey: 'settings.pill.secret',
     pillVariant: 'default',
     placeholder: 'data secret key',
+    placeholderKey: 'settings.row.alpacaSecret.placeholder',
   },
   {
     secretKey: 'data:alpha-vantage',
     name: 'Alpha Vantage: API key',
-    note: 'Unlocks the News, Social, and Fundamentals analysts (they source data from Alpha Vantage). Without it, keep the Analysis tab on Market only, which runs free on yfinance. Alpha Vantage offers a free key; the key is sent only to Alpha Vantage on your behalf, never stored by us server-side.',
-    pillLabel: 'Analysts',
+    nameKey: 'settings.row.alphaVantage.name',
+    noteKey: 'settings.row.alphaVantage.note',
+    pillKey: 'settings.pill.analysts',
     pillVariant: 'default',
     placeholder: 'Alpha Vantage API key',
+    placeholderKey: 'settings.row.alphaVantage.placeholder',
   },
 ];
 
 function Settings() {
+  const { t, rich } = useI18n();
   const [active, setActive] = useState<Tab>('llm');
   const [availability, setAvailability] = useState<SecretsAvailability | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
@@ -281,15 +251,13 @@ function Settings() {
         setAvailability(info);
         if (info.corruptionRecovery) setRecovery(info.corruptionRecovery);
         if (!info.available) {
-          setAvailabilityError(
-            'Encryption backend unavailable on this OS. Refusing to store secrets in plaintext.',
-          );
+          setAvailabilityError(t('settings.err.encryptionUnavailable'));
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           setAvailabilityError(
-            err instanceof Error ? err.message : 'failed to check encryption availability',
+            err instanceof Error ? err.message : t('settings.err.encryptionCheck'),
           );
         }
       });
@@ -300,6 +268,7 @@ function Settings() {
       cancelled = true;
       unsubscribe();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once; `t` only shapes error text
   }, []);
 
   useEffect(() => {
@@ -319,7 +288,7 @@ function Settings() {
 
   const refresh = useCallback(() => setRefreshTick((n) => n + 1), []);
 
-  const tab = TABS.find((t) => t.id === active) ?? TABS[0];
+  const tab = TABS.find((x) => x.id === active) ?? TABS[0];
 
   const listingByKey = useMemo(() => {
     const map = new Map<string, SecretListing>();
@@ -330,47 +299,40 @@ function Settings() {
   return (
     <div className={styles.page}>
       <header className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Settings</h1>
-        <p className={styles.pageSubtitle}>
-          Configure providers and connections. Secrets are encrypted by your OS
-          keychain (macOS Keychain / Windows DPAPI / Linux libsecret) before they
-          touch disk.
-        </p>
+        <h1 className={styles.pageTitle}>{t('settings.title')}</h1>
+        <p className={styles.pageSubtitle}>{t('settings.subtitle')}</p>
       </header>
 
       {availabilityError && (
         <div className={styles.availabilityBanner}>
-          <strong>Secret storage offline.</strong> {availabilityError}
+          {rich('settings.banner.offline', { error: availabilityError })}
         </div>
       )}
 
       {recovery && (
         <div className={styles.availabilityBanner}>
-          <strong>Encrypted secrets file recovered.</strong> The previous
-          secrets.json could not be read and was backed up to{' '}
-          <code>{recovery.backupPath}</code>. Re-enter your API keys below;
-          your previous entries are intact in the backup if you need them.
+          {rich('settings.banner.recovered', { path: recovery.backupPath })}
         </div>
       )}
 
       <div className={styles.layout}>
-        <nav className={styles.tabs} aria-label="Settings sections">
-          {TABS.map((t) => (
+        <nav className={styles.tabs} aria-label={t('settings.sectionsAria')}>
+          {TABS.map((tb) => (
             <button
-              key={t.id}
-              className={`${styles.tab} ${active === t.id ? styles.tabActive : ''}`}
-              onClick={() => setActive(t.id)}
+              key={tb.id}
+              className={`${styles.tab} ${active === tb.id ? styles.tabActive : ''}`}
+              onClick={() => setActive(tb.id)}
               type="button"
             >
-              {t.label}
+              {t(tb.labelKey)}
             </button>
           ))}
         </nav>
 
         <section className={styles.panel}>
           <header className={styles.panelHeader}>
-            <h2 className={styles.panelTitle}>{tab.label}</h2>
-            <p className={styles.panelDescription}>{tab.description}</p>
+            <h2 className={styles.panelTitle}>{t(tab.labelKey)}</h2>
+            <p className={styles.panelDescription}>{t(tab.descKey)}</p>
           </header>
 
           {active === 'llm' && (
@@ -452,6 +414,9 @@ interface SecretRowItemProps {
 }
 
 function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const rowName = row.nameKey ? t(row.nameKey) : row.name;
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
@@ -468,7 +433,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
     try {
       const apiKey = await getSecret(row.secretKey);
       if (!apiKey) {
-        setTestResult({ ok: false, error: 'no stored key' });
+        setTestResult({ ok: false, error: t('settings.row.noStoredKey') });
         return;
       }
       const result = await testLLMConnection({
@@ -479,7 +444,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
     } catch (err) {
       setTestResult({
         ok: false,
-        error: err instanceof Error ? err.message : 'test failed',
+        error: err instanceof Error ? err.message : t('settings.row.testFailed'),
       });
     } finally {
       setTesting(false);
@@ -496,7 +461,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
       setEditing(false);
       onChange();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'save failed');
+      setError(err instanceof Error ? err.message : t('settings.row.saveFailed'));
     } finally {
       setBusy(false);
     }
@@ -504,14 +469,14 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
 
   const onDelete = async () => {
     if (!listing) return;
-    if (!confirm(`Delete stored value for ${row.name}?`)) return;
+    if (!confirm(t('settings.row.confirmDelete', { name: rowName }))) return;
     setBusy(true);
     setError(null);
     try {
       await deleteSecret(row.secretKey);
       onChange();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'delete failed');
+      setError(err instanceof Error ? err.message : t('settings.row.deleteFailed'));
     } finally {
       setBusy(false);
     }
@@ -520,13 +485,17 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
   return (
     <li className={styles.row}>
       <div className={styles.rowMain}>
-        <div className={styles.rowName}>{row.name}</div>
-        <div className={styles.rowNote}>{row.note}</div>
+        <div className={styles.rowName}>{rowName}</div>
+        <div className={styles.rowNote}>{t(row.noteKey)}</div>
         {listing && (
           <div className={styles.rowMeta}>
-            Stored {row.fieldType === 'text' ? 'value' : 'key'}{' '}
-            <span className={styles.hint}>{listing.hint}</span> · saved{' '}
-            {formatRelative(listing.updatedAt)}
+            {t('settings.row.storedPre', {
+              kind: row.fieldType === 'text' ? t('settings.row.kind.value') : t('settings.row.kind.key'),
+            })}
+            <span className={styles.hint}>{listing.hint}</span>
+            {t('settings.row.storedPost', {
+              when: formatRelativeTime(listing.updatedAt, i18n, listing.updatedAt),
+            })}
           </div>
         )}
         {testResult && (
@@ -539,8 +508,15 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
             }}
           >
             {testResult.ok
-              ? `✓ Connection works${testResult.ms ? ` (${testResult.ms}ms)` : ''}${testResult.model ? ` · ${testResult.model}` : ''}`
-              : `✗ ${testResult.error ?? 'failed'}`}
+              ? t('settings.row.testOk', {
+                  ms: testResult.ms ? t('settings.row.testMs', { ms: testResult.ms }) : '',
+                  model: testResult.model ? t('settings.row.testModel', { model: testResult.model }) : '',
+                })
+              : t('settings.row.testFail', {
+                  error: testResult.error
+                    ? describeEngineError(testResult.error, i18n)
+                    : t('settings.row.testFailedShort'),
+                })}
           </div>
         )}
         {editing && (
@@ -550,7 +526,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
               className={styles.input}
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder={row.placeholder ?? ''}
+              placeholder={row.placeholderKey ? t(row.placeholderKey) : (row.placeholder ?? '')}
               autoFocus
               disabled={busy}
             />
@@ -561,7 +537,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
                 disabled={busy || !value}
                 type="button"
               >
-                {busy ? 'Saving…' : listing ? 'Replace' : 'Save'}
+                {busy ? t('settings.row.saving') : listing ? t('settings.row.replace') : t('settings.row.save')}
               </button>
               <button
                 className={styles.actionGhost}
@@ -573,7 +549,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
                 disabled={busy}
                 type="button"
               >
-                Cancel
+                {t('settings.row.cancel')}
               </button>
             </div>
             {error && <div className={styles.editorError}>{error}</div>}
@@ -581,8 +557,8 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
         )}
       </div>
       <div className={styles.rowAside}>
-        <span className={`${styles.pill} ${styles[`pill_${pillState(row, listing).variant}`]}`}>
-          {pillState(row, listing).label}
+        <span className={`${styles.pill} ${styles[`pill_${pillState(row, listing, t).variant}`]}`}>
+          {pillState(row, listing, t).label}
         </span>
         {!editing && (
           <>
@@ -593,7 +569,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
                 disabled={disabled || busy || testing}
                 type="button"
               >
-                {testing ? 'Testing…' : 'Test'}
+                {testing ? t('settings.row.testing') : t('settings.row.test')}
               </button>
             )}
             <button
@@ -602,7 +578,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
               disabled={disabled || busy}
               type="button"
             >
-              {listing ? 'Replace' : 'Configure'}
+              {listing ? t('settings.row.replace') : t('settings.row.configure')}
             </button>
             {listing && (
               <button
@@ -611,7 +587,7 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
                 disabled={disabled || busy}
                 type="button"
               >
-                Delete
+                {t('settings.row.delete')}
               </button>
             )}
           </>
@@ -622,17 +598,15 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
 }
 
 function YfinanceRow() {
+  const t = useI18n().t;
   return (
     <div className={styles.staticRow}>
       <div className={styles.rowMain}>
-        <div className={styles.rowName}>Yahoo Finance</div>
-        <div className={styles.rowNote}>
-          Free historical OHLCV via the yfinance package. Default, no configuration
-          needed; the engine is already using it.
-        </div>
+        <div className={styles.rowName}>{t('settings.yfinance.name')}</div>
+        <div className={styles.rowNote}>{t('settings.yfinance.note')}</div>
       </div>
       <div className={styles.rowAside}>
-        <span className={`${styles.pill} ${styles.pill_success}`}>Active · default</span>
+        <span className={`${styles.pill} ${styles.pill_success}`}>{t('settings.yfinance.pill')}</span>
       </div>
     </div>
   );
@@ -659,6 +633,7 @@ interface LocalLLMRowProps {
  * CostGuard purposes).
  */
 function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
+  const { t, tp, rich } = useI18n();
   const [runtimes, setRuntimes] = useState<LocalRuntime[] | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -681,7 +656,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
       // /llm/local-runtimes returns empty arrays cleanly; a thrown error
       // here means the engine is unreachable or returned a non-200. Show
       // it so the user knows detection isn't running silently broken.
-      setProbeError(err instanceof Error ? err.message : 'probe failed');
+      setProbeError(err instanceof Error ? err.message : t('settings.local.err.probe'));
       setRuntimes([]);
     } finally {
       setProbing(false);
@@ -716,7 +691,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
         onChange();
         return true;
       } catch (err) {
-        setSaveError(err instanceof Error ? err.message : 'save failed');
+        setSaveError(err instanceof Error ? err.message : t('settings.local.err.save'));
         return false;
       } finally {
         setSavingFor(null);
@@ -729,7 +704,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
     const url = manualUrl.trim();
     const model = manualModel.trim();
     if (!url || !model) {
-      setSaveError('Both base URL and model are required.');
+      setSaveError(t('settings.local.err.required'));
       return;
     }
     // Use onPickModel's return value, not the saveError state: state read
@@ -743,7 +718,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
 
   const onClear = useCallback(async () => {
     if (!saved) return;
-    if (!confirm('Clear the saved local LLM configuration?')) return;
+    if (!confirm(t('settings.local.confirmClear'))) return;
     try {
       await Promise.all([
         deleteSecret(PROVIDER_SECRET_KEY.local),
@@ -752,48 +727,43 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
       setSaved(null);
       onChange();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'clear failed');
+      setSaveError(err instanceof Error ? err.message : t('settings.local.err.clear'));
     }
   }, [saved, onChange]);
 
   return (
     <div className={styles.row}>
       <div className={styles.rowMain}>
-        <div className={styles.rowName}>Local LLM (Ollama / LM Studio)</div>
-        <div className={styles.rowNote}>
-          Auto-detects running OpenAI-compatible local runtimes on this
-          machine. Free to run, fully private. Model quality depends on
-          what you have installed. Cost guard treats local sessions as $0
-          (same as OAuth subscription).
-        </div>
+        <div className={styles.rowName}>{t('settings.local.name')}</div>
+        <div className={styles.rowNote}>{t('settings.local.note')}</div>
 
         {saved && (
           <div className={styles.rowMeta}>
-            Active: <strong>{saved.model}</strong> at <code>{saved.base_url}</code>
+            {rich('settings.local.active', { model: saved.model, url: saved.base_url })}
           </div>
         )}
 
         {probing && !runtimes && (
-          <div className={styles.rowMeta}>Probing localhost…</div>
+          <div className={styles.rowMeta}>{t('settings.local.probing')}</div>
         )}
 
         {probeError && (
           <div className={styles.editorError} role="alert">
-            Detection error: {probeError}
+            {t('settings.local.detectError', { error: probeError })}
           </div>
         )}
 
         {runtimes && runtimes.length === 0 && (
           <div className={styles.rowMeta}>
-            No local runtime detected. Install <a
+            {t('settings.local.none.pre')}<a
               href="https://ollama.com"
               target="_blank"
               rel="noopener noreferrer"
-            >Ollama</a> or <a
+            >Ollama</a>{t('settings.local.none.mid')}<a
               href="https://lmstudio.ai"
               target="_blank"
               rel="noopener noreferrer"
-            >LM Studio</a> and click Refresh, or use manual entry below.
+            >LM Studio</a>{t('settings.local.none.post')}
           </div>
         )}
 
@@ -809,16 +779,16 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
                         className={`${styles.pill} ${styles.pill_success}`}
                         style={{ marginLeft: 8 }}
                       >
-                        Connected
+                        {t('settings.local.connected')}
                       </span>
                     )}
                   </div>
                   <div className={styles.rowNote}>
-                    <code>{rt.base_url}</code> · {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
+                    <code>{rt.base_url}</code> · {tp('settings.local.models', rt.models.length)}
                   </div>
                   <div style={{ marginTop: 6 }}>
                     <label style={{ fontSize: 12, marginRight: 6 }}>
-                      Model:
+                      {t('settings.local.modelLabel')}
                     </label>
                     <select
                       disabled={disabled || savingFor === rt.base_url}
@@ -831,7 +801,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
                         }
                       }}
                     >
-                      <option value="">(pick a model)</option>
+                      <option value="">{t('settings.local.pickModel')}</option>
                       {rt.models.map((m) => (
                         <option key={m} value={m}>
                           {m}
@@ -849,7 +819,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
           <div style={{ marginTop: 12, padding: 12, background: 'var(--tal-bg-overlay)', borderRadius: 6 }}>
             <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-                Base URL (OpenAI-compatible)
+                {t('settings.local.baseUrl')}
               </label>
               <input
                 type="text"
@@ -861,7 +831,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
             </div>
             <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-                Model
+                {t('settings.local.model')}
               </label>
               <input
                 type="text"
@@ -877,14 +847,14 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
                 onClick={onSaveManual}
                 disabled={disabled}
               >
-                Save
+                {t('settings.local.save')}
               </button>
               <button
                 type="button"
                 onClick={() => setManualOpen(false)}
                 disabled={disabled}
               >
-                Cancel
+                {t('settings.local.cancel')}
               </button>
             </div>
           </div>
@@ -903,7 +873,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
           onClick={() => void probe()}
           disabled={disabled || probing}
         >
-          {probing ? 'Probing…' : 'Refresh'}
+          {probing ? t('settings.local.probingBtn') : t('settings.local.refresh')}
         </button>
         {!manualOpen && (
           <button
@@ -911,7 +881,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
             onClick={() => setManualOpen(true)}
             disabled={disabled}
           >
-            Manual entry
+            {t('settings.local.manual')}
           </button>
         )}
         {saved && (
@@ -920,7 +890,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
             onClick={onClear}
             disabled={disabled}
           >
-            Clear
+            {t('settings.local.clear')}
           </button>
         )}
       </div>
@@ -933,6 +903,7 @@ interface OpenAIOAuthRowProps {
 }
 
 function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
+  const { t, rich } = useI18n();
   const [status, setStatus] = useState<OAuthStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -946,7 +917,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
       setStatus(next);
     } catch (err) {
       setStatus({ connected: false });
-      setError(err instanceof Error ? err.message : 'oauth status check failed');
+      setError(err instanceof Error ? err.message : t('oauth.row.err.status'));
     }
   }, []);
 
@@ -970,23 +941,23 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
   const onConnect = useCallback(async () => {
     setBusy(true);
     setError(null);
-    setProgress('Starting…');
+    setProgress(t('oauth.row.starting'));
     setPrompt(null);
     try {
       const result = await startOpenAIOAuthLogin();
       if (result.success) {
         setProgress(
           result.email
-            ? `Connected as ${result.email}`
-            : 'Connected.',
+            ? t('oauth.row.connectedAs', { email: result.email })
+            : t('oauth.row.connectedShort'),
         );
       } else {
-        setError(result.error ?? 'Login failed.');
+        setError(result.error ?? t('oauth.row.loginFailed'));
         setProgress(null);
       }
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'oauth start failed');
+      setError(err instanceof Error ? err.message : t('oauth.row.err.start'));
       setProgress(null);
     } finally {
       setBusy(false);
@@ -996,7 +967,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
   }, [refreshStatus]);
 
   const onDisconnect = useCallback(async () => {
-    if (!confirm('Disconnect the OpenAI account? Stored OAuth tokens will be erased.')) return;
+    if (!confirm(t('oauth.row.confirmDisconnect'))) return;
     setBusy(true);
     setError(null);
     try {
@@ -1004,7 +975,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
       setProgress(null);
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'disconnect failed');
+      setError(err instanceof Error ? err.message : t('oauth.row.err.disconnect'));
     } finally {
       setBusy(false);
     }
@@ -1023,27 +994,20 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
   return (
     <div className={styles.row}>
       <div className={styles.rowMain}>
-        <div className={styles.rowName}>OpenAI account (OAuth)</div>
-        <div className={styles.rowNote}>
-          Sign in with your OpenAI account. Wins over the API key when both
-          are configured. <strong>Note:</strong> whether OAuth tokens route
-          through your ChatGPT subscription vs. per-token billing depends on
-          your OpenAI account configuration. Verify with a low-cost model
-          first and check your billing dashboard before relying on this for
-          cost savings.
-        </div>
+        <div className={styles.rowName}>{t('oauth.row.name')}</div>
+        <div className={styles.rowNote}>{rich('oauth.row.note')}</div>
         {connected && (
           <div className={styles.rowMeta}>
-            Connected{status?.email ? ` as ${status.email}` : ''}
-            {status?.planType && ` · ${status.planType} plan`}
-            {status?.needsRefresh && ' · token will refresh on next use'}
+            {t('oauth.row.connected', {
+              email: status?.email ? t('oauth.row.asEmail', { email: status.email }) : '',
+              plan: status?.planType ? t('oauth.row.plan', { plan: status.planType }) : '',
+              refresh: status?.needsRefresh ? t('oauth.row.refreshNext') : '',
+            })}
           </div>
         )}
         {connected && status?.isFreeTier && (
           <div className={styles.editorError} role="alert">
-            ⚠ Free-tier ChatGPT accounts have unreliable Codex routing.
-            Many models hang or return errors. Configure an OpenAI API key
-            below as a fallback if debates fail to start.
+            {t('oauth.row.freeTier')}
           </div>
         )}
         {progress && !error && (
@@ -1056,7 +1020,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
               className={styles.input}
               value={pasteValue}
               onChange={(e) => setPasteValue(e.target.value)}
-              placeholder={prompt.placeholder ?? 'paste here'}
+              placeholder={prompt.placeholder ?? t('oauth.row.pasteHere')}
               autoFocus
               disabled={busy && !prompt}
             />
@@ -1067,7 +1031,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
                 disabled={!pasteValue.trim()}
                 type="button"
               >
-                Submit
+                {t('oauth.row.submit')}
               </button>
             </div>
           </div>
@@ -1080,7 +1044,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
             connected ? styles.pill_success : styles.pill_optional
           }`}
         >
-          {connected ? 'Connected' : 'Recommended'}
+          {connected ? t('oauth.row.pillConnected') : t('oauth.row.pillRecommended')}
         </span>
         {connected ? (
           <button
@@ -1089,7 +1053,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
             disabled={disabled || busy}
             type="button"
           >
-            Disconnect
+            {t('oauth.row.disconnect')}
           </button>
         ) : (
           <button
@@ -1098,7 +1062,7 @@ function OpenAIOAuthRow({ disabled }: OpenAIOAuthRowProps) {
             disabled={disabled || busy}
             type="button"
           >
-            {busy ? 'Connecting…' : 'Connect'}
+            {busy ? t('oauth.row.connecting') : t('oauth.row.connect')}
           </button>
         )}
       </div>
@@ -1112,41 +1076,32 @@ interface AboutTabProps {
 }
 
 function AboutTab({ availability, secretsCount }: AboutTabProps) {
+  const { t, tp, rich } = useI18n();
   return (
     <div className={styles.formCard}>
-      <p className={styles.aboutIntro}>
-        <strong>Trading Agents Lab Pro</strong> runs a full multi-agent equity
-        research diligence privately on your own machine. Your API key and your
-        analysis stay on your computer: every request goes only to the providers
-        you configure, and nothing is collected or sent to us.
-      </p>
+      <p className={styles.aboutIntro}>{rich('about.intro')}</p>
       <dl className={styles.aboutList}>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>Version</dt>
+          <dt className={styles.aboutKey}>{t('about.version')}</dt>
           <dd className={styles.aboutValue}>{__APP_VERSION__}</dd>
         </div>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>Made by</dt>
+          <dt className={styles.aboutKey}>{t('about.madeBy')}</dt>
           <dd className={styles.aboutValue}>
             RBJ Global LLC
-            <div className={styles.aboutHint}>
-              A standalone trading research companion in the Clawless product
-              family.
-            </div>
+            <div className={styles.aboutHint}>{t('about.madeByHint')}</div>
           </dd>
         </div>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>License</dt>
-          <dd className={styles.aboutValue}>AGPL-3.0, open source (upstream core Apache-2.0)</dd>
+          <dt className={styles.aboutKey}>{t('about.license')}</dt>
+          <dd className={styles.aboutValue}>{t('about.licenseValue')}</dd>
         </div>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>Posture</dt>
-          <dd className={styles.aboutValue}>
-            Educational research and paper trading. Not investment advice.
-          </dd>
+          <dt className={styles.aboutKey}>{t('about.posture')}</dt>
+          <dd className={styles.aboutValue}>{t('about.postureValue')}</dd>
         </div>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>Legal</dt>
+          <dt className={styles.aboutKey}>{t('about.legal')}</dt>
           <dd className={styles.aboutValue}>
             <a
               className={styles.link}
@@ -1154,7 +1109,7 @@ function AboutTab({ availability, secretsCount }: AboutTabProps) {
               target="_blank"
               rel="noreferrer"
             >
-              Disclaimer
+              {t('about.legal.disclaimer')}
             </a>{' '}
             ·{' '}
             <a
@@ -1163,7 +1118,7 @@ function AboutTab({ availability, secretsCount }: AboutTabProps) {
               target="_blank"
               rel="noreferrer"
             >
-              Terms
+              {t('about.legal.terms')}
             </a>{' '}
             ·{' '}
             <a
@@ -1172,40 +1127,34 @@ function AboutTab({ availability, secretsCount }: AboutTabProps) {
               target="_blank"
               rel="noreferrer"
             >
-              Privacy
+              {t('about.legal.privacy')}
             </a>
-            <div className={styles.aboutHint}>
-              Full three-tier disclaimer, Terms of Service, and Privacy Policy
-              on the website.
-            </div>
+            <div className={styles.aboutHint}>{t('about.legalHint')}</div>
           </dd>
         </div>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>Encryption</dt>
+          <dt className={styles.aboutKey}>{t('about.encryption')}</dt>
           <dd className={styles.aboutValue}>
             {availability?.available
-              ? 'OS keychain available · safeStorage active'
-              : 'Unavailable; secret storage disabled'}
+              ? t('about.encryptionOn')
+              : t('about.encryptionOff')}
           </dd>
         </div>
         <div className={styles.aboutRow}>
-          <dt className={styles.aboutKey}>Secrets file</dt>
+          <dt className={styles.aboutKey}>{t('about.secretsFile')}</dt>
           <dd className={styles.aboutValue}>
             <code className={styles.code}>
-              {availability?.filePath ?? '(unavailable)'}
+              {availability?.filePath ?? t('about.unavailable')}
             </code>
             <div className={styles.aboutHint}>
               {secretsCount === 0
-                ? 'Empty. No secrets stored yet.'
-                : `${secretsCount} entr${secretsCount === 1 ? 'y' : 'ies'} stored (encrypted).`}
+                ? t('about.secretsEmpty')
+                : tp('about.secretsCount', secretsCount)}
             </div>
           </dd>
         </div>
       </dl>
-      <p className={styles.aboutAttribution}>
-        Built on open-source components licensed under Apache-2.0. Attributions
-        are in the NOTICE file included with the app.
-      </p>
+      <p className={styles.aboutAttribution}>{t('about.attribution')}</p>
     </div>
   );
 }
@@ -1227,24 +1176,15 @@ function AboutTab({ availability, secretsCount }: AboutTabProps) {
 function pillState(
   row: SecretRow,
   listing: SecretListing | null,
+  t: I18n['t'],
 ): { label: string; variant: 'default' | 'planned' | 'optional' | 'success' } {
   if (!listing) {
-    return { label: row.pillLabel, variant: row.pillVariant };
+    return { label: t(row.pillKey), variant: row.pillVariant };
   }
   if (row.pillVariant === 'planned') {
-    return { label: 'Stored · Inert', variant: 'optional' };
+    return { label: t('settings.pill.storedInert'), variant: 'optional' };
   }
-  return { label: 'Connected ✓', variant: 'success' };
-}
-
-function formatRelative(iso: string): string {
-  const ts = new Date(iso).getTime();
-  if (Number.isNaN(ts)) return iso;
-  const diffSec = Math.round((Date.now() - ts) / 1000);
-  if (diffSec < 60) return 'just now';
-  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString();
+  return { label: t('settings.pill.connected'), variant: 'success' };
 }
 
 // ---- Webhooks tab ---------------------------------------------------------
@@ -1259,6 +1199,7 @@ interface WebhooksTabProps {
 }
 
 function WebhooksTab({ availability }: WebhooksTabProps) {
+  const { t, rich } = useI18n();
   const [webhooks, setWebhooksState] = useState<WebhookConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<WebhookConfig | null>(null);
@@ -1286,10 +1227,10 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
         setWebhooksState(next);
         setSaveError(null);
       } catch (err) {
-        setSaveError(err instanceof Error ? err.message : 'save failed');
+        setSaveError(err instanceof Error ? err.message : t('webhooks.err.save'));
       }
     },
-    [],
+    [t],
   );
 
   const onAddNew = useCallback(() => {
@@ -1306,23 +1247,23 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
     async (cfg: WebhookConfig) => {
       const trimmed: WebhookConfig = {
         ...cfg,
-        name: cfg.name.trim() || 'Untitled webhook',
+        name: cfg.name.trim() || t('webhooks.untitled'),
         url: cfg.url.trim(),
         secret: cfg.secret?.trim() || undefined,
         telegram_chat_id: cfg.telegram_chat_id?.trim() || undefined,
       };
       if (!trimmed.url.startsWith('https://') && !trimmed.url.startsWith('http://')) {
-        setSaveError('URL must start with http:// or https://');
+        setSaveError(t('webhooks.err.url'));
         return;
       }
       if (trimmed.kind === 'telegram') {
         const token = extractTelegramToken(trimmed.url);
         if (!token) {
-          setSaveError('Bot Token is required for Telegram.');
+          setSaveError(t('webhooks.err.token'));
           return;
         }
         if (!trimmed.telegram_chat_id) {
-          setSaveError('Chat ID is required for Telegram.');
+          setSaveError(t('webhooks.err.chatId'));
           return;
         }
       }
@@ -1334,24 +1275,23 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
       await onPersist(next);
       setEditing(null);
     },
-    [webhooks, onPersist],
+    [webhooks, onPersist, t],
   );
 
   const onDelete = useCallback(
     async (id: string) => {
-      if (!confirm('Delete this webhook? Configured receivers will stop firing.')) {
+      if (!confirm(t('webhooks.confirmDelete'))) {
         return;
       }
       await onPersist(webhooks.filter((w) => w.id !== id));
     },
-    [webhooks, onPersist],
+    [webhooks, onPersist, t],
   );
 
   if (availability && !availability.available) {
     return (
       <div className={styles.placeholder}>
-        Webhook configs require encrypted storage. safeStorage is not available
-        on this system.
+        {t('webhooks.needsEncryption')}
       </div>
     );
   }
@@ -1366,27 +1306,20 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
           disabled={loading}
           data-testid="webhooks-add-button"
         >
-          + Add webhook
+          {t('webhooks.add')}
         </button>
       </div>
 
       {saveError && <p className={styles.formError}>{saveError}</p>}
 
-      {loading && <p className={styles.hint}>Loading…</p>}
+      {loading && <p className={styles.hint}>{t('webhooks.loading')}</p>}
 
       {!loading && webhooks.length === 0 && !editing && (
         <div className={styles.phaseGuard}>
-          <strong>No webhooks configured.</strong> Push every completed debate
-          to Telegram, Slack, Discord, or your own HTTPS endpoint. Filter by
-          stance (bullish through bearish) or conviction so you only get
-          pinged on what matters.
+          {rich('webhooks.empty')}
           <br />
           <br />
-          Webhooks are an analysis handoff. They push the committee
-          assessment JSON to your receivers. They never execute trades and
-          carry no trade instruction. If you want to bridge to a broker, your
-          receiver (Cloudflare Worker, Lambda, etc.) owns that decision and
-          calls the broker API itself.
+          {t('webhooks.emptyNote')}
         </div>
       )}
 
@@ -1401,10 +1334,10 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
               <div className={styles.rowMain}>
                 <div className={styles.rowName}>
                   {w.name}{' '}
-                  <span className={styles.pill}>{KIND_LABEL[w.kind]}</span>
+                  <span className={styles.pill}>{t(`webhooks.kind.${w.kind}` as const)}</span>
                   {w.filter.stances.length > 0 && (
                     <span className={styles.pill}>
-                      {w.filter.stances.map((s) => stanceLabel(s)).join(' / ')}
+                      {w.filter.stances.map((st) => stanceLabel(st, t)).join(' / ')}
                     </span>
                   )}
                   {w.filter.min_conviction > 0 && (
@@ -1414,7 +1347,7 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
                   )}
                 </div>
                 <div className={styles.rowNote}>
-                  {hostFromUrl(w.url) || '(invalid URL)'}
+                  {hostFromUrl(w.url) || t('webhooks.invalidUrl')}
                 </div>
               </div>
               <div className={styles.rowAside}>
@@ -1423,14 +1356,14 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
                   className={styles.rowAction}
                   onClick={() => setEditing({ ...w })}
                 >
-                  Edit
+                  {t('webhooks.edit')}
                 </button>
                 <button
                   type="button"
                   className={styles.rowActionDanger}
                   onClick={() => void onDelete(w.id)}
                 >
-                  Delete
+                  {t('webhooks.delete')}
                 </button>
               </div>
             </li>
@@ -1459,6 +1392,7 @@ function WebhooksTab({ availability }: WebhooksTabProps) {
 // channels are inbound triggers that drive a new debate.
 
 function ChannelsTab() {
+  const t = useI18n().t;
   return (
     <div>
       <div className={styles.channelsHero}>
@@ -1470,7 +1404,7 @@ function ChannelsTab() {
         <div className={styles.channelsHeroText}>
           <span className={styles.channelsHeroTitle}>Telegram</span>
           <span className={styles.channelsHeroSubtitle}>
-            Connect a Telegram bot to run the Diligence from your phone.
+            {t('channels.telegram.subtitle')}
           </span>
         </div>
       </div>
@@ -1514,6 +1448,7 @@ interface WebhookEditorProps {
 }
 
 function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
+  const { t, rich } = useI18n();
   const [draft, setDraft] = useState<WebhookConfig>(config);
 
   const setKind = (kind: WebhookKind) => {
@@ -1530,18 +1465,18 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
   return (
     <div className={styles.editor} data-testid="webhook-editor">
       <div className={styles.field}>
-        <label className={styles.label}>Name</label>
+        <label className={styles.label}>{t('webhooks.editor.name')}</label>
         <input
           className={styles.input}
           value={draft.name}
           onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-          placeholder="Telegram me on bullish reads"
+          placeholder={t('webhooks.editor.namePlaceholder')}
           data-testid="webhook-name-input"
         />
       </div>
 
       <div className={styles.field}>
-        <label className={styles.label}>Kind</label>
+        <label className={styles.label}>{t('webhooks.editor.kind')}</label>
         <select
           className={styles.input}
           value={draft.kind}
@@ -1550,17 +1485,17 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
         >
           {(['telegram', 'slack', 'discord', 'generic'] as WebhookKind[]).map((k) => (
             <option key={k} value={k}>
-              {KIND_LABEL[k]}
+              {t(`webhooks.kind.${k}` as const)}
             </option>
           ))}
         </select>
-        <p className={styles.hint}>{KIND_HINT[draft.kind]}</p>
+        <p className={styles.hint}>{t(`webhooks.hint.${draft.kind}` as const)}</p>
       </div>
 
       {draft.kind === 'telegram' ? (
         <>
           <div className={styles.field}>
-            <label className={styles.label}>Bot Token</label>
+            <label className={styles.label}>{t('webhooks.editor.botToken')}</label>
             <input
               type="password"
               className={styles.input}
@@ -1571,33 +1506,25 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
               placeholder="123456789:ABCdef-GhIJklmnOPqrsTUVwxyz"
               data-testid="webhook-url-input"
             />
-            <p className={styles.hint}>
-              The token BotFather gave you on Telegram. Looks like{' '}
-              <code className={styles.code}>123456789:ABC...</code>. Stored
-              encrypted in your OS keychain; never shown back in the row preview.
-            </p>
+            <p className={styles.hint}>{rich('webhooks.editor.botTokenHint', undefined, styles.code)}</p>
           </div>
           <div className={styles.field}>
-            <label className={styles.label}>Chat ID</label>
+            <label className={styles.label}>{t('webhooks.editor.chatId')}</label>
             <input
               className={styles.input}
               value={draft.telegram_chat_id ?? ''}
               onChange={(e) =>
                 setDraft({ ...draft, telegram_chat_id: e.target.value })
               }
-              placeholder="12345678 or -100123456789 for groups"
+              placeholder={t('webhooks.editor.chatIdPlaceholder')}
               data-testid="webhook-chat-id-input"
             />
-            <p className={styles.hint}>
-              Numeric Telegram chat id. Get yours by messaging{' '}
-              <code className={styles.code}>@userinfobot</code> on Telegram. For
-              group chats the id starts with a minus.
-            </p>
+            <p className={styles.hint}>{rich('webhooks.editor.chatIdHint', undefined, styles.code)}</p>
           </div>
         </>
       ) : (
         <div className={styles.field}>
-          <label className={styles.label}>URL</label>
+          <label className={styles.label}>{t('webhooks.editor.url')}</label>
           <input
             type="password"
             className={styles.input}
@@ -1617,24 +1544,20 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
 
       {draft.kind === 'generic' && (
         <div className={styles.field}>
-          <label className={styles.label}>HMAC shared secret (optional)</label>
+          <label className={styles.label}>{t('webhooks.editor.secret')}</label>
           <input
             type="password"
             className={styles.input}
             value={draft.secret ?? ''}
             onChange={(e) => setDraft({ ...draft, secret: e.target.value })}
-            placeholder="any string"
+            placeholder={t('webhooks.editor.secretPlaceholder')}
           />
-          <p className={styles.hint}>
-            When set, requests carry{' '}
-            <code className={styles.code}>X-TAL-Signature: sha256=&lt;hex&gt;</code>{' '}
-            so your receiver can verify the body.
-          </p>
+          <p className={styles.hint}>{rich('webhooks.editor.secretHint', undefined, styles.code)}</p>
         </div>
       )}
 
       <div className={styles.field}>
-        <label className={styles.label}>Fire on stances</label>
+        <label className={styles.label}>{t('webhooks.editor.stances')}</label>
         <div className={styles.webhooksCheckboxes}>
           {STANCES.map((s) => {
             const checked = draft.filter.stances.includes(s);
@@ -1655,19 +1578,17 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
                     })
                   }
                 />
-                {stanceLabel(s)}
+                {stanceLabel(s, t)}
               </label>
             );
           })}
         </div>
-        <p className={styles.hint}>
-          Leave all unchecked to fire on every stance.
-        </p>
+        <p className={styles.hint}>{t('webhooks.editor.stancesHint')}</p>
       </div>
 
       <div className={styles.field}>
         <label className={styles.label}>
-          Minimum conviction: {Math.round(draft.filter.min_conviction * 100)}%
+          {t('webhooks.editor.minConviction', { pct: Math.round(draft.filter.min_conviction * 100) })}
         </label>
         <input
           type="range"
@@ -1690,7 +1611,7 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
           className={styles.actionGhost}
           onClick={onCancel}
         >
-          Cancel
+          {t('webhooks.editor.cancel')}
         </button>
         <button
           type="button"
@@ -1699,7 +1620,7 @@ function WebhookEditor({ config, onCancel, onSave }: WebhookEditorProps) {
           disabled={!draft.url.trim()}
           data-testid="webhook-save-button"
         >
-          Save
+          {t('webhooks.editor.save')}
         </button>
       </div>
     </div>
@@ -1715,6 +1636,7 @@ function AlphaVantageSignupCallout({
   hasKey: boolean;
   onSaved: () => void;
 }) {
+  const { t, rich } = useI18n();
   // In-app free-key signup: open Alpha Vantage's real page in an isolated
   // window, capture the issued key, and save it, so the user never has to
   // leave the app (and never reaches the competitor promo AV shows below the
@@ -1752,20 +1674,17 @@ function AlphaVantageSignupCallout({
   return (
     <div className={styles.avCallout}>
       <div className={styles.avCalloutText}>
-        <strong>No Alpha Vantage key yet?</strong>
-        <div className={styles.formHint}>
-          Get one free without leaving the app. We open the signup, capture your
-          key the moment it is issued, and fill it in for you.
-        </div>
+        {rich('av.title')}
+        <div className={styles.formHint}>{t('av.hint')}</div>
         {status === 'saved' && (
-          <p className={styles.formSuccess}>Key captured and saved.</p>
+          <p className={styles.formSuccess}>{t('av.saved')}</p>
         )}
         {status === 'cancelled' && (
-          <p className={styles.formHint}>Window closed before a key was issued.</p>
+          <p className={styles.formHint}>{t('av.cancelled')}</p>
         )}
         {status === 'error' && (
           <p className={styles.formError}>
-            Could not complete the signup. You can paste a key manually above.
+            {t('av.error')}
           </p>
         )}
       </div>
@@ -1775,13 +1694,14 @@ function AlphaVantageSignupCallout({
         onClick={() => void onGetKey()}
         disabled={status === 'opening'}
       >
-        {status === 'opening' ? 'Opening…' : 'Get a free key'}
+        {status === 'opening' ? t('av.opening') : t('av.get')}
       </button>
     </div>
   );
 }
 
 function ProAnalysisTab() {
+  const { t } = useI18n();
   // Local mirror of the persisted Pro run-config. Writes go straight to
   // localStorage (no engine round-trip), so we persist on each change and
   // reflect it immediately. `tokenCapDraft` is kept as a separate string so
@@ -1817,12 +1737,8 @@ function ProAnalysisTab() {
   return (
     <div className={styles.formCard}>
       <fieldset className={styles.formGroup}>
-        <legend className={styles.formLegend}>Analysts</legend>
-        <p className={styles.formHint}>
-          Which analysts run in the diligence. Market is free (yfinance). News,
-          Social, and Fundamentals require an Alpha Vantage data key (add one
-          under Data Providers). Without a data key, keep Market only.
-        </p>
+        <legend className={styles.formLegend}>{t('analysis.analysts')}</legend>
+        <p className={styles.formHint}>{t('analysis.analystsHint')}</p>
         {ALL_ANALYSTS.map((id) => (
           <label key={id} className={styles.toggleRow}>
             <input
@@ -1831,9 +1747,9 @@ function ProAnalysisTab() {
               onChange={() => toggleAnalyst(id)}
             />
             <span>
-              <strong>{ANALYST_LABEL[id]}</strong>
+              <strong>{t(`analyst.${id}` as const)}</strong>
               {ANALYSTS_NEEDING_DATA_KEY.includes(id) && (
-                <div className={styles.formHint}>Requires an Alpha Vantage data key</div>
+                <div className={styles.formHint}>{t('analysis.requiresKey')}</div>
               )}
             </span>
           </label>
@@ -1841,16 +1757,11 @@ function ProAnalysisTab() {
       </fieldset>
 
       <fieldset className={styles.formGroup}>
-        <legend className={styles.formLegend}>News source</legend>
-        <p className={styles.formHint}>
-          Where the News analyst pulls headlines. Auto prefers Alpaca (Benzinga)
-          when you have Alpaca connected under Data Providers, and falls back to
-          Yahoo Finance. Yahoo can return no headlines for some tickers, so Alpaca
-          is the better default when connected.
-        </p>
+        <legend className={styles.formLegend}>{t('analysis.newsSource')}</legend>
+        <p className={styles.formHint}>{t('analysis.newsSourceHint')}</p>
         <div className={styles.costInputRow}>
           <label className={styles.costInputLabel}>
-            Source
+            {t('analysis.source')}
             <select
               className={styles.costInputField}
               value={state.newsSource}
@@ -1860,7 +1771,7 @@ function ProAnalysisTab() {
             >
               {NEWS_SOURCES.map((s) => (
                 <option key={s} value={s}>
-                  {NEWS_SOURCE_LABEL[s]}
+                  {t(`newsSource.${s}` as const)}
                 </option>
               ))}
             </select>
@@ -1869,14 +1780,11 @@ function ProAnalysisTab() {
       </fieldset>
 
       <fieldset className={styles.formGroup}>
-        <legend className={styles.formLegend}>Debate depth</legend>
-        <p className={styles.formHint}>
-          More rounds means a deeper, more expensive debate. Each research round
-          adds a bull and a bear turn; each risk round adds three analyst turns.
-        </p>
+        <legend className={styles.formLegend}>{t('analysis.depth')}</legend>
+        <p className={styles.formHint}>{t('analysis.depthHint')}</p>
         <div className={styles.costInputRow}>
           <label className={styles.costInputLabel}>
-            Research rounds (bull vs bear)
+            {t('analysis.researchRounds')}
             <select
               className={styles.costInputField}
               value={state.maxDebateRounds}
@@ -1892,7 +1800,7 @@ function ProAnalysisTab() {
         </div>
         <div className={styles.costInputRow}>
           <label className={styles.costInputLabel}>
-            Risk rounds (aggressive / conservative / neutral)
+            {t('analysis.riskRounds')}
             <select
               className={styles.costInputField}
               value={state.maxRiskRounds}
@@ -1909,10 +1817,10 @@ function ProAnalysisTab() {
       </fieldset>
 
       <fieldset className={styles.formGroup}>
-        <legend className={styles.formLegend}>Reasoning effort</legend>
+        <legend className={styles.formLegend}>{t('analysis.effort')}</legend>
         <div className={styles.costInputRow}>
           <label className={styles.costInputLabel}>
-            Effort
+            {t('analysis.effortLabel')}
             <select
               className={styles.costInputField}
               value={state.effort ?? ''}
@@ -1920,51 +1828,46 @@ function ProAnalysisTab() {
                 persist({ ...state, effort: (e.target.value || null) as EffortLevel | null })
               }
             >
-              <option value="">Default</option>
+              <option value="">{t('analysis.effortDefault')}</option>
               {EFFORT_LEVELS.map((lvl) => (
                 <option key={lvl} value={lvl}>
-                  {lvl}
+                  {t(`analysis.effort.${lvl}` as const)}
                 </option>
               ))}
             </select>
           </label>
         </div>
-        <p className={styles.formHint}>
-          Applies to Anthropic Claude Sonnet 4.6 only, the sole model that
-          accepts the effort parameter. Ignored for other providers and models.
-        </p>
+        <p className={styles.formHint}>{t('analysis.effortHint')}</p>
       </fieldset>
 
       <fieldset className={styles.formGroup}>
-        <legend className={styles.formLegend}>Token cap</legend>
+        <legend className={styles.formLegend}>{t('analysis.tokenCap')}</legend>
         <div className={styles.costInputRow}>
           <label className={styles.costInputLabel}>
-            Max tokens per run
+            {t('analysis.maxTokens')}
             <input
               type="number"
               inputMode="numeric"
               min={0}
               step={1000}
               className={styles.costInputField}
-              placeholder="No cap"
+              placeholder={t('analysis.noCap')}
               value={tokenCapDraft}
               onChange={(e) => setTokenCapDraft(e.target.value)}
               onBlur={commitTokenCap}
             />
           </label>
         </div>
-        <p className={styles.formHint}>
-          Optional safety backstop. The run stops if total tokens cross this
-          limit. Leave blank to rely on the Cost Guard budget caps instead.
-        </p>
+        <p className={styles.formHint}>{t('analysis.tokenCapHint')}</p>
       </fieldset>
 
-      <p className={styles.formHint}>Changes save automatically and apply to your next run.</p>
+      <p className={styles.formHint}>{t('analysis.autosave')}</p>
     </div>
   );
 }
 
 function CostGuardTab() {
+  const { t } = useI18n();
   const [config, setConfig] = useState<CostGuardConfig | null>(null);
   const [spend, setSpend] = useState<SpendState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1993,7 +1896,7 @@ function CostGuardTab() {
       setDraftMonthly(String(state.config.cap_monthly_usd));
       setDraftSessionsPerDay(String(state.config.cap_sessions_per_day));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to load cost guard');
+      setError(err instanceof Error ? err.message : t('cg.err.load'));
     } finally {
       setLoading(false);
     }
@@ -2025,7 +1928,7 @@ function CostGuardTab() {
       const state = await getCostGuardState();
       setSpend(state.spend);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to save cost guard');
+      setError(err instanceof Error ? err.message : t('cg.err.save'));
     } finally {
       setSaving(false);
     }
@@ -2034,7 +1937,7 @@ function CostGuardTab() {
   if (loading || !config || !spend) {
     return (
       <div className={styles.formCard}>
-        <p className={styles.formHint}>{error ?? 'Loading cost guard…'}</p>
+        <p className={styles.formHint}>{error ?? t('cg.loading')}</p>
       </div>
     );
   }
@@ -2049,36 +1952,31 @@ function CostGuardTab() {
             onChange={(e) => setDraftEnabled(e.target.checked)}
           />
           <span>
-            <strong>Budget caps enabled</strong>
-            <div className={styles.formHint}>
-              When off, all live debates are allowed regardless of caps.
-            </div>
+            <strong>{t('cg.enabled')}</strong>
+            <div className={styles.formHint}>{t('cg.enabledHint')}</div>
           </span>
         </label>
       </div>
 
       <fieldset className={styles.formGroup} disabled={!draftEnabled}>
-        <legend className={styles.formLegend}>API cost caps (USD)</legend>
-        <p className={styles.formHint}>
-          Applies to API-key sessions only. OAuth sessions cost $0
-          (subscription-billed). Set to 0 to disable any window.
-        </p>
+        <legend className={styles.formLegend}>{t('cg.apiCaps')}</legend>
+        <p className={styles.formHint}>{t('cg.apiCapsHint')}</p>
         <CostInputRow
-          label="Daily"
+          label={t('cg.daily')}
           value={draftDaily}
           onChange={setDraftDaily}
           step={0.25}
           placeholder="1.00"
         />
         <CostInputRow
-          label="Weekly"
+          label={t('cg.weekly')}
           value={draftWeekly}
           onChange={setDraftWeekly}
           step={1}
           placeholder="5.00"
         />
         <CostInputRow
-          label="Monthly"
+          label={t('cg.monthly')}
           value={draftMonthly}
           onChange={setDraftMonthly}
           step={5}
@@ -2087,41 +1985,38 @@ function CostGuardTab() {
       </fieldset>
 
       <fieldset className={styles.formGroup} disabled={!draftEnabled}>
-        <legend className={styles.formLegend}>Session rate cap</legend>
-        <p className={styles.formHint}>
-          Applies to all live sessions including OAuth. Use this to cap your
-          ChatGPT subscription quota usage. Set to 0 to disable.
-        </p>
+        <legend className={styles.formLegend}>{t('cg.rateCap')}</legend>
+        <p className={styles.formHint}>{t('cg.rateCapHint')}</p>
         <CostInputRow
-          label="Per day"
+          label={t('cg.perDay')}
           value={draftSessionsPerDay}
           onChange={setDraftSessionsPerDay}
           step={1}
-          placeholder="0 (disabled)"
+          placeholder={t('cg.disabledPlaceholder')}
           asInteger
         />
       </fieldset>
 
       <fieldset className={styles.formGroup}>
-        <legend className={styles.formLegend}>Current period spend</legend>
+        <legend className={styles.formLegend}>{t('cg.currentSpend')}</legend>
         <SpendBar
-          label="Daily"
+          label={t('cg.daily')}
           current={spend.daily_usd}
           cap={config.cap_daily_usd}
         />
         <SpendBar
-          label="Weekly"
+          label={t('cg.weekly')}
           current={spend.weekly_usd}
           cap={config.cap_weekly_usd}
         />
         <SpendBar
-          label="Monthly"
+          label={t('cg.monthly')}
           current={spend.monthly_usd}
           cap={config.cap_monthly_usd}
         />
         {config.cap_sessions_per_day > 0 && (
           <SpendBar
-            label="Sessions today"
+            label={t('cg.sessionsToday')}
             current={spend.sessions_today}
             cap={config.cap_sessions_per_day}
             isCount
@@ -2132,12 +2027,12 @@ function CostGuardTab() {
           className={styles.refreshLink}
           onClick={() => void refresh()}
         >
-          Refresh
+          {t('cg.refresh')}
         </button>
       </fieldset>
 
       {error && <p className={styles.formError}>{error}</p>}
-      {saved && <p className={styles.formSuccess}>Saved.</p>}
+      {saved && <p className={styles.formSuccess}>{t('cg.saved')}</p>}
 
       <div className={styles.formActions}>
         <button
@@ -2146,7 +2041,7 @@ function CostGuardTab() {
           onClick={() => void onSave()}
           disabled={saving}
         >
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? t('cg.saving') : t('cg.save')}
         </button>
       </div>
     </div>
@@ -2197,12 +2092,13 @@ interface SpendBarProps {
 }
 
 function SpendBar({ label, current, cap, isCount }: SpendBarProps) {
+  const { t } = useI18n();
   if (cap <= 0) {
     return (
       <div className={styles.spendRow}>
         <span className={styles.spendLabel}>{label}</span>
         <span className={styles.spendValueDisabled}>
-          {isCount ? current : formatUsdShort(current)} · cap disabled
+          {t('cg.capDisabled', { value: isCount ? current : formatUsdShort(current) })}
         </span>
       </div>
     );
@@ -2375,6 +2271,7 @@ async function buildBotProviderConfig(provider: BotProvider): Promise<
 const OAUTH_REFRESH_INTERVAL_MS = 45 * 60 * 1000;
 
 function TelegramBotPanel() {
+  const { t, tp, rich } = useI18n();
   const [token, setToken] = useState('');
   const [hasStoredToken, setHasStoredToken] = useState(false);
   const [allowlistText, setAllowlistText] = useState('');
@@ -2483,19 +2380,17 @@ function TelegramBotPanel() {
       ? (await getSecret(TELEGRAM_BOT_TOKEN_KEY)) ?? ''
       : '');
     if (!effectiveToken) {
-      setError('Bot token is required. Paste the token from BotFather.');
+      setError(t('tg.err.token'));
       return;
     }
     const allowlist = parseAllowlist(allowlistText);
     if (allowlist.length === 0) {
-      setError(
-        'Allowlist is empty. Add at least one numeric Telegram user ID, one per line. Message /start to your bot to discover yours.',
-      );
+      setError(t('tg.err.allowlist'));
       return;
     }
     const cap = parseFloat(capText);
     if (!Number.isFinite(cap) || cap < 0) {
-      setError('Daily cap must be a non-negative dollar amount.');
+      setError(t('tg.err.cap'));
       return;
     }
     // v1.2: build provider_config with OAuth-awareness for OpenAI. For
@@ -2506,10 +2401,8 @@ function TelegramBotPanel() {
       const label =
         BOT_PROVIDERS.find((p) => p.value === botProvider)?.label ?? botProvider;
       const oauthHint =
-        botProvider === 'openai'
-          ? ' Either sign in with OpenAI OAuth in the LLM Providers tab, or paste an API key in the OpenAI API-key fallback row.'
-          : ' Set one in the LLM Providers tab, or pick a different provider above.';
-      setError(`No ${label} credentials configured.${oauthHint}`);
+        botProvider === 'openai' ? t('tg.hint.openai') : t('tg.hint.other');
+      setError(t('tg.err.noCreds', { label, hint: oauthHint }));
       return;
     }
     setBusy('starting');
@@ -2604,20 +2497,13 @@ function TelegramBotPanel() {
 
   return (
     <div className={styles.phaseGuard} style={{ marginTop: 32 }}>
-      <strong>Telegram Bot (bidirectional)</strong>
+      {rich('tg.title')}
       <br />
       <br />
-      Message the bot a ticker like <code>NVDA</code> from your phone and get
-      a Diligence run back. The bot polls Telegram outbound, so nothing is
-      exposed to the internet from your machine. Allowlist is required; the
-      bot drops messages from anyone else silently. Per-chat daily spend
-      cap prevents token-drain abuse if your bot token leaks.
+      {rich('tg.intro')}
       <br />
       <br />
-      <em>
-        Educational and research purposes only. The bot returns the same
-        committee assessment the desktop app shows, with the same disclaimers.
-      </em>
+      {rich('tg.edu')}
 
       {pending.length > 0 && (
         <div
@@ -2629,12 +2515,9 @@ function TelegramBotPanel() {
           }}
           data-testid="telegram-pending-list"
         >
-          <strong>Pending approval{pending.length > 1 ? 's' : ''}</strong>
+          <strong>{tp('tg.pending.title', pending.length)}</strong>
           <p className={styles.hint} style={{ marginTop: 4 }}>
-            Someone messaged <code>/start</code> to the bot. Approve to add
-            them to the allowlist and let them trigger Diligence runs; the
-            bot will DM them on approval. Deny silently drops the request.
-            Entries expire automatically after 30 minutes.
+            {rich('tg.pending.hint')}
           </p>
           <ul className={styles.list} style={{ marginTop: 10 }}>
             {pending.map((p) => (
@@ -2645,11 +2528,11 @@ function TelegramBotPanel() {
               >
                 <div className={styles.rowMain}>
                   <div className={styles.rowName}>
-                    {p.first_name || '(no name)'}{' '}
+                    {p.first_name || t('tg.pending.noName')}{' '}
                     {p.username && (
                       <span className={styles.pill}>@{p.username}</span>
                     )}
-                    <span className={styles.pill}>chat {p.chat_id}</span>
+                    <span className={styles.pill}>{t('tg.pending.chat', { id: p.chat_id })}</span>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -2659,7 +2542,7 @@ function TelegramBotPanel() {
                     onClick={() => void onApprove(p.chat_id)}
                     data-testid={`telegram-approve-${p.chat_id}`}
                   >
-                    Approve
+                    {t('tg.approve')}
                   </button>
                   <button
                     type="button"
@@ -2667,7 +2550,7 @@ function TelegramBotPanel() {
                     onClick={() => void onDeny(p.chat_id)}
                     data-testid={`telegram-deny-${p.chat_id}`}
                   >
-                    Deny
+                    {t('tg.deny')}
                   </button>
                 </div>
               </li>
@@ -2679,13 +2562,13 @@ function TelegramBotPanel() {
       <div style={{ marginTop: 16, display: 'grid', gap: 12 }}>
         <label style={{ display: 'block' }}>
           <span className={styles.fieldLabel}>
-            Bot Token{hasStoredToken ? ' (stored, leave blank to keep)' : ''}
+            {t('tg.token')}{hasStoredToken ? t('tg.tokenStored') : ''}
           </span>
           <input
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder={hasStoredToken ? '••••••••' : 'paste from BotFather'}
+            placeholder={hasStoredToken ? '••••••••' : t('tg.tokenPlaceholder')}
             className={styles.input}
             spellCheck={false}
             autoComplete="off"
@@ -2695,7 +2578,7 @@ function TelegramBotPanel() {
 
         <label style={{ display: 'block' }}>
           <span className={styles.fieldLabel}>
-            LLM provider for bot-triggered debates
+            {t('tg.provider')}
           </span>
           <select
             value={botProvider}
@@ -2711,19 +2594,20 @@ function TelegramBotPanel() {
             ))}
           </select>
           <span className={styles.hint} style={{ marginTop: 4, display: 'block' }}>
-            Uses the credential stored for this provider in the LLM Providers
-            tab. For OpenAI, OAuth (Codex) is preferred when connected; an
-            API key in the OpenAI fallback row is used otherwise. Default
-            model: {botProvider === 'openai'
-              ? `${BOT_PROVIDER_DEFAULT_MODEL.openai} (API key) or ${OPENAI_CODEX_DEFAULT_MODEL} (OAuth)`
-              : BOT_PROVIDER_DEFAULT_MODEL[botProvider]}.
-            Local runtimes are not yet supported for the bot.
+            {t('tg.providerHint.pre')}
+            {botProvider === 'openai'
+              ? t('tg.providerHint.openai', {
+                  apiModel: BOT_PROVIDER_DEFAULT_MODEL.openai,
+                  oauthModel: OPENAI_CODEX_DEFAULT_MODEL,
+                })
+              : BOT_PROVIDER_DEFAULT_MODEL[botProvider]}
+            {t('tg.providerHint.post')}
           </span>
         </label>
 
         <label style={{ display: 'block' }}>
           <span className={styles.fieldLabel}>
-            Allowlist (numeric chat IDs, one per line)
+            {t('tg.allowlist')}
           </span>
           <textarea
             value={allowlistText}
@@ -2738,7 +2622,7 @@ function TelegramBotPanel() {
 
         <label style={{ display: 'block' }}>
           <span className={styles.fieldLabel}>
-            Daily cap per chat (USD)
+            {t('tg.cap')}
           </span>
           <input
             type="text"
@@ -2761,10 +2645,10 @@ function TelegramBotPanel() {
                 disabled={busy !== null}
                 data-testid="telegram-bot-stop"
               >
-                {busy === 'stopping' ? 'Stopping…' : 'Stop bot'}
+                {busy === 'stopping' ? t('tg.stopping') : t('tg.stop')}
               </button>
               <span className={styles.pill} data-testid="telegram-bot-status">
-                polling
+                {t('tg.polling')}
               </span>
             </>
           ) : (
@@ -2776,16 +2660,16 @@ function TelegramBotPanel() {
                 disabled={busy !== null}
                 data-testid="telegram-bot-start"
               >
-                {busy === 'starting' ? 'Starting…' : 'Save & Start'}
+                {busy === 'starting' ? t('tg.starting') : t('tg.start')}
               </button>
               <span className={styles.pill} data-testid="telegram-bot-status">
-                stopped
+                {t('tg.stopped')}
               </span>
             </>
           )}
           {status?.last_error && (
             <span className={styles.formError}>
-              last error: {status.last_error}
+              {t('tg.lastError', { error: status.last_error })}
             </span>
           )}
         </div>
@@ -2794,11 +2678,11 @@ function TelegramBotPanel() {
 
         {spendEntries.length > 0 && (
           <div className={styles.hint} style={{ marginTop: 8 }}>
-            <strong>Today&apos;s spend (UTC):</strong>{' '}
+            {rich('tg.spend')}{' '}
             {spendEntries
               .map(
                 ([cid, usd]) =>
-                  `chat ${cid}: ${formatUsdShort(Number(usd))}`,
+                  t('tg.spendEntry', { id: cid, cost: formatUsdShort(Number(usd)) }),
               )
               .join(' · ')}
           </div>

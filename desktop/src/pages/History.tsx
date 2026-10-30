@@ -10,6 +10,9 @@ import {
 } from '../lib/engine-client';
 import { stanceLabel, stanceLean } from '../lib/stance';
 import { buildTranscriptMarkdown } from '../lib/transcript';
+import { useI18n } from '../i18n';
+import { formatRelativeTime } from '../lib/relative-time';
+import { describeEngineError } from '../lib/engine-errors';
 
 type View = 'list' | 'detail';
 
@@ -21,22 +24,7 @@ type SortMode = 'recent' | 'cost' | 'ticker';
 
 const SORT_STORAGE_KEY = 'tal:history:sort';
 
-const SORT_LABEL: Record<SortMode, string> = {
-  recent: 'Most recent',
-  cost: 'Most expensive',
-  ticker: 'Ticker A to Z',
-};
 
-function formatRelative(iso: string): string {
-  const ts = new Date(iso).getTime();
-  if (Number.isNaN(ts)) return iso;
-  const diffSec = Math.round((Date.now() - ts) / 1000);
-  if (diffSec < 60) return 'just now';
-  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`;
-  if (diffSec < 86400 * 7) return `${Math.round(diffSec / 86400)}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
 // decision_action holds the stance string for new rows and BUY/SELL/HOLD
 // for rows persisted before the stance relabel — stanceLean normalizes both.
@@ -48,6 +36,9 @@ function stancePillClass(value: string): string {
 }
 
 function History() {
+  const i18n = useI18n();
+  const { t, rich, locale } = i18n;
+  const formatRelative = (iso: string) => formatRelativeTime(iso, i18n, iso);
   const [view, setView] = useState<View>('list');
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +67,7 @@ function History() {
       const rows = await listSessions({ limit: 50 });
       setSessions(rows);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to load sessions');
+      setError(err instanceof Error ? err.message : t('history.err.load'));
       setSessions([]);
     }
   }, []);
@@ -100,7 +91,7 @@ function History() {
       }
     } catch (err) {
       if (gen === detailGenRef.current) {
-        setError(err instanceof Error ? err.message : 'failed to load session');
+        setError(err instanceof Error ? err.message : t('history.err.loadSession'));
       }
     }
   }, []);
@@ -114,7 +105,7 @@ function History() {
 
   const onDelete = useCallback(
     async (id: string) => {
-      if (!confirm('Delete this saved session? This cannot be undone.')) return;
+      if (!confirm(t('history.confirmDelete'))) return;
       setBusy(true);
       setError(null);
       try {
@@ -124,25 +115,29 @@ function History() {
         }
         await refresh();
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'delete failed');
+        setError(err instanceof Error ? err.message : t('history.err.delete'));
       } finally {
         setBusy(false);
       }
     },
-    [activeId, onBack, refresh],
+    [activeId, onBack, refresh, t],
   );
 
   const onCopyTranscript = useCallback(async () => {
     if (!detail) return;
-    const md = buildTranscriptMarkdown(detail.events);
+    const md = buildTranscriptMarkdown(detail.events, locale);
     try {
       await navigator.clipboard.writeText(md);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (err) {
-      setError(`copy failed: ${err instanceof Error ? err.message : 'unknown'}`);
+      setError(
+        t('analyze.err.copyFailed', {
+          error: err instanceof Error ? err.message : t('status.unknown'),
+        }),
+      );
     }
-  }, [detail]);
+  }, [detail, locale, t]);
 
   // Same full-page HTML view as Analyze — lazily imported for the same
   // bundle-size reason (react-dom/server rides along with the generator).
@@ -150,14 +145,16 @@ function History() {
     if (!detail) return;
     try {
       const { buildTranscriptHtml } = await import('../lib/transcript-html');
-      const { html, suggestedName } = buildTranscriptHtml(detail.events);
+      const { html, suggestedName } = buildTranscriptHtml(detail.events, locale);
       await window.tradingAgentsLab.transcript.openHtml(html, suggestedName);
     } catch (err) {
       setError(
-        `open in HTML failed: ${err instanceof Error ? err.message : 'unknown'}`,
+        t('analyze.err.openHtmlFailed', {
+          error: err instanceof Error ? err.message : t('status.unknown'),
+        }),
       );
     }
-  }, [detail]);
+  }, [detail, locale, t]);
 
   const stats = useMemo(() => {
     if (!sessions) return null;
@@ -209,7 +206,7 @@ function History() {
       <div className={styles.page} data-testid="history-page">
         <header className={styles.detailHeader}>
           <button className={styles.backButton} onClick={onBack} type="button">
-            ← Back to history
+            {t('history.back')}
           </button>
           {detail && (
             <div className={styles.detailToolbar}>
@@ -219,7 +216,7 @@ function History() {
                 disabled={busy}
                 type="button"
               >
-                {copied ? 'Copied ✓' : 'Copy transcript'}
+                {copied ? t('history.copied') : t('history.copyTranscript')}
               </button>
               <button
                 className={styles.toolbarButton}
@@ -228,7 +225,7 @@ function History() {
                 type="button"
                 data-testid="history-open-html"
               >
-                Open in HTML
+                {t('history.openHtml')}
               </button>
               <button
                 className={`${styles.toolbarButton} ${styles.toolbarDanger}`}
@@ -236,16 +233,16 @@ function History() {
                 disabled={busy}
                 type="button"
               >
-                Delete
+                {t('history.delete')}
               </button>
             </div>
           )}
         </header>
 
-        {error && <div className={styles.errorBanner}>{error}</div>}
+        {error && <div className={styles.errorBanner}>{describeEngineError(error, i18n)}</div>}
 
         {!detail && !error && (
-          <div className={styles.placeholder}>Loading session…</div>
+          <div className={styles.placeholder}>{t('history.loadingSession')}</div>
         )}
 
         {detail && (
@@ -257,18 +254,21 @@ function History() {
               </div>
               <div className={styles.detailMetaBlock}>
                 <span className={styles.detailMetaItem}>
-                  Saved {formatRelative(detail.created_at)}
+                  {t('history.saved', { when: formatRelative(detail.created_at) })}
                 </span>
                 {detail.live ? (
                   <span className={styles.detailMetaPill}>
-                    Live · {detail.provider ?? 'openai'} · {detail.model ?? '?'}
+                    {t('history.live', {
+                      provider: detail.provider ?? 'openai',
+                      model: detail.model ?? '?',
+                    })}
                   </span>
                 ) : (
-                  <span className={styles.detailMetaPillNeutral}>Stub debate</span>
+                  <span className={styles.detailMetaPillNeutral}>{t('history.stub')}</span>
                 )}
                 {detail.estimated_cost_usd !== null && (
                   <span className={styles.detailMetaItem}>
-                    est ${detail.estimated_cost_usd.toFixed(4)}
+                    {t('history.estCost', { cost: `$${detail.estimated_cost_usd.toFixed(4)}` })}
                   </span>
                 )}
               </div>
@@ -284,31 +284,27 @@ function History() {
   return (
     <div className={styles.page} data-testid="history-page">
       <header className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>History</h1>
-        <p className={styles.pageSubtitle}>
-          Past debates the engine has saved. Each row is a completed session;
-          aborted runs are not stored. Sessions live in <code className={styles.code}>data/sessions.db</code>{' '}
-          next to the engine.
-        </p>
+        <h1 className={styles.pageTitle}>{t('history.title')}</h1>
+        <p className={styles.pageSubtitle}>{rich('history.subtitle', undefined, styles.code)}</p>
       </header>
 
       {stats && stats.total > 0 && (
         <div className={styles.statBar}>
           <div className={styles.statItem}>
-            <span className={styles.statLabel}>Sessions</span>
+            <span className={styles.statLabel}>{t('history.stat.sessions')}</span>
             <span className={styles.statValue}>{stats.total}</span>
           </div>
           <div className={styles.statItem}>
-            <span className={styles.statLabel}>Live</span>
+            <span className={styles.statLabel}>{t('history.stat.live')}</span>
             <span className={styles.statValue}>{stats.live}</span>
           </div>
           <div className={styles.statItem}>
-            <span className={styles.statLabel}>Stub</span>
+            <span className={styles.statLabel}>{t('history.stat.stub')}</span>
             <span className={styles.statValue}>{stats.total - stats.live}</span>
           </div>
           {stats.totalCost > 0 && (
             <div className={styles.statItem}>
-              <span className={styles.statLabel}>Est. cost (live)</span>
+              <span className={styles.statLabel}>{t('history.stat.cost')}</span>
               <span className={styles.statValue}>
                 ${stats.totalCost.toFixed(4)}
               </span>
@@ -317,19 +313,19 @@ function History() {
         </div>
       )}
 
-      {error && <div className={styles.errorBanner}>{error}</div>}
+      {error && <div className={styles.errorBanner}>{describeEngineError(error, i18n)}</div>}
 
       {sessions === null && !error && (
-        <div className={styles.placeholder}>Loading…</div>
+        <div className={styles.placeholder}>{t('history.loading')}</div>
       )}
 
       {sessions && sessions.length === 0 && !error && (
         <div className={styles.empty}>
-          <h2 className={styles.emptyTitle}>No saved sessions yet</h2>
+          <h2 className={styles.emptyTitle}>{t('history.emptyTitle')}</h2>
           <p className={styles.emptyBody}>
-            Run an analysis on the <a href="#analyze">Analyze</a> page and the
-            engine will write a row here when the debate completes. Sessions
-            stay local: nothing leaves your machine.
+            {t('history.emptyBody.pre')}
+            <a href="#analyze">{t('history.emptyBody.link')}</a>
+            {t('history.emptyBody.post')}
           </p>
         </div>
       )}
@@ -337,7 +333,7 @@ function History() {
       {sortedSessions && sortedSessions.length > 0 && (
         <div className={styles.toolbar}>
           <label className={styles.toolbarLabel} htmlFor="history-sort">
-            Sort by
+            {t('history.sortBy')}
           </label>
           <select
             id="history-sort"
@@ -347,7 +343,7 @@ function History() {
           >
             {(['recent', 'cost', 'ticker'] as SortMode[]).map((m) => (
               <option key={m} value={m}>
-                {SORT_LABEL[m]}
+                {t(`history.sort.${m}` as const)}
               </option>
             ))}
           </select>
@@ -366,14 +362,17 @@ function History() {
                 <div className={styles.rowHeadline}>
                   <span className={styles.rowTicker}>{s.ticker}</span>
                   <span className={`${styles.actionPill} ${stancePillClass(s.decision_action)}`}>
-                    {stanceLabel(s.decision_action)}
+                    {stanceLabel(s.decision_action, t)}
                     <span className={styles.actionConfidence}>
                       {Math.round(s.decision_confidence * 100)}%
                     </span>
                   </span>
                   {s.live && (
                     <span className={styles.livePill}>
-                      Live · {s.provider ?? 'openai'} · {s.model ?? '?'}
+                      {t('history.live', {
+                        provider: s.provider ?? 'openai',
+                        model: s.model ?? '?',
+                      })}
                     </span>
                   )}
                 </div>
@@ -384,7 +383,7 @@ function History() {
                   {s.estimated_cost_usd !== null && (
                     <>
                       <span className={styles.rowSep}>·</span>
-                      <span>est ${s.estimated_cost_usd.toFixed(4)}</span>
+                      <span>{t('history.estCost', { cost: `$${s.estimated_cost_usd.toFixed(4)}` })}</span>
                     </>
                   )}
                 </div>
@@ -395,9 +394,9 @@ function History() {
                 onClick={() => void onDelete(s.id)}
                 disabled={busy}
                 type="button"
-                aria-label={`Delete session ${s.ticker} ${s.trade_date}`}
+                aria-label={t('history.deleteAria', { ticker: s.ticker, date: s.trade_date })}
               >
-                Delete
+                {t('history.delete')}
               </button>
             </li>
           ))}

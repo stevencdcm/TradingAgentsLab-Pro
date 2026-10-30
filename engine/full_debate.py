@@ -172,6 +172,9 @@ _PROVIDER_ENV_VAR: Dict[str, str] = {
     "qwen": "DASHSCOPE_API_KEY",
     "glm": "ZHIPU_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    # Generic OpenAI-compatible endpoint (the "local" provider: oMLX / vLLM /
+    # LM Studio ...). Only set when the user configured a key for the server.
+    "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
     # ollama / other local runtimes need no key (client sends a dummy "ollama").
 }
 
@@ -497,7 +500,7 @@ async def full_debate(
             # Cost is finalized against the provider on session.complete; during
             # the run we report tokens and let the UI's cost-guard poll fill USD.
             "est_cost_usd": 0.0,
-            "free": merged.get("llm_provider") in ("local",),
+            "free": merged.get("llm_provider") in ("local", "openai_compatible"),
         }
 
     # Outer try/finally guarantees the CostGuard reservation is settled on EVERY

@@ -23,9 +23,9 @@ import { runAnalysis } from '../lib/run-analysis';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { listSecrets } from '../lib/secrets';
 import { consumePendingTicker } from '../lib/handoff';
-import { loadLocalConfig, saveLocalConfig } from '../lib/local-llm';
+import { loadLocalApiKey, loadLocalConfig, saveLocalConfig } from '../lib/local-llm';
 import ProviderSetupCallout from '../components/ProviderSetupCallout';
-import { getLocalRuntimes } from '../lib/engine-client';
+import { getLocalRuntimes, listLocalModels } from '../lib/engine-client';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
 import { useCodexModels } from '../lib/codex-models';
 import { useI18n } from '../i18n';
@@ -472,6 +472,17 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         // Probe the engine for the live model list. If the runtime is
         // offline this returns an empty array — the saved model is
         // surfaced via the seed in `availableModels`.
+        // Authenticated servers (oMLX) are invisible to the unauthenticated
+        // auto-detect, so ask the saved server directly (with its stored key).
+        const listed = await listLocalModels({
+          baseUrl: cfg.base_url,
+          apiKey: await loadLocalApiKey().catch(() => null),
+        });
+        if (cancelled) return;
+        if (listed.ok && listed.models.length > 0) {
+          setLocalModels(listed.models);
+          return;
+        }
         const runtimes = await getLocalRuntimes().catch(() => []);
         if (cancelled) return;
         const match = runtimes.find((r) => r.base_url === cfg.base_url);

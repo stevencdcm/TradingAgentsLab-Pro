@@ -25,7 +25,7 @@ import {
   reserveCostGuard,
 } from './cost-guard';
 import { getSecret } from './secrets';
-import { loadLocalConfig } from './local-llm';
+import { loadLocalApiKey, loadLocalConfig } from './local-llm';
 import { getOpenAICredentialsForRequest } from './oauth';
 import { loadWebhooks, type WebhookConfig } from './webhooks';
 import { assembleProConfig } from './pro-config';
@@ -208,9 +208,16 @@ async function resolveProviderConfig(
     if (provider === 'local') {
       const localCfg = await loadLocalConfig();
       if (!localCfg) return undefined;
+      // Optional key for servers that enforce auth (oMLX). Read from safeStorage
+      // per run and only placed in the in-memory request; never logged.
+      const localKey = await loadLocalApiKey();
       return {
         provider: 'local',
-        auth: { type: 'local', base_url: localCfg.base_url },
+        auth: {
+          type: 'local',
+          base_url: localCfg.base_url,
+          ...(localKey ? { api_key: localKey } : {}),
+        },
         model: localCfg.model,
         max_tokens: maxTokens,
       };

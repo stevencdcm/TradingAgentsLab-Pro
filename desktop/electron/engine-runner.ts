@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'node:child_process';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 
@@ -90,6 +90,34 @@ function reapOrphanEngine(): void {
   }
 }
 
+/**
+ * Where the engine keeps its SQLite store (sessions, watchlist, cost-guard).
+ *
+ * The engine's default is `<cwd>/data/sessions.db`, and a packaged app's cwd is
+ * `Contents/Resources/engine` — INSIDE the signed bundle. Writing there breaks
+ * `codesign --verify --deep` the first time the app runs and shares the file
+ * between every copy of the app. Pointing it at userData fixes both. An explicit
+ * `TAL_SESSIONS_DB` (tests, tooling) always wins.
+ *
+ * For an upgrade from a build that wrote inside the bundle, the old file is
+ * copied (never moved or deleted) once if userData has none yet.
+ */
+export function resolveSessionsDbPath(): string {
+  const explicit = process.env['TAL_SESSIONS_DB'];
+  if (explicit) return explicit;
+  const dbPath = path.join(app.getPath('userData'), 'sessions.db');
+  try {
+    mkdirSync(path.dirname(dbPath), { recursive: true });
+    if (app.isPackaged && !existsSync(dbPath)) {
+      const legacy = path.join(process.resourcesPath, 'engine', 'data', 'sessions.db');
+      if (existsSync(legacy)) copyFileSync(legacy, dbPath);
+    }
+  } catch {
+    // Best effort: the engine creates the file itself if the copy fails.
+  }
+  return dbPath;
+}
+
 export function startEngine(): Promise<EngineHandshake> {
   if (handshakePromise) return handshakePromise;
 
@@ -122,7 +150,11 @@ export function startEngine(): Promise<EngineHandshake> {
     cwd: engineCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     // Hand the engine the pidfile path so it records its own pid for reaping.
-    env: { ...process.env, TAL_ENGINE_PIDFILE: pidfilePath() },
+    env: {
+      ...process.env,
+      TAL_ENGINE_PIDFILE: pidfilePath(),
+      TAL_SESSIONS_DB: resolveSessionsDbPath(),
+    },
   });
 
   // Capture the spawned child in a local so the exit/timeout closures below

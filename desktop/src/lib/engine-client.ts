@@ -38,6 +38,8 @@ export type ProviderAuth =
        * accept any non-empty Authorization header value. */
       type: 'local';
       base_url: string;
+      /** Optional key for local servers that enforce authentication (oMLX). */
+      api_key?: string;
     };
 
 export interface ProviderConfig {
@@ -247,6 +249,10 @@ export const PROVIDER_SECRET_KEY: Record<LLMProvider, string> = {
 
 /** Companion secret key for the local provider's model selection. */
 export const LOCAL_MODEL_SECRET_KEY = 'local:model';
+
+/** Optional API key for local servers that enforce authentication (e.g. oMLX).
+ * Stored only via safeStorage, never logged. */
+export const LOCAL_API_KEY_SECRET_KEY = 'local:api-key';
 
 /** Per-stream data provider override. When present on the WS start frame,
  * the engine instantiates the named provider for this debate's data fetches
@@ -1041,6 +1047,54 @@ export async function getLocalRuntimes(): Promise<LocalRuntime[]> {
   }
   const body = (await res.json()) as { runtimes: LocalRuntime[] };
   return body.runtimes;
+}
+
+/** Models an OpenAI-compatible local server exposes (GET {base}/models), with an
+ * optional Bearer key. The key travels in the request body to the local engine
+ * and is used for that one call only. */
+export async function listLocalModels(args: {
+  baseUrl: string;
+  apiKey?: string | null;
+}): Promise<{ ok: true; models: string[] } | { ok: false; error: string; status?: number }> {
+  const { port, token } = await handshake();
+  try {
+    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/local-models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ base_url: args.baseUrl, api_key: args.apiKey || undefined }),
+    });
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return (await res.json()) as { ok: true; models: string[] } | { ok: false; error: string; status?: number };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** One 1-token completion against a local server (Settings → Local LLM → Test). */
+export async function testLocalConnection(args: {
+  baseUrl: string;
+  model: string;
+  apiKey?: string | null;
+}): Promise<LLMTestResult> {
+  const { port, token } = await handshake();
+  try {
+    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        provider_config: {
+          provider: 'local',
+          auth: { type: 'local', base_url: args.baseUrl, ...(args.apiKey ? { api_key: args.apiKey } : {}) },
+          model: args.model,
+          max_tokens: 1,
+        },
+      }),
+    });
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return (await res.json()) as LLMTestResult;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function streamDebate(

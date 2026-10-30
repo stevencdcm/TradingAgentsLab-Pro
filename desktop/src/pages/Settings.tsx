@@ -36,6 +36,9 @@ import {
   approveTelegramChat,
   denyTelegramChat,
   getLocalRuntimes,
+  listLocalModels,
+  testLocalConnection,
+  LOCAL_API_KEY_SECRET_KEY,
   getTelegramBotStatus,
   LOCAL_MODEL_SECRET_KEY,
   OPENAI_CODEX_DEFAULT_MODEL,
@@ -51,7 +54,9 @@ import {
   type TelegramPendingApproval,
 } from '../lib/engine-client';
 import {
+  loadLocalApiKey,
   loadLocalConfig,
+  saveLocalApiKey,
   saveLocalConfig,
   type LocalLLMConfig,
 } from '../lib/local-llm';
@@ -633,7 +638,8 @@ interface LocalLLMRowProps {
  * CostGuard purposes).
  */
 function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
-  const { t, tp, rich } = useI18n();
+  const i18n = useI18n();
+  const { t, tp, rich } = i18n;
   const [runtimes, setRuntimes] = useState<LocalRuntime[] | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -645,6 +651,14 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualUrl, setManualUrl] = useState('http://localhost:11434/v1');
   const [manualModel, setManualModel] = useState('');
+  /** Optional key for authenticated local servers (oMLX). Held only in this form
+   * until saved to safeStorage; never rendered back. */
+  const [manualKey, setManualKey] = useState('');
+  const [hasStoredKey, setHasStoredKey] = useState(false);
+  const [serverModels, setServerModels] = useState<string[]>([]);
+  const [localBusy, setLocalBusy] = useState<'list' | 'test' | null>(null);
+  const [localTest, setLocalTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [listNote, setListNote] = useState<string | null>(null);
 
   const probe = useCallback(async () => {
     setProbing(true);
@@ -672,6 +686,9 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
   // sibling rows don't leave stale state.
   useEffect(() => {
     let cancelled = false;
+    void loadLocalApiKey().then((k) => {
+      if (!cancelled) setHasStoredKey(Boolean(k));
+    }).catch(() => undefined);
     void loadLocalConfig().then((cfg) => {
       if (!cancelled) setSaved(cfg);
     });
@@ -712,9 +729,66 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
     // so the form would close on failure / stay open on success.
     const ok = await onPickModel(url, model);
     if (ok) {
+      // Blank key field = keep whatever is stored; a typed key replaces it.
+      if (manualKey.trim()) {
+        try {
+          await saveLocalApiKey(manualKey);
+          setHasStoredKey(true);
+        } catch (err) {
+          setSaveError(err instanceof Error ? err.message : t('settings.local.err.save'));
+          return;
+        }
+      }
+      setManualKey('');
       setManualOpen(false);
     }
-  }, [manualUrl, manualModel, onPickModel]);
+  }, [manualUrl, manualModel, manualKey, onPickModel, t]);
+
+  /** The key to use for List/Test: what is typed, else what is stored. */
+  const effectiveKey = useCallback(async (): Promise<string | null> => {
+    return manualKey.trim() || (await loadLocalApiKey());
+  }, [manualKey]);
+
+  const onListModels = useCallback(async () => {
+    setLocalBusy('list');
+    setListNote(null);
+    setSaveError(null);
+    try {
+      const res = await listLocalModels({ baseUrl: manualUrl.trim(), apiKey: await effectiveKey() });
+      if (res.ok) {
+        setServerModels(res.models);
+        setListNote(tp('settings.local.listed', res.models.length));
+        if (res.models.length > 0 && !manualModel.trim()) setManualModel(res.models[0]);
+      } else {
+        setSaveError(
+          res.status === 401
+            ? t('settings.local.err.unauthorized')
+            : t('settings.local.err.list', { error: res.error }),
+        );
+      }
+    } finally {
+      setLocalBusy(null);
+    }
+  }, [manualUrl, manualModel, effectiveKey, t, tp]);
+
+  const onTestLocal = useCallback(async () => {
+    setLocalBusy('test');
+    setLocalTest(null);
+    try {
+      const res = await testLocalConnection({
+        baseUrl: manualUrl.trim(),
+        model: manualModel.trim() || 'default',
+        apiKey: await effectiveKey(),
+      });
+      setLocalTest(
+        res.ok
+          ? { ok: true, text: t('settings.local.testOk', { ms: res.ms ? t('settings.local.testMs', { ms: res.ms }) : '' }) }
+          : { ok: false, text: t('settings.local.testFail', { error: describeEngineError(res.error ?? '', i18n) }) },
+      );
+    } finally {
+      setLocalBusy(null);
+    }
+  }, [manualUrl, manualModel, effectiveKey, t, i18n]);
 
   const onClear = useCallback(async () => {
     if (!saved) return;
@@ -723,8 +797,10 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
       await Promise.all([
         deleteSecret(PROVIDER_SECRET_KEY.local),
         deleteSecret(LOCAL_MODEL_SECRET_KEY),
+        deleteSecret(LOCAL_API_KEY_SECRET_KEY),
       ]);
       setSaved(null);
+      setHasStoredKey(false);
       onChange();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : t('settings.local.err.clear'));
@@ -740,6 +816,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
         {saved && (
           <div className={styles.rowMeta}>
             {rich('settings.local.active', { model: saved.model, url: saved.base_url })}
+            {hasStoredKey && <span className={styles.hint}> · {t('settings.local.apiKeyBadge')}</span>}
           </div>
         )}
 
@@ -838,9 +915,54 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
                 value={manualModel}
                 onChange={(e) => setManualModel(e.target.value)}
                 placeholder="llama3.2:latest"
+                list="local-model-options"
                 style={{ width: '100%' }}
               />
+              <datalist id="local-model-options">
+                {serverModels.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
             </div>
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                {t('settings.local.apiKey')}
+              </label>
+              <input
+                type="password"
+                value={manualKey}
+                onChange={(e) => setManualKey(e.target.value)}
+                placeholder={hasStoredKey ? t('settings.local.apiKeyStored') : t('settings.local.apiKeyPlaceholder')}
+                autoComplete="off"
+                spellCheck={false}
+                style={{ width: '100%' }}
+                data-testid="local-api-key-input"
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setManualUrl('http://127.0.0.1:8000/v1');
+                  setManualModel('Qwen3.8-Flash-Next-oQ4e-mtp');
+                }}
+                disabled={disabled}
+              >
+                {t('settings.local.omlx')}
+              </button>
+              <button type="button" onClick={() => void onListModels()} disabled={disabled || localBusy !== null}>
+                {localBusy === 'list' ? t('settings.local.listing') : t('settings.local.listModels')}
+              </button>
+              <button type="button" onClick={() => void onTestLocal()} disabled={disabled || localBusy !== null}>
+                {localBusy === 'test' ? t('settings.local.testing') : t('settings.local.test')}
+              </button>
+            </div>
+            {listNote && <div className={styles.rowMeta}>{listNote}</div>}
+            {localTest && (
+              <div className={styles.rowMeta} style={{ color: localTest.ok ? 'var(--tal-buy, #4caf50)' : 'var(--tal-sell, #d64545)' }}>
+                {localTest.text}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 type="button"

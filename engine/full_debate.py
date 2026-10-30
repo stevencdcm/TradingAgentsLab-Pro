@@ -52,6 +52,7 @@ from tradingagents.agents.utils.rating import extract_rating
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+from .secret_refs import redact as redact_secrets
 from .rating_parse import extract_pm_rating
 from .report_language import library_output_language, normalize_report_language
 
@@ -700,7 +701,7 @@ async def full_debate(
         except Exception as exc:  # noqa: BLE001 - surface any node failure as a terminal event
             yield {
                 "type": "run.error",
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": redact_secrets(f"{type(exc).__name__}: {exc}", api_key),
             }
             return
 

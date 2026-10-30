@@ -312,3 +312,28 @@ def test_disconnect_removes_credentials(oauth_web):
     assert c.post("/web/oauth/disconnect").json() is True
     assert c.get("/web/oauth/status").json() == {"connected": False}
     assert c.get("/web/oauth/credentials").json() is None
+
+
+# ---- reference allow-list + error scrubbing -------------------------------------------------
+
+
+def test_only_provider_credential_names_resolve(web):
+    from engine import secret_refs as sr
+
+    web.kr.d[("TradingAgentsLab-Web", "webhooks:configs")] = "https://hooks/SECRETTOKEN"
+    web.kr.d[("TradingAgentsLab-Web", "llm:openai")] = "sk-llm-value-12345678"
+    assert sr.resolve("@@secret:llm:openai@@") == "sk-llm-value-12345678"
+    assert sr.resolve("@@secret:webhooks:configs@@") == ""        # not a provider credential
+    assert sr.resolve("@@secret:anything:else@@") == ""
+    assert sr.resolve({"a": ["@@secret:local:api-key@@"]}) == {"a": [""]}  # absent -> empty
+
+
+def test_provider_errors_are_scrubbed_of_the_key(web):
+    from engine import secret_refs as sr
+
+    key = "sk-leaky-value-abcdefgh12345678"
+    web.kr.d[("TradingAgentsLab-Web", "llm:openai")] = key
+    sr.resolve("@@secret:llm:openai@@")          # registers the value for scrubbing
+    msg = f"Incorrect API key provided: {key}. You can find it at ..., ending {key[-8:]}"
+    cleaned = sr.redact(msg)
+    assert key not in cleaned and key[-8:] not in cleaned and "[redacted]" in cleaned

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
 from .data_providers import Headline, QuoteSummary
+from .secret_refs import redact as redact_secrets
 from .report_language import free_engine_suffix, normalize_report_language
 from .llm_providers import (
     LLMAdapter,
@@ -626,7 +627,7 @@ async def live_debate(
                     "type": "agent.message",
                     "agent": agent.name,
                     "phase": agent.phase,
-                    "content": f"[live debate error] {type(exc).__name__}: {exc}",
+                    "content": f"[live debate error] {redact_secrets(f'{type(exc).__name__}: {exc}', config.credential)}",
                 }
                 # If the very first agent fails, abort early — no point continuing.
                 if not state.transcript:

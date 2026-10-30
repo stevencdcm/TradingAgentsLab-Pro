@@ -944,7 +944,7 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
                 type="button"
                 onClick={() => {
                   setManualUrl('http://127.0.0.1:8000/v1');
-                  setManualModel('Qwen3.8-Flash-Next-oQ4e-mtp');
+                  setManualModel('Q3.8 Flash Next 原版');
                 }}
                 disabled={disabled}
               >

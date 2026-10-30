@@ -290,7 +290,7 @@ def build_app(*, token: str) -> FastAPI:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return {"ok": True, "model": config.model, "ms": elapsed_ms}
         except Exception as exc:  # noqa: BLE001 — surface whatever blew up
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": secret_refs.redact(f"{type(exc).__name__}: {exc}", config.credential)}
         finally:
             try:
                 await adapter.close()

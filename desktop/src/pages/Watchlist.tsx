@@ -4,6 +4,8 @@ import {
   addWatchlist,
   listWatchlist,
   removeWatchlist,
+  searchTwSymbols,
+  type TwSymbol,
   type WatchlistEntry,
 } from '../lib/engine-client';
 import { setPendingTicker } from '../lib/handoff';
@@ -22,6 +24,56 @@ function Watchlist() {
   const [tickerInput, setTickerInput] = useState('');
   const [noteInput, setNoteInput] = useState('');
   const tickerInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Taiwan symbol/name suggestions (official TWSE/TPEx index). US tickers never touch this path.
+  const [suggestions, setSuggestions] = useState<TwSymbol[]>([]);
+  const [twState, setTwState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [twNote, setTwNote] = useState<{ asOf: string | null; stale: boolean; error: string | null } | null>(null);
+  const [twError, setTwError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<TwSymbol | null>(null);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const [listOpen, setListOpen] = useState(false);
+
+  useEffect(() => {
+    const q = tickerInput.trim();
+    // Taiwan queries start with a digit (code) or contain CJK (name); plain letters are US tickers.
+    const looksTaiwan = q.length > 0 && (/^\d/.test(q) || /[^\u0000-\u007f]/.test(q));
+    if (!looksTaiwan || (selected && selected.code === q)) {
+      setSuggestions([]);
+      setTwState('idle');
+      return;
+    }
+    setTwState('loading');
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const res = await searchTwSymbols(q);
+      if (cancelled) return;
+      if (res.ok) {
+        setSuggestions(res.results);
+        setTwState('ok');
+        setTwError(null);
+        setTwNote({ asOf: res.as_of, stale: res.stale, error: res.refresh_error });
+        setActiveIdx(res.results.length > 0 ? 0 : -1);
+        setListOpen(true);
+      } else {
+        setSuggestions([]);
+        setTwState('error');
+        setTwError(res.error);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [tickerInput, selected]);
+
+  const pick = useCallback((sym: TwSymbol) => {
+    setSelected(sym);
+    setTickerInput(sym.code);
+    setListOpen(false);
+    setSuggestions([]);
+    setFormError(null);
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoadError(null);
@@ -46,7 +98,22 @@ function Watchlist() {
         setFormError(t('watchlist.err.enterTicker'));
         return;
       }
-      if (cleaned.length > 8) {
+      // A Taiwan name (non-ASCII) must be picked from the official suggestions; a typed code is
+      // resolved against them too, so the market (上市/上櫃) always comes from the index.
+      let pickedTw = selected && selected.code === cleaned ? selected : null;
+      if (!pickedTw) {
+        if (/[^\u0000-\u007f]/.test(cleaned)) {
+          const exact = suggestions.filter((x) => x.name === tickerInput.trim());
+          if (exact.length === 1) pickedTw = exact[0];
+          else {
+            setFormError(t('watchlist.tw.pick'));
+            return;
+          }
+        } else if (/^\d/.test(cleaned)) {
+          pickedTw = suggestions.find((x) => x.code === cleaned) ?? null;
+        }
+      }
+      if (!pickedTw && cleaned.length > 8) {
         setFormError(t('watchlist.err.tickerLength'));
         return;
       }
@@ -54,11 +121,14 @@ function Watchlist() {
       setFormError(null);
       try {
         const newEntry = await addWatchlist({
-          ticker: cleaned,
+          ticker: pickedTw ? pickedTw.code : cleaned,
+          market: pickedTw?.market,
           note: noteInput.trim() || undefined,
         });
         setEntries((prev) => [newEntry, ...(prev ?? [])]);
         setTickerInput('');
+        setSelected(null);
+        setSuggestions([]);
         setNoteInput('');
         tickerInputRef.current?.focus();
       } catch (err) {
@@ -67,7 +137,7 @@ function Watchlist() {
         setBusy(false);
       }
     },
-    [tickerInput, noteInput, t],
+    [tickerInput, noteInput, selected, suggestions, t],
   );
 
   const onRemove = useCallback(
@@ -107,13 +177,78 @@ function Watchlist() {
               ref={tickerInputRef}
               className={styles.input}
               value={tickerInput}
-              onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
-              placeholder="NVDA"
-              maxLength={8}
+              onChange={(e) => {
+                setTickerInput(e.target.value.toUpperCase());
+                setSelected(null);
+                setListOpen(true);
+              }}
+              onKeyDown={(e) => {
+                if (!listOpen || suggestions.length === 0) return;
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setActiveIdx((i) => (i + 1) % suggestions.length);
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setActiveIdx((i) => (i - 1 + suggestions.length) % suggestions.length);
+                } else if (e.key === 'Enter' && activeIdx >= 0) {
+                  e.preventDefault();
+                  pick(suggestions[activeIdx]);
+                } else if (e.key === 'Escape') {
+                  setListOpen(false);
+                }
+              }}
+              placeholder={t('watchlist.ticker.placeholder')}
+              maxLength={20}
               disabled={busy}
               autoFocus
+              autoComplete="off"
+              role="combobox"
+              aria-expanded={listOpen && suggestions.length > 0}
+              aria-controls="watchlist-suggestions"
+              aria-autocomplete="list"
               data-testid="watchlist-ticker-input"
             />
+            {(twState !== 'idle' || suggestions.length > 0) && (
+              <div className={styles.suggestBox} data-testid="watchlist-tw-box">
+                {twState === 'loading' && <p className={styles.suggestNote}>{t('watchlist.tw.searching')}</p>}
+                {twState === 'error' && (
+                  <p className={styles.suggestError} role="alert" data-testid="watchlist-tw-error">
+                    {t('watchlist.tw.error', { error: twError ?? '' })}
+                  </p>
+                )}
+                {twState === 'ok' && suggestions.length === 0 && (
+                  <p className={styles.suggestNote}>{t('watchlist.tw.none', { q: tickerInput.trim() })}</p>
+                )}
+                {listOpen && suggestions.length > 0 && (
+                  <ul id="watchlist-suggestions" role="listbox" className={styles.suggestList} data-testid="watchlist-suggestions">
+                    {suggestions.map((sym, i) => (
+                      <li
+                        key={`${sym.market}-${sym.code}`}
+                        role="option"
+                        aria-selected={i === activeIdx}
+                        className={`${styles.suggestItem} ${i === activeIdx ? styles.suggestActive : ''}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          pick(sym);
+                        }}
+                        data-testid={`watchlist-suggestion-${sym.code}`}
+                      >
+                        <span className={styles.suggestCode}>{sym.code}</span>
+                        <span className={styles.suggestName}>{sym.name}</span>
+                        <span className={styles.badge}>{t(`watchlist.tw.${sym.market}` as const)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {twState === 'ok' && twNote && (
+                  <p className={styles.suggestNote}>
+                    {twNote.stale
+                      ? t('watchlist.tw.stale', { asOf: twNote.asOf ?? '—', error: twNote.error ?? '' })
+                      : t('watchlist.tw.source', { asOf: twNote.asOf ?? '—' })}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
           <div className={styles.field}>
             <label className={styles.label} htmlFor="watchlist-note">
@@ -173,6 +308,8 @@ function Watchlist() {
               <div className={styles.rowMain}>
                 <div className={styles.rowHeadline}>
                   <span className={styles.rowTicker}>{entry.ticker}</span>
+                  {entry.name && <span className={styles.rowName}>{entry.name}</span>}
+                  {entry.market && <span className={styles.badge}>{t(`watchlist.tw.${entry.market}` as const)}</span>}
                   <span className={styles.rowAdded}>
                     {t('watchlist.added', {
                       when: formatRelativeTime(entry.added_at, i18n, entry.added_at),

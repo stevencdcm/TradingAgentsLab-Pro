@@ -141,6 +141,11 @@ def _do_initialize() -> None:
             conn.execute("ALTER TABLE sessions ADD COLUMN provider TEXT")
         if "auth_kind" not in cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN auth_kind TEXT")
+        wcols = {row["name"] for row in conn.execute("PRAGMA table_info(watchlist)").fetchall()}
+        if "market" not in wcols:
+            conn.execute("ALTER TABLE watchlist ADD COLUMN market TEXT")
+        if "name" not in wcols:
+            conn.execute("ALTER TABLE watchlist ADD COLUMN name TEXT")
         # Bump the stored version forward if we just migrated up. Never
         # downgrade — a v2 db running on a v1 engine is rejected above.
         conn.execute(
@@ -464,6 +469,9 @@ class WatchlistEntry:
     ticker: str
     added_at: str
     note: Optional[str]
+    # Taiwan entries carry their official identity; legacy / US rows leave both None.
+    market: Optional[str] = None      # "TWSE" (上市) | "TPEx" (上櫃)
+    name: Optional[str] = None
 
 
 class WatchlistConflict(RuntimeError):
@@ -476,7 +484,7 @@ def list_watchlist() -> list[WatchlistEntry]:
         _ensure_initialized()
         with _connect() as conn:
             cur = conn.execute(
-                "SELECT ticker, added_at, note FROM watchlist ORDER BY added_at DESC"
+                "SELECT ticker, added_at, note, market, name FROM watchlist ORDER BY added_at DESC"
             )
             rows = cur.fetchall()
         return [
@@ -484,6 +492,8 @@ def list_watchlist() -> list[WatchlistEntry]:
                 ticker=row["ticker"],
                 added_at=row["added_at"],
                 note=row["note"],
+                market=row["market"],
+                name=row["name"],
             )
             for row in rows
         ]
@@ -492,7 +502,9 @@ def list_watchlist() -> list[WatchlistEntry]:
         return []
 
 
-def add_watchlist(*, ticker: str, note: Optional[str] = None) -> WatchlistEntry:
+def add_watchlist(
+    *, ticker: str, note: Optional[str] = None, market: Optional[str] = None, name: Optional[str] = None
+) -> WatchlistEntry:
     """Add a ticker to the watchlist. Raises WatchlistConflict if already present."""
     _ensure_initialized()
     cleaned = (ticker or "").strip().upper()
@@ -505,13 +517,13 @@ def add_watchlist(*, ticker: str, note: Optional[str] = None) -> WatchlistEntry:
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO watchlist (ticker, added_at, note) VALUES (?, ?, ?)",
-                (cleaned, added_at, cleaned_note),
+                "INSERT INTO watchlist (ticker, added_at, note, market, name) VALUES (?, ?, ?, ?, ?)",
+                (cleaned, added_at, cleaned_note, market, (name or "").strip() or None),
             )
             conn.commit()
     except sqlite3.IntegrityError as exc:
         raise WatchlistConflict(f"{cleaned} is already on the watchlist") from exc
-    return WatchlistEntry(ticker=cleaned, added_at=added_at, note=cleaned_note)
+    return WatchlistEntry(ticker=cleaned, added_at=added_at, note=cleaned_note, market=market, name=(name or '').strip() or None)
 
 
 def remove_watchlist(ticker: str) -> bool:

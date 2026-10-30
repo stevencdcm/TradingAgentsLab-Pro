@@ -752,6 +752,42 @@ export interface WatchlistEntry {
   ticker: string;
   added_at: string;
   note: string | null;
+  /** Taiwan entries only: official market and name from the TWSE/TPEx index. US / legacy rows: null/absent. */
+  market?: 'TWSE' | 'TPEx' | null;
+  name?: string | null;
+}
+
+export interface TwSymbol {
+  code: string;
+  name: string;
+  market: 'TWSE' | 'TPEx';
+  source: string;
+}
+
+export type TwSymbolSearch =
+  | { ok: true; results: TwSymbol[]; as_of: string | null; fetched_at: string; count: number; stale: boolean; refresh_error: string | null }
+  | { ok: false; error: string };
+
+/** Search the official TWSE/TPEx symbol index by code or name. Transport failures are reported, never hidden. */
+export async function searchTwSymbols(q: string, opts: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<TwSymbolSearch> {
+  const own = opts.signal ? null : new AbortController();
+  const timer = own ? setTimeout(() => own.abort(), 60_000) : null; // first build downloads ~7 MB of official lists
+  try {
+    const { port, token } = await handshake();
+    const params = new URLSearchParams({ q, limit: '12' });
+    if (opts.refresh) params.set('refresh', 'true');
+    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/tw/symbols?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: opts.signal ?? own!.signal,
+    });
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return (await res.json()) as TwSymbolSearch;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return { ok: false, error: 'aborted' };
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function listWatchlist(): Promise<WatchlistEntry[]> {
@@ -769,6 +805,7 @@ export async function listWatchlist(): Promise<WatchlistEntry[]> {
 export async function addWatchlist(input: {
   ticker: string;
   note?: string;
+  market?: 'TWSE' | 'TPEx';
 }): Promise<WatchlistEntry> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(`http://127.0.0.1:${port}/watchlist`, {
@@ -777,7 +814,7 @@ export async function addWatchlist(input: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ ticker: input.ticker, note: input.note ?? null }),
+    body: JSON.stringify({ ticker: input.ticker, note: input.note ?? null, market: input.market ?? null }),
   });
   if (!res.ok) {
     if (res.status === 409) {

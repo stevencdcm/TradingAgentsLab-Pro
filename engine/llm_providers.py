@@ -154,8 +154,28 @@ class ProviderConfig:
         if t == "oauth":
             return str(self.auth.get("access") or "")
         if t == "local":
-            return "local"
+            # Servers that enforce authentication (e.g. oMLX with an API key) get
+            # the user's key; open local runtimes (Ollama / LM Studio) accept the
+            # "local" sentinel, which the OpenAI SDK needs to be non-empty.
+            return str(self.auth.get("api_key") or "local")
         raise ValueError(f"ProviderConfig.auth has unknown type: {t!r}")
+
+    @property
+    def credential(self) -> str | None:
+        """The REAL credential to inject into the full-graph engine, if any.
+
+        Unlike `bearer_token` this never returns the "local" sentinel: a keyless
+        local runtime has no credential, so nothing is injected into the
+        environment for it.
+        """
+        t = self.auth.get("type")
+        if t == "api_key":
+            return str(self.auth.get("api_key") or "") or None
+        if t == "oauth":
+            return str(self.auth.get("access") or "") or None
+        if t == "local":
+            return str(self.auth.get("api_key") or "") or None
+        return None
 
     @property
     def auth_kind(self) -> str:
@@ -253,7 +273,12 @@ def _normalize_auth(raw: dict) -> Optional[dict[str, Any]]:
         base_url = (raw.get("base_url") or "").strip()
         if not base_url:
             return None
-        return {"type": "local", "base_url": base_url}
+        out_local: dict[str, Any] = {"type": "local", "base_url": base_url}
+        # Optional API key for local servers that require authentication.
+        local_key = (raw.get("api_key") or "").strip()
+        if local_key:
+            out_local["api_key"] = local_key
+        return out_local
     return None
 
 

@@ -18,10 +18,11 @@
  */
 
 import {
+  LOCAL_API_KEY_SECRET_KEY,
   LOCAL_MODEL_SECRET_KEY,
   PROVIDER_SECRET_KEY,
 } from './engine-client';
-import { getSecret, setSecret } from './secrets';
+import { deleteSecret, getSecret, setSecret } from './secrets';
 
 const LOCAL_BASE_URL_KEY = PROVIDER_SECRET_KEY.local;
 
@@ -59,6 +60,18 @@ export async function loadLocalConfig(): Promise<LocalLLMConfig | null> {
 export async function saveLocalConfig(config: LocalLLMConfig): Promise<void> {
   await setSecret(LOCAL_BASE_URL_KEY, config.base_url);
   await setSecret(LOCAL_MODEL_SECRET_KEY, config.model);
+}
+
+/** The optional API key for an authenticated local server (e.g. oMLX), or null. */
+export async function loadLocalApiKey(): Promise<string | null> {
+  return (await getSecret(LOCAL_API_KEY_SECRET_KEY)) || null;
+}
+
+/** Store (or, with null/empty, remove) the local server's API key via safeStorage. */
+export async function saveLocalApiKey(key: string | null): Promise<void> {
+  const trimmed = key?.trim();
+  if (trimmed) await setSecret(LOCAL_API_KEY_SECRET_KEY, trimmed);
+  else await deleteSecret(LOCAL_API_KEY_SECRET_KEY);
 }
 
 /**

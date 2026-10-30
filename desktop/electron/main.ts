@@ -40,7 +40,10 @@ process.env.APP_ROOT = path.join(__dirname, '..');
 // resolves and before the menu template references `app.name`.
 // Repo / package names stay one word ("TradingAgentsLab") — only the
 // user-facing display surface is three words.
-app.setName('Trading Agents Lab Pro');
+// `TAL_APP_NAME` lets a side-by-side candidate build use its own name (and
+// therefore its own userData folder and safeStorage keychain entry) instead of
+// sharing the installed app's. Normal builds keep the product name.
+app.setName(process.env['TAL_APP_NAME'] || app.getName() || 'Trading Agents Lab Pro');
 
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist');

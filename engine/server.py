@@ -27,6 +27,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -406,6 +407,32 @@ def build_app(*, token: str) -> FastAPI:
             )
         return telegram_bot.status().to_dict()
 
+    @app.post("/llm/local-models", dependencies=bearer)
+    async def llm_local_models(req: LocalModelsRequest) -> dict[str, Any]:
+        """List the models an OpenAI-compatible local server exposes.
+
+        Used by Settings → Local LLM for servers that require an API key (oMLX),
+        which the unauthenticated auto-detect cannot see. The key arrives in the
+        request body, is used for ONE GET, and is never logged or stored here.
+        """
+        base = req.base_url.strip().rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            return {"ok": False, "error": "base_url must start with http:// or https://"}
+        headers = {"Authorization": f"Bearer {req.api_key.strip()}"} if req.api_key and req.api_key.strip() else {}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+                res = await client.get(f"{base}/models", headers=headers)
+        except Exception as exc:  # noqa: BLE001 — surface a short reason, never the key
+            return {"ok": False, "error": f"{type(exc).__name__}"}
+        if res.status_code != 200:
+            return {"ok": False, "status": res.status_code, "error": f"HTTP {res.status_code}"}
+        try:
+            data = res.json().get("data") or []
+            models = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "unexpected response"}
+        return {"ok": True, "models": models}
+
     @app.get("/llm/local-runtimes", dependencies=bearer)
     async def llm_local_runtimes() -> dict[str, Any]:
         """Probe localhost for OpenAI-compatible LLM runtimes.
@@ -605,10 +632,10 @@ def build_app(*, token: str) -> FastAPI:
             if config is not None:
                 # Pro full-graph auth support: api_key (env-var injection) and
                 # OpenAI OAuth (Codex factory patch — see engine/codex_llm.py).
-                # `local` stays rejected: local runtimes haven't been validated
-                # against the tool-heavy graph, so fail loud up front rather
-                # than deep in graph build.
-                if is_pro and config.auth_kind not in ("api_key", "oauth"):
+                # `local` is supported: it maps onto the upstream library's generic
+                # `openai_compatible` provider (base_url + optional key), see
+                # `_build_pro_library_config`.
+                if is_pro and config.auth_kind not in ("api_key", "oauth", "local"):
                     evt = {
                         "type": "run.error",
                         "error": (
@@ -783,7 +810,9 @@ def build_app(*, token: str) -> FastAPI:
                         config=pro_lib_config,
                         selected_analysts=(pro_config_raw.get("selected_analysts") or None),
                         token_cap=token_cap,
-                        api_key=config.bearer_token,
+                        # REAL credential only (None for a keyless local runtime), so
+                        # the "local" sentinel is never injected into the environment.
+                        api_key=config.credential,
                         auth_kind=config.auth_kind,
                         # Codex backend 401s without the account id; present
                         # only on the OAuth auth shape (normalized upstream).
@@ -969,6 +998,12 @@ def _build_pro_library_config(config: ProviderConfig, pro_raw: dict) -> dict[str
     required keys and fills every other default.
     """
     provider = config.provider
+    # The app's "local" provider = any OpenAI-compatible server the user runs
+    # (oMLX, vLLM, LM Studio, Ollama's /v1 ...). The upstream library models that
+    # as the generic `openai_compatible` provider: base_url required, key optional,
+    # structured output bound without a forced tool_choice (works across servers).
+    if provider == "local":
+        provider = "openai_compatible"
     deep = (pro_raw.get("deep_think_llm") or config.model or "").strip()
     quick = (pro_raw.get("quick_think_llm") or config.model or deep).strip()
     lib: dict[str, Any] = {
@@ -1034,6 +1069,11 @@ class LLMModelsRequest(BaseModel):
 
     provider_config: dict[str, Any]
     refresh: bool = False
+
+
+class LocalModelsRequest(BaseModel):
+    base_url: str = Field(min_length=1, max_length=300)
+    api_key: str | None = Field(default=None, max_length=500)
 
 
 class LLMTestRequest(BaseModel):

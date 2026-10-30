@@ -115,9 +115,9 @@ def test_websocket_origin_and_cookie_enforced(web):
 
 def test_handshake_page_and_bridge_script(web):
     h = web.get("/web/handshake").json()
-    assert h == {"port": PORT, "token": "engine-token"}
+    assert h == {"port": PORT, "token": "engine-token", "proxy": False}
     page = web.get("/").text
-    assert '<script src="/web-bridge.js"></script>' in page
+    assert '<script src="web-bridge.js"></script>' in page and "<base" not in page      # relative; no base tag locally
     js = web.get("/web-bridge.js").text
     assert "window.tradingAgentsLab" in js and "localStorage" not in js
 

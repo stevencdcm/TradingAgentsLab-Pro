@@ -136,7 +136,7 @@ def test_local_models_endpoint_lists_models_with_key_and_never_echoes_it(server,
         assert ok.status_code == 200 and ok.json()["models"][0] == "Qwen3.8-Flash-Next-oQ4e-mtp"
         assert SECRET not in ok.text
         bad = c.post("/llm/local-models", json={"base_url": server})
-        assert bad.json() == {"ok": False, "status": 401, "error": "HTTP 401"}
+        assert bad.json() == {"ok": False, "status": 401, "error": "HTTP 401", "reason": "key_missing"}
         assert c.post("/llm/local-models", json={"base_url": "ftp://x"}).json()["ok"] is False
 
 

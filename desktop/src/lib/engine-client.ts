@@ -1095,7 +1095,7 @@ export async function getLocalRuntimes(): Promise<LocalRuntime[]> {
 export async function listLocalModels(args: {
   baseUrl: string;
   apiKey?: string | null;
-}): Promise<{ ok: true; models: string[] } | { ok: false; error: string; status?: number }> {
+}): Promise<{ ok: true; models: string[] } | { ok: false; error: string; status?: number; reason?: 'key_missing' | 'key_rejected' }> {
   const { port, token } = await handshake();
   try {
     const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/local-models`, {
@@ -1104,7 +1104,7 @@ export async function listLocalModels(args: {
       body: JSON.stringify({ base_url: args.baseUrl, api_key: args.apiKey || undefined }),
     });
     if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
-    return (await res.json()) as { ok: true; models: string[] } | { ok: false; error: string; status?: number };
+    return (await res.json()) as { ok: true; models: string[] } | { ok: false; error: string; status?: number; reason?: 'key_missing' | 'key_rejected' };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

@@ -28,7 +28,7 @@ import {
   type CostGuardConfig,
   type SpendState,
 } from '../lib/cost-guard';
-import { listSecrets } from '../lib/secrets';
+import { listSecrets, onSecretsChanged } from '../lib/secrets';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
 import { useT } from '../i18n';
 import { providerLabel } from '../lib/provider-label';
@@ -323,7 +323,11 @@ function StatusStrip() {
     // Re-resolve if the user updates secrets in another tab. We can't
     // listen for safeStorage writes directly; poll lightly.
     const id = setInterval(() => void refreshSecrets(), 30_000);
-    return () => clearInterval(id);
+    const off = onSecretsChanged(() => void refreshSecrets());
+    return () => {
+      clearInterval(id);
+      off();
+    };
   }, [refreshSecrets]);
 
   // ---- Render ------------------------------------------------------------

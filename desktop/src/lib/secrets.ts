@@ -32,8 +32,27 @@ export function getAvailability(): Promise<SecretsAvailability> {
   return bridge().availability();
 }
 
-export function setSecret(key: string, value: string): Promise<SecretEntry> {
-  return bridge().set(key, value);
+/** Same-window notification that a stored secret changed, so pages that cache availability
+ * (provider dropdown, status strip) re-read it instead of waiting for a remount or reload. */
+const SECRETS_CHANGED = 'tal:secrets-changed';
+
+function notifySecretsChanged(): void {
+  try {
+    window.dispatchEvent(new Event(SECRETS_CHANGED));
+  } catch {
+    /* non-DOM environment */
+  }
+}
+
+export function onSecretsChanged(handler: () => void): () => void {
+  window.addEventListener(SECRETS_CHANGED, handler);
+  return () => window.removeEventListener(SECRETS_CHANGED, handler);
+}
+
+export async function setSecret(key: string, value: string): Promise<SecretEntry> {
+  const entry = await bridge().set(key, value);
+  notifySecretsChanged();
+  return entry;
 }
 
 export function getSecret(key: string): Promise<string | null> {
@@ -44,8 +63,10 @@ export function listSecrets(): Promise<SecretListing[]> {
   return bridge().list();
 }
 
-export function deleteSecret(key: string): Promise<boolean> {
-  return bridge().delete(key);
+export async function deleteSecret(key: string): Promise<boolean> {
+  const ok = await bridge().delete(key);
+  notifySecretsChanged();
+  return ok;
 }
 
 export function onSecretsRecovered(

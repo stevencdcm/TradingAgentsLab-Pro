@@ -43,7 +43,7 @@ from .data_providers import (
 from .live_debate import ProviderConfig, SentimentBlock, live_debate
 from .report_language import normalize_report_language
 from .llm_providers import adapter_for
-from . import cost_guard, local_llm_detect, secret_refs, sentiment_sources, storage
+from . import cost_guard, llm_providers, local_llm_detect, secret_refs, sentiment_sources, storage
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
@@ -294,7 +294,7 @@ def build_app(*, token: str) -> FastAPI:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return {"ok": True, "model": config.model, "ms": elapsed_ms}
         except Exception as exc:  # noqa: BLE001 — surface whatever blew up
-            return {"ok": False, "error": secret_refs.redact(f"{type(exc).__name__}: {exc}", config.credential)}
+            return {"ok": False, "error": llm_providers.local_auth_hint(config, secret_refs.redact(f"{type(exc).__name__}: {exc}", config.credential))}
         finally:
             try:
                 await adapter.close()
@@ -465,7 +465,10 @@ def build_app(*, token: str) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 — surface a short reason, never the key
             return {"ok": False, "error": f"{type(exc).__name__}"}
         if res.status_code != 200:
-            return {"ok": False, "status": res.status_code, "error": f"HTTP {res.status_code}"}
+            reason = None
+            if res.status_code in (401, 403):
+                reason = "key_rejected" if api_key and api_key.strip() else "key_missing"
+            return {"ok": False, "status": res.status_code, "error": f"HTTP {res.status_code}", **({"reason": reason} if reason else {})}
         try:
             data = res.json().get("data") or []
             models = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
@@ -934,6 +937,8 @@ def build_app(*, token: str) -> FastAPI:
                 # throttle a little between events so the UI's transition
                 # animations are still visible.
                 async for event in debate_events:
+                    if isinstance(event, dict) and event.get("type") == "run.error" and isinstance(event.get("error"), str):
+                        event = {**event, "error": llm_providers.local_auth_hint(config, event["error"])}
                     await ws.send_json(event)
                     captured_events.append(event)
                     await asyncio.sleep(0.15)

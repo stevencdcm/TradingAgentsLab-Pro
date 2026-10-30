@@ -130,6 +130,8 @@ export const settingsAZhTW: Record<keyof typeof settingsA, string> = {
   'settings.local.testFail': '✗ {error}',
   'settings.local.err.list': '無法列出模型：{error}',
   'settings.local.err.unauthorized': '伺服器拒絕了請求（HTTP 401）：請輸入它要求的 API 金鑰。',
+  'settings.local.err.keyMissing': '伺服器需要 API 金鑰，但尚未儲存任何金鑰。請在「API 金鑰」欄位輸入後按儲存。',
+  'settings.local.err.keyRejected': '伺服器拒絕了已儲存的 API 金鑰（錯誤或已更換）。請輸入目前的金鑰後儲存。',
   'settings.local.err.required': 'Base URL 與模型皆為必填。',
   'oauth.row.name': 'OpenAI 帳號（OAuth）',
   'oauth.row.note':

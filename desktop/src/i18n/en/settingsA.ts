@@ -132,6 +132,8 @@ export const settingsA = {
   'settings.local.testFail': '✗ {error}',
   'settings.local.err.list': 'Could not list models: {error}',
   'settings.local.err.unauthorized': 'The server rejected the request (HTTP 401): enter the API key it requires.',
+  'settings.local.err.keyMissing': 'The server requires an API key and none is stored. Type it in the API key field, then Save.',
+  'settings.local.err.keyRejected': 'The server rejected the stored API key (wrong or rotated). Type the current key and Save.',
   'settings.local.err.required': 'Both base URL and model are required.',
   'oauth.row.name': 'OpenAI account (OAuth)',
   'oauth.row.note':

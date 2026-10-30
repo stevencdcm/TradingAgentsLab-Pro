@@ -190,6 +190,15 @@ def redact(text: str, *extra: Optional[str]) -> str:
     return out
 
 
+_KEY_SHAPES = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9._\-]{8,}|@@secret:[^@\s]+@@)")
+
+
+def scrub_key_shapes(text: str) -> str:
+    """Pattern-based scrub for text that may echo a provider key (API-key shape, Bearer header, secret reference),
+    on top of `redact()` which only knows values this process has resolved."""
+    return _KEY_SHAPES.sub("[redacted]", str(text))
+
+
 def has_named(name: str) -> bool:
     """Whether a server-held secret exists (never returns its value)."""
     return _store is not None and _store.has(name)

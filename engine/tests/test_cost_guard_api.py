@@ -400,3 +400,49 @@ def test_dexter_never_starts_for_an_unpriced_paid_model_and_shares_the_run_budge
     cost_guard.update_config(enabled=True, cap_daily_usd=res.est_cost_usd + 0.0001)
     st2 = asyncio.run(twr.dexter_stage(pack=pack, path=tmp_db.parent / "p.json", out_dir=tmp_db.parent, config=cfg2, lang="en"))
     assert not ran and st2["ran"] is False and st2["dexter"]["reason"].startswith("cost_guard_blocked:")
+
+
+# ---- D3: an unexpected engine exception is reported (redacted), the reservation is released, never a bare 1006 ---------------
+
+
+def test_unexpected_exception_in_a_run_is_reported_not_a_bare_1006(client, monkeypatch):
+    from engine import server as srv
+
+    async def no_net(**_):
+        return None
+
+    async def empty(**_):
+        return []
+
+    async def empty_text(*a, **k):
+        return ""
+
+    async def boom(**_):
+        raise RuntimeError("adapter exploded sk-ant-usr-abcdefghijklmnopqrstuvwxyz0123456789")
+        yield
+
+    monkeypatch.setattr(srv, "_fetch_summary_safe", no_net)
+    monkeypatch.setattr(srv, "_fetch_news_safe", empty)
+    monkeypatch.setattr(srv, "live_debate", boom)
+    monkeypatch.setattr(srv.sentiment_sources, "fetch_stocktwits_messages_async", empty_text)    # isolated: no network
+    monkeypatch.setattr(srv.sentiment_sources, "fetch_reddit_posts_async", empty_text)
+    pre = client.post("/cost-guard/reserve", json={"model": "m", "auth_kind": "local", "max_tokens": 400}).json()["reservation_id"]
+    frame = {"ticker": "AAPL", "trade_date": "2026-10-29", "reservation_id": pre,
+             "provider_config": {"provider": "local", "auth": {"type": "local", "base_url": "http://127.0.0.1:9/v1"}, "model": "m"}}
+    events = []
+    with client.websocket_connect(f"/stream?token={TOKEN}") as ws:
+        ws.send_json(frame)
+        while True:
+            ev = ws.receive_json()
+            events.append(ev)
+            if ev["type"] == "run.error":
+                break
+        try:
+            ws.receive_json()
+        except Exception as exc:  # noqa: BLE001
+            closed = exc
+    err = events[-1]
+    assert err["code"] == "engine_exception" and "RuntimeError" in err["error"] and "adapter exploded" in err["error"]
+    assert "sk-ant-usr-abcdefghijklmnopqrstuvwxyz0123456789" not in err["error"]          # redacted
+    assert _fin(pre)[0] == 1 and _fin(pre)[1] == 0.0                                      # released at 0 (local run)
+    assert getattr(closed, "code", None) == 1011

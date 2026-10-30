@@ -624,6 +624,8 @@ def build_app(*, token: str) -> FastAPI:
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
         ticker = ""
+        config = None
+        reservation_id = None
         try:
             # Wait for the client's start frame:
             #   {
@@ -1173,6 +1175,21 @@ def build_app(*, token: str) -> FastAPI:
             await ws.close(code=1000)
         except WebSocketDisconnect:
             sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
+            return
+        except Exception as exc:  # noqa: BLE001 — never end a run as a bare 1006: say what failed (redacted), release the hold
+            import traceback
+
+            msg = secret_refs.scrub_key_shapes(secret_refs.redact(f"{type(exc).__name__}: {exc}"))
+            sys.stderr.write(f"[ws] ERROR ticker={ticker} {msg}\n" + secret_refs.scrub_key_shapes(secret_refs.redact(traceback.format_exc(limit=6))) + "\n")
+            if reservation_id:
+                # Local / OAuth cost nothing; a paid run that died mid-flight has an unknown cost (NULL), not 0.
+                free = config is None or config.auth_kind in ("oauth", "local")
+                cost_guard.finalize_reservation(reservation_id, actual_cost_usd=0.0 if free else None)
+            try:
+                await ws.send_json({"type": "run.error", "code": "engine_exception", "error": llm_providers.local_auth_hint(config, f"分析中斷（引擎內部錯誤）：{msg}")})
+                await ws.close(code=1011, reason="engine_exception")
+            except Exception:  # noqa: BLE001 — the client may already be gone
+                pass
             return
         finally:
             if tw_run_started:

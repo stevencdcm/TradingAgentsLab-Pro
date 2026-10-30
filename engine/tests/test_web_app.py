@@ -197,16 +197,18 @@ def test_engine_resolves_the_reference_server_side(web):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         web.post("/web/secrets/set", json={"key": "local:api-key", "value": SECRET})
+        web.post("/web/secrets/set", json={"key": "local:base-url", "value": f"http://127.0.0.1:{srv.server_port}/v1"})
         ref = web.post("/web/secrets/get", json={"key": "local:api-key"}).json()
         body = {"provider_config": {"provider": "local",
                 "auth": {"type": "local", "base_url": f"http://127.0.0.1:{srv.server_port}/v1", "api_key": ref}, "model": "m"}}
         r = web.post("/llm/test", json=body, headers={"Authorization": "Bearer engine-token"})
         assert r.json()["ok"] is True and SECRET not in r.text
         assert _Auth.seen == [f"Bearer {SECRET}"]  # the real key reached the provider, not the reference
-        # An unknown reference must never be sent literally to a third party.
+        # An unknown / foreign reference must never be sent literally to a third party.
         _Auth.seen = []
         body["provider_config"]["auth"]["api_key"] = "@@secret:nope@@"
-        assert web.post("/llm/test", json=body, headers={"Authorization": "Bearer engine-token"}).json()["ok"] is False
+        r2 = web.post("/llm/test", json=body, headers={"Authorization": "Bearer engine-token"}).json()
+        assert r2["ok"] is False
         assert all("@@secret" not in (s or "") for s in _Auth.seen)
     finally:
         srv.shutdown()
@@ -282,8 +284,8 @@ def test_oauth_login_stores_tokens_only_in_the_keychain(oauth_web):
         assert "ACCESS-TOKEN-AAAA" not in resp.text and "REFRESH-TOKEN-BBBB" not in resp.text
     from engine import secret_refs as sr
 
-    assert sr.resolve("@@secret:oauth:openai:access@@") == "ACCESS-TOKEN-AAAA"
-    assert sr.resolve("@@secret:oauth:openai:refresh@@") == "REFRESH-TOKEN-BBBB"
+    cfg = sr.resolve_provider_config({"provider": "openai", "auth": {"type": "oauth", "access": creds.json()["access"], "refresh": creds.json()["refresh"], "expires": 1}})
+    assert cfg["auth"]["access"] == "ACCESS-TOKEN-AAAA" and cfg["auth"]["refresh"] == "REFRESH-TOKEN-BBBB"
 
 
 def test_page_cannot_write_or_overwrite_oauth_entries(oauth_web):
@@ -302,7 +304,8 @@ def test_expired_token_is_refreshed_server_side_before_use(oauth_web):
     assert creds["access"] == "@@secret:oauth:openai:access@@"
     from engine import secret_refs as sr
 
-    assert sr.resolve(creds["access"]) == "ACCESS-NEW"
+    cfg = sr.resolve_provider_config({"provider": "openai", "auth": {"type": "oauth", "access": creds["access"], "refresh": creds["refresh"], "expires": 1}})
+    assert cfg["auth"]["access"] == "ACCESS-NEW"
     assert c.get("/web/oauth/status").json()["needsRefresh"] is False
 
 
@@ -322,10 +325,11 @@ def test_only_provider_credential_names_resolve(web):
 
     web.kr.d[("TradingAgentsLab-Web", "webhooks:configs")] = "https://hooks/SECRETTOKEN"
     web.kr.d[("TradingAgentsLab-Web", "llm:openai")] = "sk-llm-value-12345678"
-    assert sr.resolve("@@secret:llm:openai@@") == "sk-llm-value-12345678"
-    assert sr.resolve("@@secret:webhooks:configs@@") == ""        # not a provider credential
-    assert sr.resolve("@@secret:anything:else@@") == ""
-    assert sr.resolve({"a": ["@@secret:local:api-key@@"]}) == {"a": [""]}  # absent -> empty
+    ok = sr.resolve_provider_config({"provider": "openai", "auth": {"type": "api_key", "api_key": "@@secret:llm:openai@@"}, "model": "m"})
+    assert ok["auth"]["api_key"] == "sk-llm-value-12345678"
+    for bad_name in ("webhooks:configs", "anything:else"):
+        with pytest.raises(sr.SecretRefError):
+            sr.resolve_provider_config({"provider": "openai", "auth": {"type": "api_key", "api_key": f"@@secret:{bad_name}@@"}})
 
 
 def test_provider_errors_are_scrubbed_of_the_key(web):
@@ -333,7 +337,90 @@ def test_provider_errors_are_scrubbed_of_the_key(web):
 
     key = "sk-leaky-value-abcdefgh12345678"
     web.kr.d[("TradingAgentsLab-Web", "llm:openai")] = key
-    sr.resolve("@@secret:llm:openai@@")          # registers the value for scrubbing
+    sr.resolve_provider_config({"provider": "openai", "auth": {"type": "api_key", "api_key": "@@secret:llm:openai@@"}})   # registers the value for scrubbing
     msg = f"Incorrect API key provided: {key}. You can find it at ..., ending {key[-8:]}"
     cleaned = sr.redact(msg)
     assert key not in cleaned and key[-8:] not in cleaned and "[redacted]" in cleaned
+
+
+# ---- E6: purpose-bound references (attack matrix; fake secrets only) -------------------------------------
+
+
+@pytest.fixture
+def two_secrets(web):
+    web.kr.d[("TradingAgentsLab-Web", "llm:openai")] = "sk-OPENAI-secret-0000000001"
+    web.kr.d[("TradingAgentsLab-Web", "llm:anthropic")] = "sk-ant-ANTHROPIC-secret-00002"
+    web.kr.d[("TradingAgentsLab-Web", "local:api-key")] = "local-secret-key-0000003"
+    web.kr.d[("TradingAgentsLab-Web", "local:base-url")] = "http://127.0.0.1:8000/v1"
+    web.kr.d[("TradingAgentsLab-Web", "data:alpha-vantage")] = "AVKEY-secret-000004"
+    return web
+
+
+def _prov(provider, field_value, **auth):
+    return {"provider": provider, "auth": {"type": "api_key", "api_key": field_value, **auth}, "model": "m"}
+
+
+def test_a_secret_cannot_be_used_for_a_different_provider(two_secrets):
+    from engine import secret_refs as sr
+
+    with pytest.raises(sr.SecretRefError):
+        sr.resolve_provider_config(_prov("anthropic", "@@secret:llm:openai@@"))     # Anthropic request pulling the OpenAI key
+    with pytest.raises(sr.SecretRefError):
+        sr.resolve_provider_config(_prov("openai", "@@secret:llm:anthropic@@"))
+    with pytest.raises(sr.SecretRefError):
+        sr.resolve_provider_config(_prov("openrouter", "@@secret:local:api-key@@"))
+    with pytest.raises(sr.SecretRefError):
+        sr.resolve_provider_config({"provider": "openai", "auth": {"type": "api_key", "api_key": "@@secret:oauth:openai:access@@"}})  # wrong field
+
+
+def test_local_key_only_goes_to_the_saved_local_server(two_secrets):
+    from engine import secret_refs as sr
+
+    good = {"provider": "local", "auth": {"type": "local", "base_url": "http://127.0.0.1:8000/v1/", "api_key": "@@secret:local:api-key@@"}, "model": "m"}
+    assert sr.resolve_provider_config(good)["auth"]["api_key"] == "local-secret-key-0000003"
+    for url in ("http://evil.example/v1", "http://127.0.0.1:9999/v1", "http://127.0.0.1:8000/other"):
+        bad = {"provider": "local", "auth": {"type": "local", "base_url": url, "api_key": "@@secret:local:api-key@@"}, "model": "m"}
+        with pytest.raises(sr.SecretRefError):
+            sr.resolve_provider_config(bad)
+        with pytest.raises(sr.SecretRefError):
+            sr.resolve_local_models_key(url, "@@secret:local:api-key@@")
+    assert sr.resolve_local_models_key("http://127.0.0.1:8000/v1", "@@secret:local:api-key@@") == "local-secret-key-0000003"
+    assert sr.resolve_local_models_key("http://anywhere/v1", "typed-by-user") == "typed-by-user"      # not a reference
+
+
+def test_references_outside_auth_fields_are_rejected_without_echo(two_secrets):
+    from engine import secret_refs as sr
+
+    leak = "@@secret:llm:openai@@"
+    for frame in (
+        {"ticker": leak, "trade_date": "2026-10-30"},
+        {"ticker": "AAPL", "trade_date": leak},
+        {"ticker": "AAPL", "pro_config": {"x": leak}},
+        {"ticker": "AAPL", "webhooks": [{"url": leak}]},
+        {"ticker": "AAPL", "provider_config": {"provider": "openai", "model": leak, "auth": {"type": "api_key", "api_key": "k"}}},
+        {"ticker": "AAPL", "data_config": {"provider": "alpaca", "key_id": "@@secret:llm:openai@@", "secret": "x"}},
+        {"ticker": "AAPL", "alpha_vantage_key": "@@secret:llm:openai@@"},
+    ):
+        with pytest.raises(sr.SecretRefError) as ei:
+            sr.resolve_start_frame(frame)
+        assert "sk-OPENAI" not in str(ei.value)
+    ok = sr.resolve_start_frame({"ticker": "AAPL", "alpha_vantage_key": "@@secret:data:alpha-vantage@@",
+                                 "provider_config": _prov("anthropic", "@@secret:llm:anthropic@@")})
+    assert ok["alpha_vantage_key"] == "AVKEY-secret-000004" and ok["provider_config"]["auth"]["api_key"] == "sk-ant-ANTHROPIC-secret-00002"
+
+
+def test_ws_start_frame_with_a_reference_in_ticker_is_refused_and_does_not_leak(two_secrets):
+    c = two_secrets
+    with c.websocket_connect("/stream?token=engine-token", headers={"origin": BASE, "host": f"127.0.0.1:{PORT}", "cookie": f"{COOKIE_NAME}={COOKIE}"}) as ws:
+        ws.send_json({"ticker": "@@secret:llm:openai@@", "trade_date": "2026-10-30"})
+        ev = ws.receive_json()
+    assert ev["type"] == "run.error" and ev["code"] == "secret_ref_rejected" and "sk-OPENAI" not in json.dumps(ev)
+
+
+def test_llm_test_rejects_a_foreign_reference_at_the_endpoint(two_secrets):
+    r = two_secrets.post("/llm/test", headers={"Authorization": "Bearer engine-token"},
+                         json={"provider_config": _prov("anthropic", "@@secret:llm:openai@@")})
+    assert r.json()["ok"] is False and "sk-OPENAI" not in r.text
+    r = two_secrets.post("/llm/local-models", headers={"Authorization": "Bearer engine-token"},
+                         json={"base_url": "http://evil.example/v1", "api_key": "@@secret:local:api-key@@"})
+    assert r.json()["ok"] is False and "local-secret" not in r.text

@@ -27,9 +27,23 @@ cache_write x write rate + output x output rate. Reasoning tokens are part of ou
 tokens uses the long-context row (unknown if none is published). Standard tier is assumed unless the response names a tier. Regional
 (+10%), FedRAMP, tool and storage fees are not included. A missing usage field is reported as missing (the line is partial), never as 0.
 
+### Cache-write TTL (D17)
+A cache write is billed at the 30m rate (1.25x input) or the 12h rate (2.5x input) depending on its TTL. OpenAI reports the split in
+`cache_write_tokens_details.ttl_30m_tokens / ttl_12h_tokens`. LangChain's own `usage_metadata` keeps only the total, so the engine reads the
+split from the provider's raw usage (`llm_output["token_usage"]`, non-streaming Chat Completions) and prices each TTL separately
+(official guide example: gpt-6.1-sol, 12,000 in / 4,000 cached / 3,000 x 30m + 4,000 x 12h written / 1,000 out = $0.0399). When only a write total
+is available (Responses API, streaming) the writes are priced as a **range** (30m rate to 12h rate), the line is flagged `cache_write_ttl` and the
+total is **not** complete. A model with a published write price whose response says nothing about writes is flagged `cache_write_tokens`.
+Models whose page row has no short/long split (e.g. gpt-4.1) use the single published price at any context length.
+
+### Runs that end without a result
+The engine hands its latest per-agent partial report to the run record after every model call. A cancelled, failed or interrupted run keeps it
+(`runs.cost_report`, additive column), marked partial, on `GET /runs/{id}` (`cost_report`), on the `run.finished` event, and after a restart.
+A model call that finishes without usage numbers is kept as a visible `usage_not_reported` gap, never dropped.
+
 ## Billing kinds
 `api_key` -> `api_estimate_usd`. `oauth` -> no API billing; `api_equivalent_reference_usd` only when the exact model has an official row
-(a reference, not an invoice, not a plan percentage). `local` -> external API fee 0, electricity not priced. Other vendors -> tokens listed,
+(a reference, not an invoice, not a plan percentage). "Exact" includes an unlisted dated snapshot of a listed alias (e.g. `gpt-6.1-sol-2026-10-01`), which is priced at the alias and labelled `priced_via_undated_alias_of_snapshot`. `local` -> external API fee 0, electricity not priced. Other vendors -> tokens listed,
 USD unknown. Totals are `complete` only if every line was priced from reported usage; cancelled/failed/interrupted runs are partial.
 
 ## Where it appears

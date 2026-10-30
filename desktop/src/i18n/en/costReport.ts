@@ -47,4 +47,20 @@ export const costReport = {
   'costReport.note.reasoning': 'Reasoning tokens are part of output and are not billed twice.',
   'costReport.note.promo': 'gpt-5.6-sol is on a promotional price through 2026-11-21.',
   'costReport.note.ceiling': 'The budget guard keeps its own conservative ceilings; this report does not change them.',
+  'costReport.total.estimateRange':
+    'API price estimate (official list price): {usd} to {max} — cache-write TTL was not reported, so the range runs from 30-minute to 12-hour write prices',
+  'costReport.total.referenceRange':
+    'API-equivalent reference: {usd} to {max} — cache-write TTL was not reported (30-minute to 12-hour write prices). Not what you were billed, and not a share of your plan.',
+  'costReport.reason.cache_write_ttl': 'cache writes were reported without their 30m / 12h split, so they are priced as a range',
+  'costReport.reason.cache_write_tokens': 'this model has a cache-write price but the response did not say how many tokens were written',
+  'costReport.reason.usage_not_reported': 'a model call finished without any usage numbers',
+  'costReport.col.write30': 'Write 30m',
+  'costReport.col.write12': 'Write 12h',
+  'costReport.note.dexter_input_tokens_assumed_to_include_cached_tokens': 'Dexter’s input tokens are assumed to include its cached tokens.',
+  'costReport.note.cache_write_ttl_unsplit_priced_as_range_30m_to_12h': 'Cache writes without a TTL split are shown as a range (30m write price to 12h write price).',
+  'costReport.note.service_tier_not_reported_assumed_standard': 'The response did not name a service tier; Standard pricing is assumed.',
+  'costReport.note.no_cached_input_price_billed_at_input_rate': 'This model has no published cached-input price; cached tokens are priced at the input rate.',
+  'costReport.note.no_cache_write_price_billed_at_input_rate': 'This model has no published cache-write price; written tokens are priced at the input rate.',
+  'costReport.note.priced_via_undated_alias_of_snapshot': 'A dated snapshot id that the price page does not list was priced at its undated alias.',
+  'costReport.note.reasoning_exceeds_output_not_added': 'Reported reasoning tokens exceed output tokens; they are not added.',
 } as const;

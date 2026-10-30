@@ -151,9 +151,14 @@ def usage_detail(usage: Any, *, model: Any = None, service_tier: Any = None) -> 
     write = _field(in_d, "cache_write_tokens")
     if write is None:
         write = _field(in_d, "cache_creation_tokens")
+    # OpenAI reports a cache write's TTL split here; the two rates differ (30m = 1.25x input, 12h = 2.5x), so it must be read.
+    ttl = _field(in_d, "cache_write_tokens_details")
+    t30, t12 = _field(ttl, "ttl_30m_tokens"), _field(ttl, "ttl_12h_tokens")
     return {
         "cached": cached if isinstance(cached, int) else None,
         "cache_write": write if isinstance(write, int) else None,
+        "cache_write_30m": t30 if isinstance(t30, int) else None,
+        "cache_write_12h": t12 if isinstance(t12, int) else None,
         "reasoning": (lambda r: r if isinstance(r, int) else None)(_field(out_d, "reasoning_tokens")),
         "model": model if isinstance(model, str) else None,
         "service_tier": service_tier if isinstance(service_tier, str) else None,

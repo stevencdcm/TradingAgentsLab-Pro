@@ -365,10 +365,14 @@ def _record_usage(ledger: Any, agent: str, config: Any, adapter: Any, in_tok: in
     try:
         d = getattr(adapter, "last_usage", None) or {}
         adapter.last_usage = None            # never let a later call that reports nothing inherit this call's detail
+        if not (in_tok or out_tok):
+            ledger.record_no_usage(stage="debate", agent=agent, provider=config.provider, model=config.model)
+            return
         ledger.record(
             stage="debate", agent=agent, provider=config.provider, model_requested=config.model,
             model_billed=d.get("model") or config.model, input_tokens=in_tok, output_tokens=out_tok,
-            cached_input_tokens=d.get("cached"), cache_write_tokens=d.get("cache_write"), reasoning_tokens=d.get("reasoning"),
+            cached_input_tokens=d.get("cached"), cache_write_tokens=d.get("cache_write"),
+            cache_write_30m_tokens=d.get("cache_write_30m"), cache_write_12h_tokens=d.get("cache_write_12h"), reasoning_tokens=d.get("reasoning"),
             service_tier=d.get("service_tier"), tier_reported=bool(d.get("service_tier")),
         )
     except Exception:  # noqa: BLE001
@@ -554,6 +558,7 @@ async def live_debate(
     sentiment: Optional[SentimentBlock] = None,
     report_language: str = "en",
     extra_context: str = "",
+    report_sink: Optional[Any] = None,
 ) -> AsyncIterator[dict]:
     """Real-LLM debate. Yields the same event shapes as `canned_debate`.
 
@@ -707,6 +712,11 @@ async def live_debate(
                     config.model, state.input_tokens, state.output_tokens
                 )
             )
+            if report_sink is not None:
+                try:
+                    report_sink(_report(ledger, config, "running"))
+                except Exception:  # noqa: BLE001
+                    pass
             usage_evt = {
                 "type": "cost.usage",
                 "input_tokens": state.input_tokens,
@@ -774,6 +784,11 @@ async def live_debate(
         }
         yielded_complete = True
     finally:
+        if report_sink is not None:
+            try:
+                report_sink(_report(ledger, config, "running"))
+            except Exception:  # noqa: BLE001
+                pass
         # Best-effort adapter cleanup. Runs on normal exit AND on
         # GeneratorExit (client disconnect mid-stream) — without this the
         # pooled httpx client inside Anthropic / OpenAI adapters leaks for

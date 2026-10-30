@@ -67,46 +67,57 @@ def price_usage(
     input_tokens: int,
     output_tokens: int,
     cached_input_tokens: int,
-    cache_write_tokens: int,
+    cache_write_30m_tokens: int = 0,
+    cache_write_12h_tokens: int = 0,
+    cache_write_unsplit_tokens: int = 0,
 ) -> dict[str, Any]:
     """USD for one aggregated bucket of calls (same model, tier and context bucket).
 
-    Input whose cache status was not reported is simply not in `cached_input_tokens`, so it is billed at the plain input
-    rate (an upper bound for that part); the caller marks such a line partial.
-    Returns {"usd": float|None, "price_model_id", "resolved_via", "tier", "rates", "reason", "notes": [...]}.
-    `usd` is None (unknown) whenever no official price applies - never 0.
+    Cache writes are billed per TTL (30m / 12h). Tokens whose TTL split was not reported (`cache_write_unsplit_tokens`) are
+    priced at BOTH rates: `usd` takes the 30m rate (the lower bound) and `usd_max` the 12h rate, so the caller can show a range
+    and must not call the result complete. Input whose cache status was not reported is simply not in the cached/write
+    counts, so it is billed at the plain input rate; the caller marks such a line partial.
+    Returns {"usd": float|None, "usd_max": float|None (only when it differs), "price_model_id", "resolved_via", "tier", "rates",
+    "reason", "notes": [...]}. `usd` is None (unknown) whenever no official price applies - never 0.
     """
     res = resolve_model(model)
     if res is None:
-        return {"usd": None, "price_model_id": None, "resolved_via": None, "tier": None, "rates": None,
+        return {"usd": None, "usd_max": None, "price_model_id": None, "resolved_via": None, "tier": None, "rates": None,
                 "reason": "no_official_price", "notes": []}
     row_id, how = res
     tier = tier_for_service_tier(service_tier)
+    base = {"usd": None, "usd_max": None, "price_model_id": row_id, "resolved_via": how, "tier": tier, "rates": None, "notes": []}
     if tier is None:
-        return {"usd": None, "price_model_id": row_id, "resolved_via": how, "tier": None, "rates": None,
-                "reason": "unsupported_service_tier", "notes": []}
+        return {**base, "reason": "unsupported_service_tier"}
     by_ctx = _data.PRICES[row_id].get(tier)
     if by_ctx is None:
-        return {"usd": None, "price_model_id": row_id, "resolved_via": how, "tier": tier, "rates": None,
-                "reason": "tier_not_listed", "notes": []}
+        return {**base, "reason": "tier_not_listed"}
     rates = by_ctx.get(context)
     if rates is None:
-        return {"usd": None, "price_model_id": row_id, "resolved_via": how, "tier": tier, "rates": None,
-                "reason": "long_context_price_not_listed", "notes": []}
+        return {**base, "reason": "long_context_price_not_listed"}
     notes: list[str] = []
+    if how == "snapshot_of_alias":
+        notes.append("priced_via_undated_alias_of_snapshot")
     in_rate, out_rate = rates["input"], rates["output"]
     cached_rate = rates["cached_input"]
     if cached_rate is None:
         cached_rate = in_rate
         if cached_input_tokens:
             notes.append("no_cached_input_price_billed_at_input_rate")
-    write_rate = rates["write_30m"]
-    if write_rate is None:
-        write_rate = in_rate
-    elif cache_write_tokens:
-        notes.append("cache_write_ttl_unreported_priced_at_30m_rate")
-    uncached = max(0, input_tokens - cached_input_tokens - cache_write_tokens)
-    usd = (uncached * in_rate + cached_input_tokens * cached_rate + cache_write_tokens * write_rate
-           + output_tokens * out_rate) / 1_000_000
-    return {"usd": usd, "price_model_id": row_id, "resolved_via": how, "tier": tier,
+    r30, r12 = rates["write_30m"], rates["write_12h"]
+    if r30 is None or r12 is None:                  # no published write surcharge for this model: a write is plain input
+        r30 = r12 = in_rate
+        if cache_write_30m_tokens or cache_write_12h_tokens or cache_write_unsplit_tokens:
+            notes.append("no_cache_write_price_billed_at_input_rate")
+    writes = cache_write_30m_tokens + cache_write_12h_tokens + cache_write_unsplit_tokens
+    uncached = max(0, input_tokens - cached_input_tokens - writes)
+    fixed = (uncached * in_rate + cached_input_tokens * cached_rate + cache_write_30m_tokens * r30
+             + cache_write_12h_tokens * r12 + output_tokens * out_rate)
+    usd = (fixed + cache_write_unsplit_tokens * r30) / 1_000_000
+    usd_max = (fixed + cache_write_unsplit_tokens * r12) / 1_000_000
+    if cache_write_unsplit_tokens and r12 != r30:
+        notes.append("cache_write_ttl_unsplit_priced_as_range_30m_to_12h")
+    else:
+        usd_max = None
+    return {"usd": usd, "usd_max": usd_max, "price_model_id": row_id, "resolved_via": how, "tier": tier,
             "rates": {**rates, "unit": "USD_per_1M_tokens"}, "reason": None, "notes": notes}

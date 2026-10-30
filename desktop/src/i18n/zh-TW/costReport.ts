@@ -47,4 +47,20 @@ export const costReportZhTW: Record<keyof typeof costReport, string> = {
   'costReport.note.reasoning': '推理 token 已包含在輸出內，不會重複計費。',
   'costReport.note.promo': 'gpt-5.6-sol 目前為促銷價，至少到 2026-11-21。',
   'costReport.note.ceiling': '預算守門員仍使用自己的保守上限，本報告不會改動它。',
+  'costReport.total.estimateRange':
+    'API 價格估算（官方牌價）：{usd} 至 {max}——快取寫入的 TTL 沒有回報，所以範圍從 30 分鐘寫入價算到 12 小時寫入價',
+  'costReport.total.referenceRange':
+    'API 等值參考：{usd} 至 {max}——快取寫入的 TTL 沒有回報（30 分鐘到 12 小時寫入價）。這不是你實際被收的帳單，也不是訂閱方案的用量百分比。',
+  'costReport.reason.cache_write_ttl': '回報了快取寫入總量但沒有 30 分鐘／12 小時的拆分，所以以範圍計價',
+  'costReport.reason.cache_write_tokens': '此模型有快取寫入價，但回應沒有說寫入了多少 token',
+  'costReport.reason.usage_not_reported': '有模型呼叫結束了卻沒有任何用量數字',
+  'costReport.col.write30': '寫入 30 分鐘',
+  'costReport.col.write12': '寫入 12 小時',
+  'costReport.note.dexter_input_tokens_assumed_to_include_cached_tokens': '假設 Dexter 的輸入 token 已包含它的快取 token。',
+  'costReport.note.cache_write_ttl_unsplit_priced_as_range_30m_to_12h': '沒有 TTL 拆分的快取寫入以範圍顯示（30 分鐘寫入價到 12 小時寫入價）。',
+  'costReport.note.service_tier_not_reported_assumed_standard': '回應沒有指明服務等級，假設為標準等級計價。',
+  'costReport.note.no_cached_input_price_billed_at_input_rate': '此模型沒有公布快取輸入價，快取 token 以輸入價計。',
+  'costReport.note.no_cache_write_price_billed_at_input_rate': '此模型沒有公布快取寫入價，寫入的 token 以輸入價計。',
+  'costReport.note.priced_via_undated_alias_of_snapshot': '價格頁沒有列出的帶日期快照代號，以其不帶日期的別名計價。',
+  'costReport.note.reasoning_exceeds_output_not_added': '回報的推理 token 多於輸出 token，不另外加總。',
 };

@@ -23,6 +23,7 @@ import {
 } from '../lib/cost-guard';
 import { runAnalysis } from '../lib/run-analysis';
 import { forgetRun, recallRun, rememberRun } from '../lib/run-memory';
+import type { CostReport } from '../lib/cost-report';
 import { getActiveRuns, getRunStatus, resumeRun, type RunConnection, type RunStatusSnapshot } from '../lib/engine-client';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { listSecrets, onSecretsChanged } from '../lib/secrets';
@@ -611,8 +612,12 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     }
     if (type === 'run.attached' || type === 'run.finished' || type === 'run.resync') {
       if (type === 'run.finished') {
-        const state = (event as unknown as { state?: string }).state;
-        setRunClock((c) => ({ ...c, endedAt: c.endedAt ?? Date.now(), cancelling: false, usagePartial: state !== undefined && state !== 'completed' }));
+        const fin = event as unknown as { state?: string; cost_report?: CostReport | null };
+        const state = fin.state;
+        setRunClock((c) => ({
+          ...c, endedAt: c.endedAt ?? Date.now(), cancelling: false, usagePartial: state !== undefined && state !== 'completed',
+          costReport: fin.cost_report ?? c.costReport ?? null,
+        }));
       }
       return;
     }
@@ -649,6 +654,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       resumed: st.active,
       cancelling: !!st.cancelling,
       usagePartial: !st.active && st.state !== 'completed',
+      costReport: st.cost_report ?? null,
       connection: 'connected',
     });
     rememberRun({ runId: st.run_id, ticker: st.ticker ?? '' });

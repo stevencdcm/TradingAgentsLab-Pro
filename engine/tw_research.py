@@ -137,7 +137,7 @@ async def dexter_stage(*, pack: dict, path: Path, out_dir: Path, config: Provide
 
 async def tw_research(
     *, code: str, trade_date: str, config: ProviderConfig, report_language: str, reservation_id: Optional[str] = None,
-    run_dexter: bool = True,
+    run_dexter: bool = True, report_sink: Optional[Any] = None,
 ) -> AsyncIterator[dict[str, Any]]:
     lang = normalize_report_language(report_language)
     ticker = code
@@ -171,9 +171,14 @@ async def tw_research(
 
     # --- Debate grounded on the pack ----------------------------------------------------
     ctx = evidence_context(pack, dexter, lang)
+    def _sink(rep: Optional[dict[str, Any]]) -> None:
+        if report_sink is not None:
+            report_sink(_report_with_dexter(rep, config, dexter_ran, du))
+
+    _sink(None)                                  # Dexter's own usage is visible even if the run ends before the debate starts
     async for ev in live_debate(
         ticker=ticker, trade_date=trade_date, summary=summary, headlines=None, config=config,
-        reservation_id=reservation_id, report_language=lang, extra_context=ctx,
+        reservation_id=reservation_id, report_language=lang, extra_context=ctx, report_sink=_sink,
     ):
         if ev["type"] == "session.start":
             continue

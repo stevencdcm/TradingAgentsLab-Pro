@@ -68,10 +68,26 @@ def test_reasoning_tokens_are_not_billed_twice():
     assert odd["totals"]["api_estimate_usd"] == base and "reasoning_exceeds_output_not_added" in odd["lines"][0]["notes"]
 
 
-def test_cache_write_uses_write_rate_not_input_rate():
-    r = build_report(_one(cached_input_tokens=0, cache_write_tokens=20_000), billing="api_key")["lines"][0]
-    assert r["usd"] == pytest.approx(80_000 * 2.0 / 1e6 + 20_000 * 2.5 / 1e6 + 10_000 * 10.0 / 1e6)
-    assert "cache_write_ttl_unreported_priced_at_30m_rate" in r["notes"]
+def test_cache_write_is_priced_per_ttl_and_a_total_without_a_split_is_a_range_and_incomplete():
+    split = build_report(_one(cached_input_tokens=0, cache_write_30m_tokens=10_000, cache_write_12h_tokens=10_000, cache_write_tokens=20_000), billing="api_key")
+    ln = split["lines"][0]
+    assert ln["usd"] == pytest.approx(80_000 * 2.0 / 1e6 + 10_000 * 2.5 / 1e6 + 10_000 * 5.0 / 1e6 + 10_000 * 10.0 / 1e6)
+    assert ln["usd_max"] is None and split["totals"]["complete"] is True and ln["cache_write_12h_tokens"] == 10_000
+    unsplit = build_report(_one(cached_input_tokens=0, cache_write_tokens=20_000), billing="api_key")
+    ln = unsplit["lines"][0]
+    low = 80_000 * 2.0 / 1e6 + 20_000 * 2.5 / 1e6 + 10_000 * 10.0 / 1e6
+    high = 80_000 * 2.0 / 1e6 + 20_000 * 5.0 / 1e6 + 10_000 * 10.0 / 1e6
+    assert ln["usd"] == pytest.approx(low) and ln["usd_max"] == pytest.approx(high) and "cache_write_ttl" in ln["missing"]
+    t = unsplit["totals"]
+    assert t["complete"] is False and t["api_estimate_usd"] == pytest.approx(low) and t["api_estimate_usd_max"] == pytest.approx(high)
+    assert "debate:cache_write_ttl" in t["incomplete_reasons"] and "cache_write_ttl_unsplit_priced_as_range_30m_to_12h" in unsplit["notes"]
+
+
+def test_write_priced_model_whose_usage_says_nothing_about_writes_is_not_complete():
+    r = build_report(_one(cache_write_tokens=None), billing="api_key")
+    assert "cache_write_tokens" in r["lines"][0]["missing"] and r["totals"]["complete"] is False
+    older = build_report(_one(model="gpt-5.5", cache_write_tokens=None), billing="api_key")      # no published write price: nothing to miss
+    assert older["totals"]["complete"] is True
 
 
 def test_long_context_request_uses_long_rates():
@@ -147,9 +163,10 @@ def test_dexter_is_its_own_line_and_added_to_the_total():
     stages = [ln["stage"] for ln in r["lines"]]
     assert stages == ["debate", "dexter"]
     dx = r["lines"][1]
+    assert "cache_write_tokens" in dx["missing"] and r["totals"]["complete"] is False            # Dexter never reports cache writes
     assert dx["usd"] == pytest.approx(50_000 * 2.0 / 1e6 + 50_000 * 0.1 / 1e6 + 10_000 * 10.0 / 1e6)
     assert r["totals"]["api_estimate_usd"] == pytest.approx(base["totals"]["api_estimate_usd"] + dx["usd"])
-    assert r["totals"]["input_tokens"] == 200_000 and r["totals"]["complete"] is True
+    assert r["totals"]["input_tokens"] == 200_000
 
 
 def test_dexter_without_measured_usage_makes_the_total_incomplete_not_zero():
@@ -181,7 +198,7 @@ def test_empty_ledger_has_no_report():
 def _lc_response(model, in_t, out_t, cache_read=None, reasoning=None, tier="default"):
     um = {"input_tokens": in_t, "output_tokens": out_t, "total_tokens": in_t + out_t}
     if cache_read is not None:
-        um["input_token_details"] = {"cache_read": cache_read}
+        um["input_token_details"] = {"cache_read": cache_read, "cache_creation": 0}
     if reasoning is not None:
         um["output_token_details"] = {"reasoning": reasoning}
     msg = SimpleNamespace(usage_metadata=um, response_metadata={"model_name": model, "service_tier": tier})
@@ -221,11 +238,11 @@ def test_usage_detail_reads_chat_and_responses_shapes_and_leaves_unreported_as_n
     from engine.llm_providers import usage_detail
 
     chat = SimpleNamespace(prompt_tokens_details=SimpleNamespace(cached_tokens=7), completion_tokens_details=SimpleNamespace(reasoning_tokens=3))
-    assert usage_detail(chat, model="m", service_tier="default") == {"cached": 7, "cache_write": None, "reasoning": 3, "model": "m", "service_tier": "default"}
+    assert usage_detail(chat, model="m", service_tier="default") == {"cached": 7, "cache_write": None, "cache_write_30m": None, "cache_write_12h": None,
+                                                                    "reasoning": 3, "model": "m", "service_tier": "default"}
     resp = {"input_tokens_details": {"cached_tokens": 5}, "output_tokens_details": {"reasoning_tokens": 2}}
     assert usage_detail(resp)["cached"] == 5 and usage_detail(resp)["reasoning"] == 2
-    assert usage_detail(SimpleNamespace(prompt_tokens_details=None, completion_tokens_details=None)) == {
-        "cached": None, "cache_write": None, "reasoning": None, "model": None, "service_tier": None}
+    assert set(usage_detail(SimpleNamespace(prompt_tokens_details=None, completion_tokens_details=None)).values()) == {None}
 
 
 # ---- live_debate (simplified path) end to end with a fake adapter -------------------------------------------------------
@@ -272,7 +289,7 @@ async def test_live_debate_complete_carries_per_agent_official_report_and_keeps_
     from engine.live_debate import MAX_AGENTS_PER_SESSION
     from engine.llm_providers import estimate_cost_or_none
 
-    evs = await _run(monkeypatch, "api_key", {"cached": 400, "cache_write": None, "reasoning": 50, "model": "gpt-6.1-sol", "service_tier": "default"})
+    evs = await _run(monkeypatch, "api_key", {"cached": 400, "cache_write": 0, "reasoning": 50, "model": "gpt-6.1-sol", "service_tier": "default"})
     comp = next(e for e in evs if e["type"] == "session.complete")
     rep = comp["cost_report"]
     assert len(rep["lines"]) == MAX_AGENTS_PER_SESSION and {ln["agent"] for ln in rep["lines"]} >= {"portfolio_manager"}
@@ -288,7 +305,7 @@ async def test_live_debate_complete_carries_per_agent_official_report_and_keeps_
 
 @pytest.mark.asyncio
 async def test_live_debate_oauth_shows_reference_not_a_bill(monkeypatch):
-    evs = await _run(monkeypatch, "oauth", {"cached": 0, "cache_write": None, "reasoning": 0, "model": "gpt-6.1-sol", "service_tier": None})
+    evs = await _run(monkeypatch, "oauth", {"cached": 0, "cache_write": 0, "reasoning": 0, "model": "gpt-6.1-sol", "service_tier": None})
     comp = next(e for e in evs if e["type"] == "session.complete")
     t = comp["cost_report"]["totals"]
     assert comp["estimated_cost_usd"] == 0.0 and t["api_estimate_usd"] is None and t["api_equivalent_reference_usd"] > 0
@@ -340,3 +357,147 @@ def test_report_has_no_secret_shapes_and_is_json_serialisable():
 
     s = json.dumps(build_report(_one(), billing="api_key"))
     assert not re.search(r"sk-[A-Za-z0-9]{8,}", s)
+
+
+# ---- D17: cache-write TTL, through the REAL langchain-openai mapping -----------------------------------------------------
+
+# OpenAI's prompt-caching guide example: gpt-6.1-sol, 12,000 input (4,000 cached, 7,000 written: 3,000 at 30m + 4,000 at 12h), 1,000 output.
+OFFICIAL_USAGE = {
+    "prompt_tokens": 12000, "completion_tokens": 1000, "total_tokens": 13000,
+    "prompt_tokens_details": {"cached_tokens": 4000, "cache_write_tokens": 7000,
+                              "cache_write_tokens_details": {"ttl_30m_tokens": 3000, "ttl_12h_tokens": 4000}},
+    "completion_tokens_details": {"reasoning_tokens": 200},
+}
+OFFICIAL_RESPONSES_USAGE = {
+    "input_tokens": 12000, "output_tokens": 1000, "total_tokens": 13000,
+    "input_tokens_details": {"cached_tokens": 4000, "cache_write_tokens": 7000,
+                             "cache_write_tokens_details": {"ttl_30m_tokens": 3000, "ttl_12h_tokens": 4000}},
+    "output_tokens_details": {"reasoning_tokens": 200},
+}
+
+
+def _real_chat_llm_result(usage, service_tier="default", model="gpt-6.1-sol-2026-10-01"):
+    """What the callback really receives: ChatOpenAI._create_chat_result on a raw Chat Completions body, wrapped as an LLMResult."""
+    from langchain_core.outputs import LLMResult
+    from langchain_openai import ChatOpenAI
+
+    body = {"id": "x", "model": model, "service_tier": service_tier,
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "hi"}}], "usage": usage}
+    res = ChatOpenAI(model="gpt-6.1-sol", api_key="not-a-real-key")._create_chat_result(body)
+    return LLMResult(generations=[res.generations], llm_output=res.llm_output)
+
+
+def _meter_report(response, model="gpt-6.1-sol"):
+    from engine.full_debate import _TokenMeter
+
+    m = _TokenMeter(None)
+    m.ledger = UsageLedger(provider="openai")
+    m.on_chat_model_start({}, [], run_id="r", metadata={"langgraph_node": "pm"}, invocation_params={"model": model})
+    m.on_llm_end(response, run_id="r")
+    return build_report(m.ledger, billing="api_key")
+
+
+def test_official_guide_example_through_real_langchain_openai_is_0_0399_not_0_0299():
+    r = _meter_report(_real_chat_llm_result(OFFICIAL_USAGE))
+    ln = r["lines"][0]
+    assert (ln["cache_write_30m_tokens"], ln["cache_write_12h_tokens"], ln["cache_write_unsplit_tokens"]) == (3000, 4000, 0)
+    assert ln["cached_input_tokens"] == 4000 and ln["uncached_input_tokens"] == 1000 and ln["reasoning_tokens"] == 200
+    assert ln["model"] == "gpt-6.1-sol-2026-10-01" and ln["price"]["resolved_via"] == "snapshot_of_alias"
+    assert ln["usd"] == pytest.approx(0.0399) and ln["usd_max"] is None
+    assert r["totals"]["api_estimate_usd"] == pytest.approx(0.0399) and r["totals"]["complete"] is True
+    assert r["totals"]["api_estimate_usd"] != pytest.approx(0.0299)                       # the old "everything is 30m" answer
+
+
+def test_langchain_mapping_alone_loses_the_ttl_split_which_is_why_raw_usage_is_read():
+    from langchain_openai.chat_models.base import _create_usage_metadata
+
+    assert _create_usage_metadata(OFFICIAL_USAGE)["input_token_details"] == {"cache_read": 4000, "cache_creation": 7000}   # no 30m / 12h
+
+
+def test_responses_api_shape_has_only_the_write_total_so_it_is_a_range_and_incomplete():
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from langchain_core.messages import AIMessage
+    from langchain_openai.chat_models.base import _create_usage_metadata_responses
+
+    um = _create_usage_metadata_responses(OFFICIAL_RESPONSES_USAGE)
+    msg = AIMessage(content="hi", usage_metadata=um, response_metadata={"model_name": "gpt-6.1-sol", "service_tier": "default"})
+    r = _meter_report(LLMResult(generations=[[ChatGeneration(message=msg)]]))
+    ln = r["lines"][0]
+    assert ln["cache_write_unsplit_tokens"] == 7000 and "cache_write_ttl" in ln["missing"]
+    assert ln["usd"] == pytest.approx(0.0299) and ln["usd_max"] == pytest.approx(1000 * 2 / 1e6 + 4000 * 0.1 / 1e6 + 7000 * 5.0 / 1e6 + 1000 * 10 / 1e6)
+    assert r["totals"]["complete"] is False and r["totals"]["api_estimate_usd_max"] > r["totals"]["api_estimate_usd"]
+    assert "cache_write_ttl_unsplit_priced_as_range_30m_to_12h" in r["notes"]
+
+
+def test_flex_prefixed_detail_keys_are_still_read():
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from langchain_openai.chat_models.base import _create_usage_metadata_responses
+
+    raw = {**OFFICIAL_RESPONSES_USAGE, "input_tokens_details": {"cached_tokens": 4000, "cache_write_tokens": 0}}
+    um = _create_usage_metadata_responses(raw, "flex")
+    assert "flex_cache_read" in um["input_token_details"]                                  # langchain renamed the key
+    msg = AIMessage(content="hi", usage_metadata=um, response_metadata={"model_name": "gpt-6.1-sol", "service_tier": "flex"})
+    ln = _meter_report(LLMResult(generations=[[ChatGeneration(message=msg)]]))["lines"][0]
+    assert ln["cached_input_tokens"] == 4000 and ln["reasoning_tokens"] == 200 and ln["price"]["tier"] == "flex"
+    assert ln["usd"] == pytest.approx(8000 * 1.0 / 1e6 + 4000 * 0.05 / 1e6 + 1000 * 5.0 / 1e6)
+
+
+def test_full_graph_call_without_usage_is_a_visible_gap_not_a_complete_report():
+    from engine.full_debate import _TokenMeter
+
+    m = _TokenMeter(None)
+    m.ledger = UsageLedger(provider="openai")
+    m.on_chat_model_start({}, [], run_id="a", metadata={"langgraph_node": "analyst"}, invocation_params={"model": "gpt-6.1-sol"})
+    m.on_chat_model_start({}, [], run_id="b", metadata={"langgraph_node": "analyst"}, invocation_params={"model": "gpt-6.1-sol"})
+    m.on_llm_end(_real_chat_llm_result(OFFICIAL_USAGE), run_id="a")
+    m.on_llm_end(SimpleNamespace(generations=[[]], llm_output={}), run_id="b")               # finished, but no usage at all
+    r = build_report(m.ledger, billing="api_key")
+    assert sum(ln["calls"] for ln in r["lines"]) == 2                                        # not silently dropped
+    assert any("usage_not_reported" in ln["missing"] for ln in r["lines"])
+    assert r["totals"]["complete"] is False and "debate:usage_not_reported" in r["totals"]["incomplete_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_live_debate_adapter_reporting_the_ttl_split_prices_each_ttl(monkeypatch):
+    from engine.live_debate import MAX_AGENTS_PER_SESSION
+
+    detail = {"cached": 0, "cache_write": 600, "cache_write_30m": 200, "cache_write_12h": 400, "reasoning": 0, "model": "gpt-6.1-sol", "service_tier": "default"}
+    evs = await _run(monkeypatch, "api_key", detail)
+    rep = next(e for e in evs if e["type"] == "session.complete")["cost_report"]
+    per = 400 * 2.0 / 1e6 + 200 * 2.5 / 1e6 + 400 * 5.0 / 1e6 + 200 * 10.0 / 1e6
+    assert rep["totals"]["api_estimate_usd"] == pytest.approx(per * MAX_AGENTS_PER_SESSION) and rep["totals"]["complete"] is True
+
+
+def test_models_without_a_long_row_on_the_page_use_the_single_published_price():
+    ln = build_report(_one(model="gpt-4.1", input_tokens=500_000, output_tokens=1_000, service_tier="default"), billing="api_key")["lines"][0]
+    assert ln["context"] == "long" and ln["usd"] == pytest.approx(500_000 * 2.0 / 1e6 + 1_000 * 8.0 / 1e6)
+    assert data.PRICES["gpt-4.1"]["standard"]["long"] == data.PRICES["gpt-4.1"]["standard"]["short"]
+    assert data.PRICES["gpt-5.5-pro"]["flex"]["long"] is None                                  # a real "-" on the page stays unknown
+
+
+def test_alias_priced_oauth_reference_is_labelled():
+    r = build_report(_alias_oauth(), billing="oauth")
+    assert "priced_via_undated_alias_of_snapshot" in r["notes"] and r["lines"][0]["price"]["resolved_via"] == "snapshot_of_alias"
+
+
+def _alias_oauth():
+    led = UsageLedger(provider="openai")
+    led.record(stage="debate", agent="a", provider="openai", model_requested="gpt-6.1-sol", model_billed="gpt-6.1-sol-2026-10-01",
+               input_tokens=100, output_tokens=10, cached_input_tokens=0, cache_write_tokens=0, reasoning_tokens=0, service_tier="default", tier_reported=True)
+    return led
+
+
+def test_notes_for_every_assumption_reach_the_report():
+    r = build_report(_one(model="gpt-5.5-pro", cached_input_tokens=100, service_tier=None, tier_reported=False), billing="api_key")
+    assert "no_cached_input_price_billed_at_input_rate" in r["notes"] and "service_tier_not_reported_assumed_standard" in r["notes"]
+
+
+def test_with_run_state_marks_an_existing_report_partial():
+    from engine.cost_report import with_run_state
+
+    done = build_report(_one(), billing="api_key")
+    cut = with_run_state(done, "cancelled")
+    assert done["totals"]["complete"] is True and cut["totals"]["complete"] is False
+    assert cut["totals"]["api_estimate_usd"] == done["totals"]["api_estimate_usd"] and cut["run_state"] == "cancelled"
+    assert with_run_state(None, "failed") is None

@@ -169,6 +169,10 @@ def _do_initialize() -> None:
             );
             """
         )
+        # D17: the latest official-price usage report of a run (JSON), so a run that ends without a result still has one.
+        rcols = {r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
+        if "cost_report" not in rcols:
+            conn.execute("ALTER TABLE runs ADD COLUMN cost_report TEXT")
         # Bump the stored version forward if we just migrated up. Never
         # downgrade — a v2 db running on a v1 engine is rejected above.
         conn.execute(

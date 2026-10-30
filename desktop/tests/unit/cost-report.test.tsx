@@ -79,6 +79,37 @@ describe('CostReportPanel', () => {
   });
 });
 
+describe('D17: cache-write TTL range, assumptions and partial runs', () => {
+  it('an unsplit cache write shows a USD range, says why, and is not complete', () => {
+    const r = report({ notes: ['cache_write_ttl_unsplit_priced_as_range_30m_to_12h', 'service_tier_not_reported_assumed_standard', 'dexter_input_tokens_assumed_to_include_cached_tokens'],
+      lines: [line({ usd: 0.0299, usd_max: 0.0474, cache_write_tokens: 7000, cache_write_unsplit_tokens: 7000, missing: ['cache_write_ttl'] })] },
+      { api_estimate_usd: 0.0299, api_estimate_usd_max: 0.0474, complete: false, incomplete_reasons: ['debate:cache_write_ttl'] });
+    wrap(<CostReportPanel report={r} />);
+    const text = screen.getByTestId('cost-report').textContent ?? '';
+    expect(screen.getByTestId('cost-report-total').textContent).toMatch(/\$0\.0299 至 \$0\.0474/);
+    expect(text).toMatch(/沒有 30 分鐘／12 小時的拆分/); expect(text).toMatch(/不完整/);
+    expect(text).toMatch(/7,000 \(\?\)/); expect(text).toMatch(/\$0\.0299–\$0\.0474/);
+    expect(text).toMatch(/假設為標準等級計價/); expect(text).toMatch(/假設 Dexter 的輸入 token 已包含它的快取 token/);
+    expect(text).toMatch(/範圍顯示（30 分鐘寫入價到 12 小時寫入價）/);
+  });
+  it('split writes show each TTL', () => {
+    wrap(<CostReportPanel report={report({ lines: [line({ cache_write_tokens: 7000, cache_write_30m_tokens: 3000, cache_write_12h_tokens: 4000, cache_write_unsplit_tokens: 0 })] })} />);
+    expect(document.querySelectorAll('tbody td')[4].textContent).toBe('3,000 (30m) + 4,000 (12h)');
+  });
+  it('a write-priced model that did not report writes shows unknown, not 0', () => {
+    wrap(<CostReportPanel report={report({ lines: [line({ cache_write_tokens: 0, missing: ['cache_write_tokens'] })] }, { complete: false, incomplete_reasons: ['debate:cache_write_tokens'] })} />);
+    expect(document.querySelectorAll('tbody td')[4].textContent).toBe('未知');
+  });
+  it('a cancelled run shows its partial per-agent report in the run status panel', async () => {
+    const { default: RunStatus } = await import('../../src/components/RunStatus');
+    const clock = { startedAt: Date.now() - 90_000, endedAt: Date.now(), lastEventAt: null, lastHeartbeatAt: null, heartbeat: null, streamError: null,
+      usagePartial: true, costReport: report({ run_state: 'cancelled' }, { complete: false, incomplete_reasons: ['run_cancelled_usage_is_partial'] }) };
+    wrap(<RunStatus events={[]} clock={clock} streaming={false} provider="openai" model="gpt-6.1-sol" />);
+    expect(screen.getByTestId('cost-report').textContent).toMatch(/已取消，只計入目前量測到的用量/);
+    expect(screen.getByTestId('run-status-usage-partial')).toBeTruthy();
+  });
+});
+
 describe('where the report appears', () => {
   const events = (cr?: CostReport | null): DebateEvent[] => [
     { type: 'session.start', ticker: 'NVDA', trade_date: '2026-10-30' } as DebateEvent,

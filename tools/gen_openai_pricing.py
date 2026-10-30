@@ -51,7 +51,8 @@ def parse(text: str) -> dict:
                 lng = None
         elif len(cells) == 4:
             short = {"input": money(cells[1]), "output": money(cells[2]), "cached_input": money(cells[3]), "write_30m": None, "write_12h": None}
-            lng = None
+            # The page gives these models ONE price (no short/long split), so it applies at any context length.
+            lng = dict(short)
         else:
             continue
         out.setdefault(name, {})[tier] = {"short": short, "long": lng}

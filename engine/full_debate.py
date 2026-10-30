@@ -287,9 +287,13 @@ class _TokenMeter(BaseCallbackHandler):
     def _record_ledger(self, response: Any, in_tok: int, out_tok: int, run_id: Any) -> None:
         """Feed the official-price ledger. Never raises: the report is secondary to the run and to the cap."""
         agent, requested = self._calls.pop(run_id, (None, None))
-        if self.ledger is None or not (in_tok or out_tok):
+        if self.ledger is None:
             return
         try:
+            if not (in_tok or out_tok):
+                # A finished call that reported no usage must stay visible as a gap; dropping it would let the report call itself complete.
+                self.ledger.record_no_usage(stage="debate", agent=agent, provider=None, model=requested)
+                return
             from .cost_report import usage_from_langchain
 
             r_in, r_out, d = usage_from_langchain(response)
@@ -298,7 +302,8 @@ class _TokenMeter(BaseCallbackHandler):
             self.ledger.record(
                 stage="debate", agent=agent, model_requested=requested, model_billed=d.get("model") or requested,
                 input_tokens=r_in, output_tokens=r_out, cached_input_tokens=d.get("cached"),
-                cache_write_tokens=d.get("cache_write"), reasoning_tokens=d.get("reasoning"),
+                cache_write_tokens=d.get("cache_write"), cache_write_30m_tokens=d.get("cache_write_30m"),
+                cache_write_12h_tokens=d.get("cache_write_12h"), reasoning_tokens=d.get("reasoning"),
                 service_tier=d.get("service_tier"), tier_reported=bool(d.get("service_tier")),
             )
         except Exception:  # noqa: BLE001
@@ -567,6 +572,7 @@ async def full_debate(
     alpha_vantage_key: Optional[str] = None,
     report_language: str = "en",
     cancel_check: Optional[Any] = None,
+    report_sink: Optional[Any] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Drive the full LangGraph diligence graph, yielding UI-compatible events.
 
@@ -599,7 +605,18 @@ async def full_debate(
         except Exception:  # noqa: BLE001 - the report is secondary; never fail the run over it
             return None
 
+    def _publish_report() -> None:
+        """Hand the current PARTIAL report (per agent, no secrets) to the run record so a run that ends without a
+        session.complete (cancelled / failed / interrupted) still has a persisted, visible usage report."""
+        if report_sink is None:
+            return
+        try:
+            report_sink(_cost_report("running"))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _cost_event() -> Dict[str, Any]:
+        _publish_report()
         evt = {
             "type": "cost.usage",
             "input_tokens": meter.input_tokens,
@@ -904,6 +921,7 @@ async def full_debate(
                 await asyncio.shield(drain)
             except asyncio.CancelledError:
                 continue
+        _publish_report()                    # includes a call that landed during the drain
         still_running = meter.inflight > 0
         if still_running:
             meter.zombie_since = time.monotonic()

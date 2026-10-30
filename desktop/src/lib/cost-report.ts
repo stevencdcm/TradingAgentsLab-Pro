@@ -20,6 +20,12 @@ export interface CostReportLine {
   output_tokens: number;
   reasoning_tokens: number | null;
   usd: number | null;
+  /** Upper end when the cache-write TTL split was not reported (usd is then the 30m-rate lower end). */
+  usd_max?: number | null;
+  cache_write_30m_tokens?: number;
+  cache_write_12h_tokens?: number;
+  cache_write_unsplit_tokens?: number;
+  notes?: string[];
   usd_basis: 'official_api_estimate' | 'api_equivalent_reference' | 'local_no_external_api_fee' | null;
   unpriced_reason: string | null;
   missing: string[];
@@ -42,6 +48,8 @@ export interface CostReport {
     api_estimate_usd: number | null;
     api_equivalent_reference_usd: number | null;
     external_api_usd: number | null;
+    api_estimate_usd_max?: number | null;
+    api_equivalent_reference_usd_max?: number | null;
   };
   notes: string[];
 }
@@ -49,11 +57,19 @@ export interface CostReport {
 type T = (key: MessageKey, vars?: Record<string, string | number>) => string;
 type Fmt = (n: number) => string;
 
+/** Assumption / adjustment notes the engine attaches; each one is shown so a figure never hides how it was reached. */
+const SHOWN_NOTES = [
+  'dexter_input_tokens_assumed_to_include_cached_tokens', 'cache_write_ttl_unsplit_priced_as_range_30m_to_12h',
+  'service_tier_not_reported_assumed_standard', 'no_cached_input_price_billed_at_input_rate',
+  'no_cache_write_price_billed_at_input_rate', 'priced_via_undated_alias_of_snapshot', 'reasoning_exceeds_output_not_added',
+];
+
 const KNOWN_REASONS = new Set([
   'run_cancelled_usage_is_partial', 'run_failed_usage_is_partial', 'run_interrupted_usage_is_partial',
   'run_running_usage_is_partial', 'cached_input_tokens', 'reasoning_tokens', 'usage_not_measured',
   'no_official_price', 'official_price_not_imported_for_provider', 'long_context_price_not_listed',
   'unsupported_service_tier', 'tier_not_listed', 'model_split_and_cache_split_unknown_in_saved_session',
+  'cache_write_ttl', 'cache_write_tokens', 'usage_not_reported',
   'quick_model_tokens_priced_at_deep_model',
 ]);
 
@@ -92,22 +108,41 @@ export interface FormattedCostReport {
 }
 
 /** Everything the UI and both exports print, as plain strings. */
+function writeCell(ln: CostReportLine, fmt: Fmt, unknown: string): string {
+  const unsplit = ln.cache_write_unsplit_tokens ?? 0;
+  const w30 = ln.cache_write_30m_tokens ?? 0;
+  const w12 = ln.cache_write_12h_tokens ?? 0;
+  if (ln.missing.includes('cache_write_tokens')) return unknown;
+  if (!unsplit && !w30 && !w12) return fmt(ln.cache_write_tokens);
+  const parts: string[] = [];
+  if (w30) parts.push(`${fmt(w30)} (30m)`);
+  if (w12) parts.push(`${fmt(w12)} (12h)`);
+  if (unsplit) parts.push(`${fmt(unsplit)} (?)`);
+  return parts.join(' + ');
+}
+
 export function formatCostReport(r: CostReport, t: T, fmt: Fmt): FormattedCostReport {
   const unknown = t('costReport.unknown');
   const billingKey = (['api_key', 'oauth', 'local'].includes(r.billing) ? r.billing : 'other') as 'api_key' | 'oauth' | 'local' | 'other';
   const tot = r.totals;
   const totalLines: string[] = [];
   if (r.billing === 'api_key') {
+    const hi = tot.api_estimate_usd_max;
     totalLines.push(
       tot.api_estimate_usd === null
         ? t('costReport.total.estimateUnknown')
-        : t('costReport.total.estimate', { usd: formatUsd(tot.api_estimate_usd) }),
+        : hi != null && hi !== tot.api_estimate_usd
+          ? t('costReport.total.estimateRange', { usd: formatUsd(tot.api_estimate_usd), max: formatUsd(hi) })
+          : t('costReport.total.estimate', { usd: formatUsd(tot.api_estimate_usd) }),
     );
   } else if (r.billing === 'oauth') {
+    const hi = tot.api_equivalent_reference_usd_max;
     totalLines.push(
       tot.api_equivalent_reference_usd === null
         ? t('costReport.total.referenceNone')
-        : t('costReport.total.reference', { usd: formatUsd(tot.api_equivalent_reference_usd) }),
+        : hi != null && hi !== tot.api_equivalent_reference_usd
+          ? t('costReport.total.referenceRange', { usd: formatUsd(tot.api_equivalent_reference_usd), max: formatUsd(hi) })
+          : t('costReport.total.reference', { usd: formatUsd(tot.api_equivalent_reference_usd) }),
     );
   } else if (r.billing === 'local') {
     totalLines.push(t('costReport.total.local'));
@@ -116,18 +151,15 @@ export function formatCostReport(r: CostReport, t: T, fmt: Fmt): FormattedCostRe
   }
   const rows: FormattedRow[] = r.lines.map((ln) => {
     const who = ln.stage === 'dexter' ? t('costReport.stage.dexter') : (ln.agent ?? t('costReport.stage.debate'));
+    const amount = ln.usd === null ? null : ln.usd_max != null && ln.usd_max !== ln.usd ? `${formatUsd(ln.usd)}–${formatUsd(ln.usd_max)}` : formatUsd(ln.usd);
     const usd =
-      ln.usd === null
-        ? t('costReport.unpriced')
-        : ln.usd_basis === 'api_equivalent_reference'
-          ? `${formatUsd(ln.usd)} (${t('costReport.reference')})`
-          : formatUsd(ln.usd);
+      amount === null ? t('costReport.unpriced') : ln.usd_basis === 'api_equivalent_reference' ? `${amount} (${t('costReport.reference')})` : amount;
     return {
       agent: who,
       model: ln.model ?? unknown,
       input: ln.uncached_input_tokens === null ? `${fmt(ln.input_tokens)}*` : fmt(ln.uncached_input_tokens),
       cached: ln.cached_input_tokens === null ? unknown : fmt(ln.cached_input_tokens),
-      write: fmt(ln.cache_write_tokens),
+      write: writeCell(ln, fmt, unknown),
       output: fmt(ln.output_tokens),
       reasoning: ln.reasoning_tokens === null ? unknown : fmt(ln.reasoning_tokens),
       usd,
@@ -135,6 +167,9 @@ export function formatCostReport(r: CostReport, t: T, fmt: Fmt): FormattedCostRe
   });
   const notes = [t('costReport.note.reasoning'), t('costReport.note.ceiling')];
   if (r.notes.includes('gpt-5.6-sol_promotional_price_through_2026-11-21')) notes.push(t('costReport.note.promo'));
+  for (const code of SHOWN_NOTES) {
+    if (r.notes.includes(code)) notes.push(t(`costReport.note.${code}` as MessageKey));
+  }
   return {
     title: t('costReport.title'),
     billingLine: t(`costReport.billing.${billingKey}` as MessageKey),

@@ -1219,6 +1219,8 @@ export interface RunStatusSnapshot {
   active: boolean;
   /** A stop was requested but the engine is still waiting for the model call in flight to finish. */
   cancelling?: boolean;
+  /** Per-agent official-price report of a run that ended without a result (partial); null otherwise. */
+  cost_report?: CostReport | null;
   /** Finished without completing: tokens/cost are what was measured, not a final figure. */
   usage_partial?: boolean;
   ticker: string | null;

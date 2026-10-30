@@ -40,11 +40,14 @@ class _Line:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
-    cache_write_tokens: int = 0
+    cache_write_30m_tokens: int = 0
+    cache_write_12h_tokens: int = 0
+    cache_write_unsplit_tokens: int = 0       # a write total was reported but not its 30m/12h split
     reasoning_tokens: int = 0
     # calls whose usage did not report the field -> the line is partial for that field
     cached_unreported_calls: int = 0
-    cache_write_unreported_calls: int = 0
+    cache_write_unreported_calls: int = 0     # calls that said nothing at all about cache writes
+    nousage_calls: int = 0                    # calls that finished but returned no usage numbers at all
     reasoning_unreported_calls: int = 0
     tier_unreported_calls: int = 0
     unmeasured: bool = False                     # the stage ran but produced no usage numbers at all
@@ -78,6 +81,8 @@ class UsageLedger:
         output_tokens: Any = 0,
         cached_input_tokens: Any = None,
         cache_write_tokens: Any = None,
+        cache_write_30m_tokens: Any = None,
+        cache_write_12h_tokens: Any = None,
         reasoning_tokens: Any = None,
         service_tier: Optional[str] = None,
         tier_reported: bool = False,
@@ -92,8 +97,17 @@ class UsageLedger:
         ln.calls += 1
         ln.input_tokens += i_in
         ln.output_tokens += i_out
+        s30, s12, total = _int(cache_write_30m_tokens), _int(cache_write_12h_tokens), _int(cache_write_tokens)
+        if s30 is not None or s12 is not None:
+            ln.cache_write_30m_tokens += s30 or 0
+            ln.cache_write_12h_tokens += s12 or 0
+            if total is not None and total > (s30 or 0) + (s12 or 0):
+                ln.cache_write_unsplit_tokens += total - (s30 or 0) - (s12 or 0)
+        elif total is not None:
+            ln.cache_write_unsplit_tokens += total
+        else:
+            ln.cache_write_unreported_calls += 1
         for attr, unrep, val in (("cached_input_tokens", "cached_unreported_calls", cached_input_tokens),
-                                 ("cache_write_tokens", "cache_write_unreported_calls", cache_write_tokens),
                                  ("reasoning_tokens", "reasoning_unreported_calls", reasoning_tokens)):
             v = _int(val)
             if v is None:
@@ -102,6 +116,15 @@ class UsageLedger:
                 setattr(ln, attr, getattr(ln, attr) + v)
         if not tier_reported:
             ln.tier_unreported_calls += 1
+
+    def record_no_usage(self, *, stage: str, agent: Optional[str], provider: Optional[str], model: Optional[str]) -> None:
+        """A model call finished but its response carried no usage numbers: kept as a visible gap, not dropped."""
+        key = (stage, agent, provider or self.provider, model, model, None, "short")
+        ln = self._lines.get(key)
+        if ln is None:
+            ln = self._lines[key] = _Line(stage, agent, provider or self.provider, model, model, None, "short")
+        ln.calls += 1
+        ln.nousage_calls += 1
 
     def record_unmeasured(self, *, stage: str, agent: Optional[str], provider: Optional[str], model: Optional[str]) -> None:
         """A stage that ran but whose usage could not be measured (e.g. Dexter without provider-reported usage)."""
@@ -120,15 +143,33 @@ class UsageLedger:
         return sum(x.input_tokens for x in ls), sum(x.output_tokens for x in ls)
 
 
+_TIER_PREFIXES = ("", "flex_", "priority_")
+
+
+def _prefixed(d: dict, name: str) -> Any:
+    """langchain-openai renames detail keys for flex / priority calls (`flex_cache_read`); read either form."""
+    for p in _TIER_PREFIXES:
+        if f"{p}{name}" in d:
+            return d[f"{p}{name}"]
+    return None
+
+
 def usage_from_langchain(response: Any) -> tuple[int, int, dict[str, Any]]:
     """(input, output, detail) from a LangChain LLMResult. detail values are None when the provider did not report them.
 
-    `usage_metadata` is preferred: input_token_details.cache_read / cache_creation and output_token_details.reasoning,
-    plus response_metadata.model_name / service_tier. Falls back to llm_output token_usage with NO details (all None).
+    Totals come from `usage_metadata`. The cache / reasoning split is read from the provider's RAW usage when LangChain kept
+    it (`llm_output["token_usage"]`, non-streaming Chat Completions) because LangChain's own mapping drops the cache-write TTL
+    split (`cache_write_tokens_details.ttl_30m_tokens / ttl_12h_tokens`); otherwise from `usage_metadata`'s detail dicts
+    (cache_creation is then a TOTAL with no TTL split, which the report prices as a 30m-12h range and flags incomplete).
     """
-    detail: dict[str, Any] = {"cached": None, "cache_write": None, "reasoning": None, "model": None, "service_tier": None}
+    from .llm_providers import usage_detail
+
+    detail: dict[str, Any] = {"cached": None, "cache_write": None, "cache_write_30m": None, "cache_write_12h": None,
+                              "reasoning": None, "model": None, "service_tier": None}
     in_tok = out_tok = 0
     seen = False
+    lo = getattr(response, "llm_output", None)
+    lo = lo if isinstance(lo, dict) else {}
     try:
         for gen_list in response.generations:
             for gen in gen_list:
@@ -141,27 +182,33 @@ def usage_from_langchain(response: Any) -> tuple[int, int, dict[str, Any]]:
                 out_tok += _int(um.get("output_tokens")) or 0
                 itd, otd = um.get("input_token_details"), um.get("output_token_details")
                 if isinstance(itd, dict):
-                    if "cache_read" in itd:
-                        detail["cached"] = (detail["cached"] or 0) + (_int(itd.get("cache_read")) or 0)
-                    if "cache_creation" in itd:
-                        detail["cache_write"] = (detail["cache_write"] or 0) + (_int(itd.get("cache_creation")) or 0)
-                if isinstance(otd, dict) and "reasoning" in otd:
-                    detail["reasoning"] = (detail["reasoning"] or 0) + (_int(otd.get("reasoning")) or 0)
+                    for key, name in (("cached", "cache_read"), ("cache_write", "cache_creation")):
+                        v = _int(_prefixed(itd, name))
+                        if v is not None:
+                            detail[key] = (detail[key] or 0) + v
+                if isinstance(otd, dict):
+                    v = _int(_prefixed(otd, "reasoning"))
+                    if v is not None:
+                        detail["reasoning"] = (detail["reasoning"] or 0) + v
                 rm = getattr(msg, "response_metadata", None) or {}
-                detail["model"] = detail["model"] or rm.get("model_name") or rm.get("model")
-                detail["service_tier"] = detail["service_tier"] or rm.get("service_tier")
+                gi = getattr(gen, "generation_info", None) or {}
+                for src in (rm, gi, lo):
+                    detail["model"] = detail["model"] or src.get("model_name") or src.get("model")
+                    detail["service_tier"] = detail["service_tier"] or src.get("service_tier")
     except Exception:  # noqa: BLE001 - metering must never break a run
         pass
-    if seen:
-        return in_tok, out_tok, detail
-    try:
-        lo = getattr(response, "llm_output", None) or {}
-        usage = lo.get("token_usage") or lo.get("usage") or {}
-        in_tok = _int(usage.get("input_tokens") or usage.get("prompt_tokens")) or 0
-        out_tok = _int(usage.get("output_tokens") or usage.get("completion_tokens")) or 0
-        detail["model"] = lo.get("model_name") or lo.get("model")
-    except Exception:  # noqa: BLE001
-        pass
+    raw = lo.get("token_usage") or lo.get("usage")
+    if isinstance(raw, dict) and raw:
+        # The raw provider usage is the more complete record: take the split (incl. the TTL split) from it.
+        rd = usage_detail(raw)
+        for k in ("cached", "cache_write", "cache_write_30m", "cache_write_12h", "reasoning"):
+            if rd[k] is not None:
+                detail[k] = rd[k]
+        detail["model"] = detail["model"] or lo.get("model_name") or lo.get("model")
+        detail["service_tier"] = detail["service_tier"] or lo.get("service_tier")
+        if not seen:
+            in_tok = _int(raw.get("input_tokens") or raw.get("prompt_tokens")) or 0
+            out_tok = _int(raw.get("output_tokens") or raw.get("completion_tokens")) or 0
     return in_tok, out_tok, detail
 
 
@@ -169,19 +216,27 @@ def _line_report(ln: _Line, billing: str) -> dict[str, Any]:
     missing: list[str] = []
     if ln.unmeasured:
         missing.append("usage_not_measured")
+    if ln.nousage_calls:
+        missing.append("usage_not_reported")
     if ln.cached_unreported_calls:
         missing.append("cached_input_tokens")
     if ln.reasoning_unreported_calls:
         missing.append("reasoning_tokens")
+    if ln.cache_write_unsplit_tokens:
+        missing.append("cache_write_ttl")
+    writes = ln.cache_write_30m_tokens + ln.cache_write_12h_tokens + ln.cache_write_unsplit_tokens
     price_model = ln.model_billed or ln.model_requested
     out: dict[str, Any] = {
         "stage": ln.stage, "agent": ln.agent, "provider": ln.provider,
         "model": price_model, "model_requested": ln.model_requested, "calls": ln.calls,
         "input_tokens": ln.input_tokens, "cached_input_tokens": ln.cached_input_tokens if not ln.cached_unreported_calls else None,
-        "uncached_input_tokens": max(0, ln.input_tokens - ln.cached_input_tokens - ln.cache_write_tokens) if not ln.cached_unreported_calls else None,
-        "cache_write_tokens": ln.cache_write_tokens, "output_tokens": ln.output_tokens,
+        "uncached_input_tokens": max(0, ln.input_tokens - ln.cached_input_tokens - writes) if not ln.cached_unreported_calls else None,
+        "cache_write_tokens": writes, "cache_write_30m_tokens": ln.cache_write_30m_tokens,
+        "cache_write_12h_tokens": ln.cache_write_12h_tokens, "cache_write_unsplit_tokens": ln.cache_write_unsplit_tokens,
+        "output_tokens": ln.output_tokens,
         "reasoning_tokens": ln.reasoning_tokens if not ln.reasoning_unreported_calls else None,
-        "context": ln.context, "usd": None, "usd_basis": None, "price": None, "unpriced_reason": None, "missing": missing,
+        "context": ln.context, "usd": None, "usd_max": None, "usd_basis": None, "price": None, "unpriced_reason": None,
+        "missing": missing,
     }
     if ln.unmeasured:
         out["unpriced_reason"] = "usage_not_measured"
@@ -196,23 +251,34 @@ def _line_report(ln: _Line, billing: str) -> dict[str, Any]:
         return out
     priced = op.price_usage(
         model=price_model, service_tier=ln.service_tier, context=ln.context, input_tokens=ln.input_tokens,
-        output_tokens=ln.output_tokens, cached_input_tokens=ln.cached_input_tokens, cache_write_tokens=ln.cache_write_tokens,
+        output_tokens=ln.output_tokens, cached_input_tokens=ln.cached_input_tokens,
+        cache_write_30m_tokens=ln.cache_write_30m_tokens, cache_write_12h_tokens=ln.cache_write_12h_tokens,
+        cache_write_unsplit_tokens=ln.cache_write_unsplit_tokens,
     )
     if priced["usd"] is None:
         out["unpriced_reason"] = priced["reason"]
         return out
+    # A model with a published write surcharge whose calls said nothing about writes: they may have been billed as writes.
+    if ln.cache_write_unreported_calls and (priced["rates"] or {}).get("write_30m") is not None:
+        missing.append("cache_write_tokens")
     if ln.tier_unreported_calls and ln.service_tier is None:
         out.setdefault("notes", []).append("service_tier_not_reported_assumed_standard")
     out["price"] = {"model_id": priced["price_model_id"], "resolved_via": priced["resolved_via"], "tier": priced["tier"],
                     "rates": priced["rates"]}
     if priced["notes"]:
         out.setdefault("notes", []).extend(priced["notes"])
-    if billing == "oauth":
-        # Subscription route: this is a reference only, never what was billed.
-        out.update(usd=round(priced["usd"], 6), usd_basis="api_equivalent_reference")
-    else:
-        out.update(usd=round(priced["usd"], 6), usd_basis="official_api_estimate")
+    basis = "api_equivalent_reference" if billing == "oauth" else "official_api_estimate"   # oauth: a reference, never a bill
+    out.update(usd=round(priced["usd"], 6), usd_basis=basis,
+               usd_max=None if priced["usd_max"] is None else round(priced["usd_max"], 6))
     return out
+
+
+def with_run_state(report: Optional[dict[str, Any]], state: str) -> Optional[dict[str, Any]]:
+    """The same report re-assembled for a different terminal state (cancelled / failed / interrupted -> partial)."""
+    if not report:
+        return report
+    return _assemble(report["lines"], billing=report["billing"], run_state=state, basis=report["basis"],
+                     extra=report.get("extra_incomplete", []))
 
 
 def build_report(
@@ -253,13 +319,22 @@ def _assemble(lines: list[dict[str, Any]], *, billing: str, run_state: str, basi
         "input_tokens": t_in, "output_tokens": t_out,
         "cached_input_tokens": sum(ln["cached_input_tokens"] or 0 for ln in lines) if cached_known else None,
         "cache_write_tokens": sum(ln["cache_write_tokens"] or 0 for ln in lines),
+        "cache_write_30m_tokens": sum(ln["cache_write_30m_tokens"] for ln in lines),
+        "cache_write_12h_tokens": sum(ln["cache_write_12h_tokens"] for ln in lines),
+        "cache_write_unsplit_tokens": sum(ln["cache_write_unsplit_tokens"] for ln in lines),
         "complete": not reasons, "incomplete_reasons": reasons,
         "api_estimate_usd": None, "api_equivalent_reference_usd": None, "external_api_usd": None,
     }
+    max_usd = (round(sum((ln["usd_max"] if ln["usd_max"] is not None else ln["usd"]) for ln in priced), 6)
+               if any(ln["usd_max"] is not None for ln in priced) else None)
+    totals["api_estimate_usd_max"] = None
+    totals["api_equivalent_reference_usd_max"] = None
     if billing == "api_key":
         totals["api_estimate_usd"] = sum_usd
+        totals["api_estimate_usd_max"] = max_usd
     elif billing == "oauth":
         totals["api_equivalent_reference_usd"] = sum_usd
+        totals["api_equivalent_reference_usd_max"] = max_usd
     elif billing == "local":
         totals["external_api_usd"] = 0.0
     notes = ["ceiling_prices_for_cost_guard_are_separate",
@@ -274,6 +349,7 @@ def _assemble(lines: list[dict[str, Any]], *, billing: str, run_state: str, basi
         notes.append("gpt-5.6-sol_promotional_price_through_2026-11-21")
     if any(ln["stage"] == "dexter" for ln in lines):
         notes.append("dexter_input_tokens_assumed_to_include_cached_tokens")
+    notes.extend(sorted({n for ln in lines for n in ln.get("notes", [])}))
     return {
         "schema": SCHEMA, "basis": basis, "billing": billing, "run_state": run_state, "extra_incomplete": list(extra),
         "price": {"version": op.PRICE_VERSION, "verified_at": op.VERIFIED_AT, "sources": list(op.SOURCES),
@@ -309,7 +385,8 @@ def brief(report: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
         return None
     t = report["totals"]
     return {"billing": report["billing"], "api_estimate_usd": t["api_estimate_usd"],
-            "api_equivalent_reference_usd": t["api_equivalent_reference_usd"], "complete": t["complete"],
+            "api_equivalent_reference_usd": t["api_equivalent_reference_usd"],
+            "api_estimate_usd_max": t.get("api_estimate_usd_max"), "complete": t["complete"],
             "price_version": report["price"]["version"]}
 
 

@@ -149,6 +149,14 @@ class Run:
         self.reservation_id: Optional[str] = None
         self.engine_started = False
         self.last_extend = 0.0
+        # Latest official-price usage report (per agent), handed over by the engine; marked partial when the run does not complete.
+        self.cost_report: Optional[dict[str, Any]] = None
+
+    def set_cost_report(self, report: Optional[dict[str, Any]]) -> None:
+        if report is None and self.cost_report is not None:
+            return
+        self.cost_report = report
+        self.mgr._save_report(self)
 
     # ---- derived -------------------------------------------------------------------------------------------------
     @property
@@ -181,6 +189,8 @@ class Run:
             "usage_partial": (not self.active) and self.state != "completed",
             # Usage is complete only for a finished analysis; a stopped one is measured through the last completed model call.
             "usage_complete": self.state == "completed",
+            # Per-agent official-price report: only for a run that ended without a result (a finished one has it on session.complete).
+            "cost_report": self.cost_report if (not self.active and self.state != "completed") else None,
         }
 
     # ---- events --------------------------------------------------------------------------------------------------
@@ -310,6 +320,15 @@ class RunManager:
              1 if run.cost_known else 0, run.session_id, run.terminal_code, run.error, run.seq, run.last_event_type, run.last_event_at,
              run.steps_done, run.reservation_id, 1 if run.engine_started else 0)))
 
+    def _save_report(self, run: Run) -> None:
+        if run.cost_report is None:
+            return
+        try:
+            blob = json.dumps(run.cost_report, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return
+        self._db(lambda c: c.execute("UPDATE runs SET cost_report=? WHERE run_id=?", (blob, run.id)))
+
     def _persist_event(self, run: Run, ev: dict[str, Any]) -> None:
         def write(c):
             c.execute("INSERT OR IGNORE INTO run_events (run_id, seq, ts, etype, payload) VALUES (?,?,?,?,?)",
@@ -348,6 +367,10 @@ class RunManager:
         run.cost_known, run.session_id, run.terminal_code, run.error = bool(row["cost_known"]), row["session_id"], row["terminal_code"], row["error"]
         run.last_event_type, run.last_event_at, run.steps_done = row["last_event_type"], row["last_event_at"], row["steps_done"]
         run.reservation_id, run.engine_started = row["reservation_id"], bool(row["engine_started"])
+        try:
+            run.cost_report = json.loads(row["cost_report"]) if row["cost_report"] else None
+        except (ValueError, KeyError, IndexError):
+            run.cost_report = None
         if run.elapsed_override is None and run.ended_at:
             run.elapsed_override = round(run.ended_at - run.created_at, 1)
         run.phase = "done" if run.state == "completed" else run.state
@@ -357,19 +380,29 @@ class RunManager:
         """Server start: unfinished runs of a previous process become `interrupted` (never re-run), old runs are purged."""
         now = _now()
         rows = self._db(lambda c: c.execute(
-            "SELECT r.run_id AS run_id, r.reservation_id AS reservation_id, r.engine_started AS engine_started, "
+            "SELECT r.run_id AS run_id, r.reservation_id AS reservation_id, r.engine_started AS engine_started, r.cost_report AS cost_report, "
             "COALESCE((SELECT MAX(seq) FROM run_events e WHERE e.run_id = r.run_id), r.last_seq) AS last_seq "
             "FROM runs r WHERE r.state IN ('queued','running')").fetchall()) or []
         for r in rows:
             # Settle the budget hold FIRST (before any expiry sweep can turn it into an uncounted NULL): nothing billable
             # started -> released at 0; otherwise the measured cost, or the reserved estimate as a conservative hold.
             cost_guard.settle_run_end(r["reservation_id"], billable_started=bool(r["engine_started"]))
+            report_blob = None
+            try:
+                from .cost_report import with_run_state
+
+                rep = with_run_state(json.loads(r["cost_report"]), "interrupted") if r["cost_report"] else None
+                report_blob = json.dumps(rep, ensure_ascii=False, separators=(",", ":")) if rep else None
+            except Exception:  # noqa: BLE001 - the report is secondary; the run is still marked interrupted
+                report_blob = None
             payload = json.dumps({"type": "run.finished", "seq": r["last_seq"] + 1, "state": "interrupted", "code": "server_restart",
-                                  "message": "The engine restarted while this analysis was running. It was NOT re-run automatically."}, separators=(",", ":"))
+                                  "message": "The engine restarted while this analysis was running. It was NOT re-run automatically.",
+                                  **({"cost_report": json.loads(report_blob)} if report_blob else {})}, separators=(",", ":"))
             self._db(lambda c, r=r, payload=payload: (
                 c.execute("INSERT OR IGNORE INTO run_events (run_id, seq, ts, etype, payload) VALUES (?,?,?,?,?)", (r["run_id"], r["last_seq"] + 1, now, "run.finished", payload)),
-                c.execute("UPDATE runs SET state='interrupted', ended_at=?, terminal_code='server_restart', last_seq=?, last_event_type='run.finished' WHERE run_id=?",
-                          (now, r["last_seq"] + 1, r["run_id"]))))
+                c.execute("UPDATE runs SET state='interrupted', ended_at=?, terminal_code='server_restart', last_seq=?, last_event_type='run.finished', "
+                          "cost_report=COALESCE(?, cost_report) WHERE run_id=?",
+                          (now, r["last_seq"] + 1, report_blob, r["run_id"]))))
         self._db(lambda c: (
             c.execute("DELETE FROM run_events WHERE run_id IN (SELECT run_id FROM runs WHERE state NOT IN ('queued','running') AND COALESCE(ended_at, created_at) < ?)", (now - KEEP_DB_SECONDS,)),
             c.execute("DELETE FROM runs WHERE state NOT IN ('queued','running') AND COALESCE(ended_at, created_at) < ?", (now - KEEP_DB_SECONDS,)),
@@ -459,8 +492,19 @@ class RunManager:
         if not run.active and run.ended_at is not None:
             return
         run.state, run.terminal_code, run.ended_at = state, code, _now()
-        run.emit({"type": "run.finished", "state": state, "code": code, "elapsed_s": run.elapsed_s(), "input_tokens": run.input_tokens,
-                  "output_tokens": run.output_tokens, "estimated_cost_usd": run.cost, "cost_known": run.cost_known, "session_id": run.session_id})
+        if state != "completed":
+            try:
+                from .cost_report import with_run_state
+
+                run.cost_report = with_run_state(run.cost_report, state)       # what was metered so far, flagged partial
+            except Exception:  # noqa: BLE001
+                pass
+        finished = {"type": "run.finished", "state": state, "code": code, "elapsed_s": run.elapsed_s(), "input_tokens": run.input_tokens,
+                    "output_tokens": run.output_tokens, "estimated_cost_usd": run.cost, "cost_known": run.cost_known, "session_id": run.session_id}
+        if state != "completed" and run.cost_report:
+            finished["cost_report"] = run.cost_report
+        run.emit(finished)
+        self._save_report(run)
         if state != "completed" or run.session_id is None:
             # Not completed, OR completed but its history row was never written (storage failure): there is no session whose
             # cost the caps would count, so settle the hold as incomplete spend instead of letting the cost vanish.

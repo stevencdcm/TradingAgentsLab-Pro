@@ -48,7 +48,6 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler
 
-from tradingagents.agents.utils.rating import extract_rating
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
@@ -739,8 +738,9 @@ async def full_debate(
             raw_decision = (final_state or {}).get("final_trade_decision")
             if raw_decision and decision.get("rating_status") == "parsed":
                 to_store = raw_decision
-                if extract_rating(raw_decision) is None:
-                    to_store = f"**Rating**: {extract_pm_rating(raw_decision)}\n\n{raw_decision}"
+                # Always pin OUR parsed rating: the library's tagger scans for stray
+                # English words and would otherwise record a different one (or Hold).
+                to_store = f"**Rating**: {extract_pm_rating(raw_decision)}\n\n{raw_decision}"
                 graph.memory_log.store_decision(
                     ticker=ticker,
                     trade_date=trade_date,

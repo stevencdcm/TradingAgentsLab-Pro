@@ -562,8 +562,8 @@ function SecretRowItem({ row, listing, disabled, onChange }: SecretRowItemProps)
         )}
       </div>
       <div className={styles.rowAside}>
-        <span className={`${styles.pill} ${styles[`pill_${pillState(row, listing, t).variant}`]}`}>
-          {pillState(row, listing, t).label}
+        <span className={`${styles.pill} ${styles[`pill_${pillState(row, listing, t, testResult).variant}`]}`}>
+          {pillState(row, listing, t, testResult).label}
         </span>
         {!editing && (
           <>
@@ -1299,6 +1299,7 @@ function pillState(
   row: SecretRow,
   listing: SecretListing | null,
   t: I18n['t'],
+  test?: LLMTestResult | null,
 ): { label: string; variant: 'default' | 'planned' | 'optional' | 'success' } {
   if (!listing) {
     return { label: t(row.pillKey), variant: row.pillVariant };
@@ -1306,7 +1307,13 @@ function pillState(
   if (row.pillVariant === 'planned') {
     return { label: t('settings.pill.storedInert'), variant: 'optional' };
   }
-  return { label: t('settings.pill.connected'), variant: 'success' };
+  // A stored key is not a working connection. Only a passed Test says "verified".
+  if (row.testProvider) {
+    if (test?.ok) return { label: t('settings.pill.verified'), variant: 'success' };
+    if (test && !test.ok) return { label: t('settings.pill.testFailed'), variant: 'optional' };
+    return { label: t('settings.pill.storedUnverified'), variant: 'optional' };
+  }
+  return { label: t('settings.pill.stored'), variant: 'success' };
 }
 
 // ---- Webhooks tab ---------------------------------------------------------

@@ -39,3 +39,28 @@ describe('review (unparseable rating) is its own state, not a made-up neutral', 
     expect(screen.queryByText('0%')).toBeNull();
   });
 });
+
+import { buildTranscriptMarkdown } from '../../src/lib/transcript';
+import { buildTranscriptHtml } from '../../src/lib/transcript-html';
+
+describe('exports and batch rows do not show a fake 0% for review', () => {
+  const events = [
+    { type: 'session.start', ticker: 'AAPL', trade_date: '2026-10-30' },
+    { type: 'session.complete', ticker: 'AAPL', trade_date: '2026-10-30',
+      decision: { stance: 'review', conviction: 0, bull_strength: 50, bear_strength: 50, reasoning: 'x', rating_status: 'unparsed' } },
+  ] as unknown as DebateEvent[];
+
+  it('markdown: no percentage, explicit note, no bull/bear scores', () => {
+    const md = buildTranscriptMarkdown(events, 'zh-TW');
+    expect(md).toContain('無法解析評級');
+    expect(md).not.toMatch(/0%/);
+    expect(md).not.toContain('多方論點');
+  });
+
+  it('html: review class, note, no conviction percentage', () => {
+    const html = buildTranscriptHtml(events, 'zh-TW').html;
+    expect(html).toContain('class="action review"');
+    expect(html).toContain('不宣稱任何結論');
+    expect(html).not.toMatch(/信心度 0%/);
+  });
+});

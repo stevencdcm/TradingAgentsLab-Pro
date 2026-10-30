@@ -288,7 +288,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
               </span>
               <span className={`${styles.progressDecision} ${row.decisionStance ? styles[`progressDecision_${stanceLean(row.decisionStance)}`] : ''}`}>
                 {row.decisionStance
-                  ? `${stanceLabel(row.decisionStance, t)}${typeof row.decisionConviction === 'number' ? ` ${Math.round(row.decisionConviction * 100)}%` : ''}`
+                  ? `${stanceLabel(row.decisionStance, t)}${typeof row.decisionConviction === 'number' && !isReview(row.decisionStance) ? ` ${Math.round(row.decisionConviction * 100)}%` : ''}`
                   : ''}
               </span>
               <span className={styles.progressMeta}>

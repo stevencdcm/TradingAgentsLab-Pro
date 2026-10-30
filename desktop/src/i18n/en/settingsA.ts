@@ -48,6 +48,10 @@ export const settingsA = {
   'settings.pill.secret': 'Secret',
   'settings.pill.analysts': 'Analysts',
   'settings.pill.storedInert': 'Stored · Inert',
+  'settings.pill.stored': 'Stored ✓',
+  'settings.pill.storedUnverified': 'Stored · not verified',
+  'settings.pill.verified': 'Verified ✓',
+  'settings.pill.testFailed': 'Test failed',
   'settings.pill.connected': 'Connected ✓',
   'settings.row.alpacaKeyId.name': 'Alpaca Markets: Key ID',
   'settings.row.alpacaKeyId.note':

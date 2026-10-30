@@ -90,3 +90,14 @@ def test_memory_stores_the_real_rating_for_chinese_text_and_skips_unparseable(tm
     assert "Hold" not in text.splitlines()[0]
     # Reference: without the fix the upstream tagger would have written Hold.
     assert extract_rating(zh) is None
+
+
+def test_telegram_reply_for_review_claims_no_conclusion():
+    from engine.telegram_bot import _format_decision_reply
+
+    text = _format_decision_reply(
+        ticker="AAPL", trade_date="2026-10-30",
+        decision={"stance": "review", "conviction": 0.0, "reasoning": "x"},
+        cost_usd=0.0, live=True, cap_usd=5.0, spent_today=0.0,
+    )
+    assert "Needs review" in text and "conviction" not in text and "0%" not in text

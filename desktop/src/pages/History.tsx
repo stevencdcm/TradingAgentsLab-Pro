@@ -29,6 +29,7 @@ const SORT_STORAGE_KEY = 'tal:history:sort';
 // decision_action holds the stance string for new rows and BUY/SELL/HOLD
 // for rows persisted before the stance relabel — stanceLean normalizes both.
 function stancePillClass(value: string): string {
+  if (isReview(value)) return styles.pill_review;
   const lean = stanceLean(value);
   if (lean === 'bullish') return styles.pill_bullish;
   if (lean === 'bearish') return styles.pill_bearish;

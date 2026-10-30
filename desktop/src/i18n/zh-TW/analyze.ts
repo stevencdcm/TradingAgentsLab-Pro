@@ -20,6 +20,7 @@ export const analyzeZhTW: Record<keyof typeof analyze, string> = {
   'analyze.codex.fallback': '模型：使用內建清單。無法取得 OpenAI 目錄{detail}。',
   'analyze.codex.fallbackDetail': '（{error}）',
   'analyze.codex.refresh': '重新整理',
+  'analyze.taiwanHint': '這看起來是台股代號。目前尚未接入台股資料來源（FinMind），為避免誤用美股資料，這次會被拒絕執行。美股 ADR 請輸入 TSM（與台股 2330 是不同標的）。',
   'analyze.ticker': '股票代碼',
   'analyze.asOfDate': '資料截止日',
   'analyze.stop': '停止',

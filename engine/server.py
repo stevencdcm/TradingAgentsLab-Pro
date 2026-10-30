@@ -46,7 +46,7 @@ from . import cost_guard, local_llm_detect, secret_refs, sentiment_sources, stor
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
-from .ticker import normalize_ticker
+from .ticker import normalize_ticker, taiwan_code, taiwan_unsupported_message
 
 
 def build_app(*, token: str) -> FastAPI:
@@ -524,6 +524,25 @@ def build_app(*, token: str) -> FastAPI:
             start = secret_refs.resolve(await ws.receive_json())
             ticker = (start.get("ticker") or "").upper()
             trade_date = start.get("trade_date") or ""
+            # Refuse a ticker we cannot route correctly BEFORE any provider call or
+            # cost reservation: Taiwan codes (no Taiwan data source is connected) and
+            # malformed symbols. Never run on a silently wrong or empty data source.
+            guard_error: str | None = None
+            tw = taiwan_code(ticker)
+            if tw:
+                guard_error = taiwan_unsupported_message(
+                    tw, normalize_report_language(start.get("report_language"))
+                )
+            else:
+                try:
+                    normalize_ticker(ticker)
+                except ValueError as exc:
+                    guard_error = f"Invalid ticker: {exc}"
+            if guard_error:
+                evt = {"type": "run.error", "error": guard_error, "code": "ticker_unsupported"}
+                await ws.send_json(evt)
+                await ws.close(code=1008, reason="ticker_unsupported")
+                return
             config = ProviderConfig.from_dict(start.get("provider_config"))
             # Optional. Set by Analyze.tsx after a renderer-side cost-guard
             # check. If absent on a live debate, the WS handler auto-reserves

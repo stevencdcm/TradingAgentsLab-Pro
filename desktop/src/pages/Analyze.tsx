@@ -903,6 +903,11 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             )}
           </div>
         </div>
+        {/^\d{4,6}[A-Z]?(\.TWO?)?$/i.test(ticker.trim()) && (
+          <p className={styles.errorBanner} data-testid="taiwan-ticker-hint">
+            {t('analyze.taiwanHint')}
+          </p>
+        )}
         <div className={styles.cardFooter}>
           <p className={styles.helper}>
             {engineStatus === 'pending' && t('analyze.helper.pending')}

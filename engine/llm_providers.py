@@ -773,7 +773,8 @@ class AnthropicAdapter:
         resp = await self._client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=0.7,
+            # No temperature/top_p/top_k: the current SDK's messages.create() does not accept
+            # them (TypeError) and newer Claude models reject sampling parameters.
             system=system,
             messages=[{"role": "user", "content": user}],
         )

@@ -369,7 +369,9 @@ export interface SessionCompleteEvent {
   model?: string;
   input_tokens?: number;
   output_tokens?: number;
-  estimated_cost_usd?: number;
+  /** null = unknown (a paid model with no verified price); never to be shown as $0. */
+  estimated_cost_usd?: number | null;
+  cost_known?: boolean;
   /** Pro-only: `'full'` marks the real LangGraph engine; the free engine
    * omits it. `deep_model`/`quick_model` expose the two-model split and
    * `auth_kind` the credential flow used. */
@@ -427,7 +429,7 @@ export interface NewsHeadlinesEvent {
  * gate handles this before the WS opens. */
 export interface CostBlockedEvent {
   type: 'cost.blocked';
-  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate';
+  over_dimension: 'daily' | 'weekly' | 'monthly' | 'rate' | 'unknown_price';
   spend: { daily_usd: number; weekly_usd: number; monthly_usd: number; sessions_today: number };
   config: {
     enabled: boolean;

@@ -73,6 +73,7 @@ export const debate = {
     'This assessment is an analytical output of a simulated research committee, not a recommendation. Any investment decision is yours alone.',
   'debate.decision.tokens': '{input} in · {output} out tokens',
   'debate.decision.cost': 'est cost {cost}',
+  'debate.decision.costUnknown': 'cost unknown (model has no verified price)',
   'debate.decision.disclaimer':
     'Not investment advice · LLM output may be inaccurate · Verify independently before any action',
   'debate.terminal.capWithCap': 'Analysis stopped: token cap of {cap} reached (used {used}).',

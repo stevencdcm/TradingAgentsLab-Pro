@@ -74,6 +74,7 @@ export const debateZhTW: Record<keyof typeof debate, string> = {
     '此評估是模擬研究委員會的分析產出，並非建議。任何投資決定都僅由你自己負責。',
   'debate.decision.tokens': '輸入 {input} · 輸出 {output} tokens',
   'debate.decision.cost': '預估成本 {cost}',
+  'debate.decision.costUnknown': '成本未知（此模型沒有經核實的價格）',
   'debate.decision.disclaimer': '非投資建議 · LLM 輸出可能不正確 · 採取任何行動前請自行查證',
   'debate.terminal.capWithCap': '分析已停止：已達 {cap} 的 token 上限（已使用 {used}）。',
   'debate.terminal.cap': '分析已停止：已達 token 上限（已使用 {used}）。',

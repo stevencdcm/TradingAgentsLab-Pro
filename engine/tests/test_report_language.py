@@ -289,7 +289,7 @@ def test_ws_start_frame_report_language_reaches_both_engines(monkeypatch, tmp_db
     frame = {
         "ticker": "AAPL",
         "trade_date": "2026-10-30",
-        "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "m"},
+        "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "gpt-4o-mini"},
     }
     with TestClient(app) as c:
         for lang, expect in (("zh-TW", "zh-TW"), (None, "en"), ("bogus", "en")):
@@ -400,7 +400,7 @@ def test_second_full_graph_run_is_refused_while_one_is_active(monkeypatch, tmp_d
     monkeypatch.setattr(srv, "_fetch_news_safe", no_news)
     frame = {"ticker": "AAPL", "trade_date": "2026-10-30", "engine": "full",
              "pro_config": {"selected_analysts": ["market"]},
-             "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "m"}}
+             "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "gpt-4o-mini"}}
     app = srv.build_app(token="t")
     with TestClient(app) as c:
         with c.websocket_connect("/stream?token=t") as first:

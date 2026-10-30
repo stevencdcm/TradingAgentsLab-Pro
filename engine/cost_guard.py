@@ -139,7 +139,7 @@ class SpendState:
 @dataclass
 class CheckResult:
     allow: bool
-    over_dimension: Optional[str]  # "daily" | "weekly" | "monthly" | "rate" | None
+    over_dimension: Optional[str]  # "daily" | "weekly" | "monthly" | "rate" | "unknown_price" | None
     override_available: bool
     current: SpendState
     config: CostGuardConfig
@@ -394,7 +394,7 @@ def check(
             config=config,
             est_reservation_usd=est,
         )
-    over = _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
+    over = "unknown_price" if unpriced_paid(model, auth_kind) else _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
     return CheckResult(
         allow=over is None,
         over_dimension=over,
@@ -403,6 +403,12 @@ def check(
         config=config,
         est_reservation_usd=est,
     )
+
+
+def unpriced_paid(model: str, auth_kind: str) -> bool:
+    """A per-token (API-key) run whose model has no verified price. Its cost is UNKNOWN, not zero, so
+    the USD caps cannot protect it; with caps enabled it is refused until the user overrides explicitly."""
+    return auth_kind not in ("oauth", "local") and model not in _COST_PER_M_TOKENS
 
 
 def check_extra_usd(*, est_cost_usd: float, auth_kind: str) -> Optional[str]:
@@ -450,7 +456,7 @@ def reserve(
         _sweep_expired_reservations(conn)
         spend = _compute_spend(conn)
         if config.enabled and not override:
-            over = _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
+            over = "unknown_price" if unpriced_paid(model, auth_kind) else _exceeds_any_cap(spend=spend, config=config, est_cost=est, auth_kind=auth_kind)
             if over is not None:
                 conn.rollback()
                 raise CostGuardBlocked(

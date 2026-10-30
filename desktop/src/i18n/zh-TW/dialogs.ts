@@ -6,6 +6,8 @@ export const dialogsZhTW: Record<keyof typeof dialogs, string> = {
     '目前尚未設定任何 LLM 供應商，所以「盡職調查」只會執行內建範例，而非真正的多代理分析。新增供應商即可解鎖完整功能：貼上 OpenAI、Anthropic、OpenRouter 或 Google Gemini 的 API 金鑰即可。',
   'providerCallout.cta': '設定供應商',
   'costGuard.title.rate': '已達每日分析次數上限',
+  'costGuard.title.unknownPrice': '模型價格未知',
+  'costGuard.body.unknownPrice': '此模型沒有經核實的價格，無法對照你的花費上限，因此預設擋下；若選擇覆寫，這次會記錄為「成本未知」（不是 0）。',
   'costGuard.title.budget': '已達預算上限',
   'costGuard.dim.daily': '每日',
   'costGuard.dim.weekly': '每週',

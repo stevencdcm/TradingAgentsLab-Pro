@@ -36,7 +36,15 @@ def main(argv: list[str] | None = None) -> None:
 
     token = secrets.token_urlsafe(24)
     launch_secret = secrets.token_urlsafe(24)
-    cookie_value = secrets.token_urlsafe(32)
+    # The session cookie value persists across restarts (0600 file in a 0700 dir) so a
+    # restart does not sign the user out; the launch nonce and engine token are new each time.
+    cookie_file = data_dir / "session.key"
+    if cookie_file.exists() and cookie_file.stat().st_size >= 32:
+        cookie_value = cookie_file.read_text().strip()
+    else:
+        cookie_value = secrets.token_urlsafe(32)
+        cookie_file.write_text(cookie_value)
+        os.chmod(cookie_file, 0o600)
     app = build_web_app(
         token=token,
         port=args.port,

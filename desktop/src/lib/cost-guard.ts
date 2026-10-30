@@ -1,3 +1,4 @@
+import { apiBase } from './endpoints';
 /**
  * Renderer-side client for the engine's CostGuard endpoints.
  *
@@ -109,7 +110,7 @@ export class CostGuardBlocked extends Error {
 
 async function authFetch(path: string, init?: RequestInit): Promise<Response> {
   const { port, token } = await handshake();
-  return fetch(`http://127.0.0.1:${port}${path}`, {
+  return fetch(`${apiBase(port)}${path}`, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),

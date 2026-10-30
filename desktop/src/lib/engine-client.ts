@@ -1,6 +1,9 @@
+import { apiBase, wsBase } from './endpoints';
 export interface EngineHandshake {
   port: number;
   token: string;
+  /** Web only: served through the trusted workbench proxy (cookie-authenticated WebSocket, no token in URLs). */
+  proxy?: boolean;
 }
 
 export type LLMProvider =
@@ -679,7 +682,7 @@ async function fetchWithTimeout(
 
 export async function getHealth(): Promise<HealthInfo> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/health`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/health`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -694,7 +697,7 @@ export async function listSessions(opts: { limit?: number; ticker?: string } = {
   if (opts.limit) params.set('limit', String(opts.limit));
   if (opts.ticker) params.set('ticker', opts.ticker);
   const qs = params.toString();
-  const url = `http://127.0.0.1:${port}/sessions${qs ? `?${qs}` : ''}`;
+  const url = `${apiBase(port)}/sessions${qs ? `?${qs}` : ''}`;
   const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -716,7 +719,7 @@ export async function getSession(id: string): Promise<SessionDetail> {
   const timer = setTimeout(() => controller.abort(), GET_SESSION_TIMEOUT_MS);
   try {
     const res = await fetchWithTimeout(
-      `http://127.0.0.1:${port}/sessions/${encodeURIComponent(id)}`,
+      `${apiBase(port)}/sessions/${encodeURIComponent(id)}`,
       {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
@@ -741,7 +744,7 @@ export async function getSession(id: string): Promise<SessionDetail> {
 export async function deleteSession(id: string): Promise<void> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/sessions/${encodeURIComponent(id)}`,
+    `${apiBase(port)}/sessions/${encodeURIComponent(id)}`,
     {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -780,7 +783,7 @@ export async function searchTwSymbols(q: string, opts: { refresh?: boolean; sign
     const { port, token } = await handshake();
     const params = new URLSearchParams({ q, limit: '12' });
     if (opts.refresh) params.set('refresh', 'true');
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/tw/symbols?${params}`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/tw/symbols?${params}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: opts.signal ?? own!.signal,
     });
@@ -796,7 +799,7 @@ export async function searchTwSymbols(q: string, opts: { refresh?: boolean; sign
 
 export async function listWatchlist(): Promise<WatchlistEntry[]> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/watchlist`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/watchlist`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -812,7 +815,7 @@ export async function addWatchlist(input: {
   market?: 'TWSE' | 'TPEx';
 }): Promise<WatchlistEntry> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/watchlist`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/watchlist`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -835,7 +838,7 @@ export async function addWatchlist(input: {
 export async function removeWatchlist(ticker: string): Promise<void> {
   const { port, token } = await handshake();
   const res = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/watchlist/${encodeURIComponent(ticker)}`,
+    `${apiBase(port)}/watchlist/${encodeURIComponent(ticker)}`,
     {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -887,7 +890,7 @@ export async function testLLMConnection(args: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LLM_TEST_TIMEOUT_MS);
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/test`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/test`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -945,7 +948,7 @@ export async function listCodexModels(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LLM_TEST_TIMEOUT_MS);
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/models`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/models`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -998,7 +1001,7 @@ export interface TelegramBotStartArgs {
 
 export async function getTelegramBotStatus(): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/status`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/status`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -1013,7 +1016,7 @@ export async function startTelegramBot(
   args: TelegramBotStartArgs,
 ): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/start`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/start`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1030,7 +1033,7 @@ export async function startTelegramBot(
 
 export async function stopTelegramBot(): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/stop`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/stop`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -1049,7 +1052,7 @@ export async function approveTelegramChat(
   chatId: number,
 ): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/approve`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/approve`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1072,7 +1075,7 @@ export async function refreshTelegramBotCredentials(
   providerConfig: Record<string, unknown>,
 ): Promise<TelegramBotStatus | null> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/refresh-credentials`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/refresh-credentials`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1098,7 +1101,7 @@ export async function denyTelegramChat(
   chatId: number,
 ): Promise<TelegramBotStatus> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/telegram/deny`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/telegram/deny`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1120,7 +1123,7 @@ export async function denyTelegramChat(
  * entry fallback, not a failed fetch. */
 export async function getLocalRuntimes(): Promise<LocalRuntime[]> {
   const { port, token } = await handshake();
-  const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/local-runtimes`, {
+  const res = await fetchWithTimeout(`${apiBase(port)}/llm/local-runtimes`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -1141,7 +1144,7 @@ export async function listLocalModels(args: {
 }): Promise<{ ok: true; models: string[] } | { ok: false; error: string; status?: number; reason?: 'key_missing' | 'key_rejected' }> {
   const { port, token } = await handshake();
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/local-models`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/local-models`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ base_url: args.baseUrl, api_key: args.apiKey || undefined }),
@@ -1161,7 +1164,7 @@ export async function testLocalConnection(args: {
 }): Promise<LLMTestResult> {
   const { port, token } = await handshake();
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${port}/llm/test`, {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -1185,9 +1188,10 @@ export async function streamDebate(
   onEvent: (event: DebateEvent) => void,
   onError?: (err: unknown) => void,
 ): Promise<StreamHandle> {
-  const { port, token } = await handshake();
+  const { port, token, proxy } = await handshake();
+  // Behind the trusted workbench proxy the socket authenticates by cookie: no token in the URL (access logs).
   const ws = new WebSocket(
-    `ws://127.0.0.1:${port}/stream?token=${encodeURIComponent(token)}`,
+    `${wsBase(port)}/stream${proxy ? '' : `?token=${encodeURIComponent(token)}`}`,
   );
 
   let resolveDone: () => void;

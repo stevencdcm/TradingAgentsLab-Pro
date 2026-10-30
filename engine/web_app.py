@@ -44,6 +44,45 @@ CONSENT_VERSION = 1
 HERE = Path(__file__).resolve().parent
 
 
+class ProxyConfig:
+    """Trusted workbench reverse-proxy mode (off unless TAL_WEB_PROXY_MODE=1).
+
+    Trust root = a loopback connection that carries `X-TAL-Proxy-Auth` equal to the shared secret AND an
+    `X-TAL-Owner` on the owner allow-list. The proxy must authenticate the real user (Tailscale identity)
+    itself, strip any client-supplied copies of those two headers, and then add them. Nothing else about the
+    forwarded request is trusted: the Host and Origin must equal the configured public origin."""
+
+    def __init__(self, *, public_origin: str, base_path: str, secret: str, owners: frozenset[str]):
+        from urllib.parse import urlsplit
+
+        u = urlsplit(public_origin)
+        if u.scheme not in ("https", "http") or not u.netloc:
+            raise ValueError("TAL_WEB_PUBLIC_ORIGIN must be an origin like https://host[:port]")
+        if len(secret) < 32:
+            raise ValueError("proxy secret must be at least 32 characters")
+        if not owners:
+            raise ValueError("TAL_WEB_OWNER must list at least one owner")
+        self.origin = f"{u.scheme}://{u.netloc}"
+        self.host = u.netloc
+        self.secure = u.scheme == "https"
+        bp = (base_path or "").strip().rstrip("/")
+        self.base_path = bp if bp.startswith("/") or bp == "" else "/" + bp
+        self.secret = secret
+        self.owners = owners
+
+    @classmethod
+    def from_env(cls) -> "ProxyConfig | None":
+        if os.environ.get("TAL_WEB_PROXY_MODE") != "1":
+            return None
+        f = os.environ.get("TAL_WEB_PROXY_SECRET_FILE", "")
+        try:
+            secret = Path(f).read_text().strip()
+        except OSError as exc:
+            raise RuntimeError(f"proxy mode needs a readable TAL_WEB_PROXY_SECRET_FILE ({type(exc).__name__})") from exc
+        owners = frozenset(o.strip().casefold() for o in os.environ.get("TAL_WEB_OWNER", "").split(",") if o.strip())
+        return cls(public_origin=os.environ.get("TAL_WEB_PUBLIC_ORIGIN", ""), base_path=os.environ.get("TAL_WEB_BASE_PATH", ""), secret=secret, owners=owners)
+
+
 class LaunchNonce:
     """Single-use launch secret. Consumed on first successful use; the 0600 file that
     tools/open-web.sh reads is removed with it. `rotate()` issues a fresh one (SIGUSR1)
@@ -85,7 +124,8 @@ class LaunchNonce:
 class LocalOnly:
     """Pure-ASGI guard (covers HTTP and WebSocket)."""
 
-    def __init__(self, app, *, port: int, launch_secret: "str | LaunchNonce", cookie_value: str):
+    def __init__(self, app, *, port: int, launch_secret: "str | LaunchNonce", cookie_value: str, proxy: "ProxyConfig | None" = None):
+        self.proxy = proxy
         self.app = app
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
@@ -106,10 +146,54 @@ class LocalOnly:
                 return True
         return False
 
+    def _via_proxy(self, scope, headers: dict[bytes, bytes]) -> bool:
+        """True only for a loopback peer presenting the shared proxy secret (constant-time compare)."""
+        px = self.proxy
+        if px is None:
+            return False
+        client = scope.get("client")
+        if not client or client[0] not in ("127.0.0.1", "::1"):
+            return False
+        given = headers.get(b"x-tal-proxy-auth", b"").decode("latin-1")
+        return bool(given) and hmac.compare_digest(given, px.secret)
+
+    async def _call_via_proxy(self, scope, receive, send, headers: dict[bytes, bytes]):
+        px = self.proxy
+        host = headers.get(b"host", b"").decode("latin-1")
+        origin = headers.get(b"origin")
+        owner = headers.get(b"x-tal-owner", b"").decode("latin-1").strip().casefold()
+        if host != px.host:
+            return await self._deny(scope, receive, send, 403, "bad host")
+        if owner not in px.owners:
+            return await self._deny(scope, receive, send, 403, "not the owner")
+        if origin is not None and origin.decode("latin-1") != px.origin:
+            return await self._deny(scope, receive, send, 403, "bad origin")
+        # State-changing HTTP needs a matching Origin (CSRF); a WebSocket handshake always carries one.
+        unsafe = scope["type"] == "websocket" or scope["method"] not in ("GET", "HEAD", "OPTIONS")
+        if unsafe and origin is None:
+            return await self._deny(scope, receive, send, 403, "origin required")
+        has_cookie = self._cookie_ok(headers)
+        if unsafe and not has_cookie:
+            return await self._deny(scope, receive, send, 403, "open the page first (session cookie missing)")
+        scope["tal_trusted"] = True            # WS auth: hop + owner + cookie, no token in the URL
+        if scope["type"] == "http" and not has_cookie:
+            # First authenticated page load: issue the host-only session cookie, scoped to the base path.
+            cookie = f"{COOKIE_NAME}={self.cookie_value}; HttpOnly; SameSite=Strict; Path={px.base_path or '/'}" + ("; Secure" if px.secure else "")
+
+            async def send_with_cookie(message):
+                if message["type"] == "http.response.start":
+                    message = {**message, "headers": [*message.get("headers", []), (b"set-cookie", cookie.encode("latin-1"))]}
+                await send(message)
+
+            return await self.app(scope, receive, send_with_cookie)
+        return await self.app(scope, receive, send)
+
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
         headers = {k.lower(): v for k, v in scope["headers"]}
+        if self._via_proxy(scope, headers):
+            return await self._call_via_proxy(scope, receive, send, headers)
         if headers.get(b"host", b"").decode("latin-1") not in self.hosts:
             return await self._deny(scope, receive, send, 403, "bad host")
         origin = headers.get(b"origin")
@@ -146,6 +230,7 @@ def build_web_app(
     cookie_value: str,
     store: SecretStore | None = None,
     oauth: OpenAIOAuth | None = None,
+    proxy: "ProxyConfig | None" = None,
 ) -> FastAPI:
     data_dir.mkdir(parents=True, exist_ok=True)
     store = store or SecretStore()
@@ -157,7 +242,9 @@ def build_web_app(
 
     @app.get("/web/handshake")
     async def handshake() -> dict[str, Any]:
-        return {"port": port, "token": token}
+        # `proxy`: the page is served through the trusted workbench proxy: it must use same-origin relative
+        # URLs and the WebSocket authenticates by cookie, so no token is ever put in a URL.
+        return {"port": port, "token": token, "proxy": proxy is not None}
 
     consent_file = data_dir / "consent.json"
 
@@ -268,7 +355,10 @@ def build_web_app(
     # ---- static renderer + bridge script ---------------------------------------
 
     index_html = (static_dir / "index.html").read_text(encoding="utf-8")
-    index_html = index_html.replace("</head>", '    <script src="/web-bridge.js"></script>\n  </head>', 1)
+    index_html = index_html.replace("</head>", '    <script src="web-bridge.js"></script>\n  </head>', 1)
+    if proxy is not None:
+        # <base> must precede every relative URL in the document so assets/bridge resolve under the base path.
+        index_html = index_html.replace("<head>", f'<head>\n    <base href="{proxy.base_path}/">', 1)
     bridge_js = (HERE / "web" / "web-bridge.js").read_text(encoding="utf-8")
 
     @app.get("/", response_class=HTMLResponse)
@@ -284,5 +374,5 @@ def build_web_app(
     # Outermost: runs before everything else.
     nonce = LaunchNonce(launch_secret, port, data_dir / "launch-url.txt")
     app.state.launch = nonce
-    app.add_middleware(LocalOnly, port=port, launch_secret=nonce, cookie_value=cookie_value)
+    app.add_middleware(LocalOnly, port=port, launch_secret=nonce, cookie_value=cookie_value, proxy=proxy)
     return app

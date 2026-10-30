@@ -579,7 +579,9 @@ def build_app(*, token: str) -> FastAPI:
     async def stream(ws: WebSocket) -> None:
         # WS auth via query param (browsers cannot set Authorization headers on WS).
         provided = ws.query_params.get("token")
-        if provided != token:
+        # Trusted workbench proxy (cookie + shared-secret hop + owner, checked by the web guard) authenticates the
+        # socket without a token in the URL; everything else still needs the engine token.
+        if provided != token and not ws.scope.get("tal_trusted"):
             await ws.close(code=1008, reason="invalid token")
             return
         await ws.accept()

@@ -88,12 +88,13 @@ def _cut_providers() -> None:
 
 
 def build_isolated_app(*, port: int, static_dir: Path, data_dir: Path | None = None):
-    os.environ.setdefault("TAL_SESSIONS_DB", str((data_dir or Path(tempfile.mkdtemp(prefix="tal-iso-"))) / "sessions.db"))
+    # Always a fresh/explicit sessions DB: an inherited TAL_SESSIONS_DB (e.g. the real server's) must never be used.
+    data_dir = data_dir or Path(tempfile.mkdtemp(prefix="tal-iso-"))
+    os.environ["TAL_SESSIONS_DB"] = str(data_dir / "sessions.db")
     _poison_keyring()
     from .secret_store import SecretStore
     from .web_app import ProxyConfig, build_web_app
 
-    data_dir = data_dir or Path(os.environ["TAL_SESSIONS_DB"]).parent
     data_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(data_dir, 0o700)
     (data_dir / "consent.json").write_text('{"version": 1}')
@@ -110,12 +111,13 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python -m engine.dev_isolated")
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--static", type=Path, default=Path(__file__).resolve().parents[1] / "desktop" / "dist")
+    p.add_argument("--data-dir", type=Path, default=None, help="explicit data dir (default: a fresh temp dir)")
     args = p.parse_args(argv)
     if args.port == 8765:
         sys.exit("refusing to use 8765 (the real server's port)")
     import uvicorn
 
-    app = build_isolated_app(port=args.port, static_dir=args.static)
+    app = build_isolated_app(port=args.port, static_dir=args.static, data_dir=args.data_dir)
     # Same nonce re-issue hook as the real server (SIGUSR1) so browser tests can log in without a printed nonce.
     import signal
 

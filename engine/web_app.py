@@ -175,7 +175,12 @@ class LocalOnly:
         has_cookie = self._cookie_ok(headers)
         if unsafe and not has_cookie:
             return await self._deny(scope, receive, send, 403, "open the page first (session cookie missing)")
-        scope["tal_trusted"] = True            # WS auth: hop + owner + cookie, no token in the URL
+        # Internal flag (set only here, never derived from a request header): hop secret + owner + Host/Origin were
+        # verified AND the session cookie was presented. The engine API's bearer gate and the WebSocket accept this
+        # instead of the engine token, which therefore never has to reach a remote browser or pass through the proxy.
+        # A first page load (no cookie yet) is NOT marked: it can only fetch the page and receive the cookie.
+        if has_cookie:
+            scope["tal_session_authenticated"] = True
         if scope["type"] == "http" and not has_cookie:
             # First authenticated page load: issue the host-only session cookie, scoped to the base path.
             cookie = f"{COOKIE_NAME}={self.cookie_value}; HttpOnly; SameSite=Strict; Path={px.base_path or '/'}" + ("; Secure" if px.secure else "")

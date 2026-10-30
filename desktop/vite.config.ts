@@ -9,6 +9,9 @@ import electron from 'vite-plugin-electron/simple';
 const pkgVersion = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version;
 
 export default defineConfig({
+  // Relative asset URLs: the page works from /, from a base path behind the workbench proxy (/lab-pro/) and from
+  // file:// in Electron. An absolute "/assets/..." would ignore the proxy's <base href>.
+  base: './',
   define: {
     __APP_VERSION__: JSON.stringify(pkgVersion),
   },

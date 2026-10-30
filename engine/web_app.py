@@ -44,14 +44,52 @@ CONSENT_VERSION = 1
 HERE = Path(__file__).resolve().parent
 
 
+class LaunchNonce:
+    """Single-use launch secret. Consumed on first successful use; the 0600 file that
+    tools/open-web.sh reads is removed with it. `rotate()` issues a fresh one (SIGUSR1)
+    without ever printing it."""
+
+    def __init__(self, value: str, port: int = 0, file: Path | None = None):
+        self.value = value
+        self.port = port
+        self.file = file
+        self._lock = threading.Lock()
+        self._write()
+
+    def _write(self) -> None:
+        if self.file is None or not self.value:
+            return
+        self.file.write_text(f"http://127.0.0.1:{self.port}/?k={self.value}\n")
+        os.chmod(self.file, 0o600)
+
+    def consume(self, candidate: str) -> bool:
+        with self._lock:
+            if not self.value or not hmac.compare_digest(candidate, self.value):
+                return False
+            self.value = ""
+            if self.file is not None:
+                try:
+                    self.file.unlink()
+                except FileNotFoundError:
+                    pass
+            return True
+
+    def rotate(self) -> None:
+        import secrets
+
+        with self._lock:
+            self.value = secrets.token_urlsafe(24)
+            self._write()
+
+
 class LocalOnly:
     """Pure-ASGI guard (covers HTTP and WebSocket)."""
 
-    def __init__(self, app, *, port: int, launch_secret: str, cookie_value: str):
+    def __init__(self, app, *, port: int, launch_secret: "str | LaunchNonce", cookie_value: str):
         self.app = app
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
-        self.launch_secret = launch_secret
+        self.launch = launch_secret if isinstance(launch_secret, LaunchNonce) else LaunchNonce(launch_secret, port)
         self.cookie_value = cookie_value
 
     async def _deny(self, scope, receive, send, status: int, text: str):
@@ -82,7 +120,7 @@ class LocalOnly:
         if scope["type"] == "http" and scope["method"] == "GET" and scope["path"] == "/":
             qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
             k = (qs.get("k") or [""])[0]
-            if k and hmac.compare_digest(k, self.launch_secret):
+            if k and self.launch.consume(k):
                 resp = PlainTextResponse("", status_code=302, headers={"location": "/"})
                 resp.set_cookie(COOKIE_NAME, self.cookie_value, httponly=True, samesite="strict", path="/")
                 return await resp(scope, receive, send)
@@ -244,5 +282,7 @@ def build_web_app(
     app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
 
     # Outermost: runs before everything else.
-    app.add_middleware(LocalOnly, port=port, launch_secret=launch_secret, cookie_value=cookie_value)
+    nonce = LaunchNonce(launch_secret, port, data_dir / "launch-url.txt")
+    app.state.launch = nonce
+    app.add_middleware(LocalOnly, port=port, launch_secret=nonce, cookie_value=cookie_value)
     return app

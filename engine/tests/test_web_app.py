@@ -424,3 +424,18 @@ def test_llm_test_rejects_a_foreign_reference_at_the_endpoint(two_secrets):
     r = two_secrets.post("/llm/local-models", headers={"Authorization": "Bearer engine-token"},
                          json={"base_url": "http://evil.example/v1", "api_key": "@@secret:local:api-key@@"})
     assert r.json()["ok"] is False and "local-secret" not in r.text
+
+
+def test_launch_nonce_is_single_use_and_rotates_without_printing(web, tmp_path):
+    data = tmp_path / "data"
+    lf = data / "launch-url.txt"
+    assert lf.exists() and LAUNCH in lf.read_text() and oct(lf.stat().st_mode & 0o777) == "0o600"
+    c = anon(web)
+    assert c.get(f"/?k={LAUNCH}", follow_redirects=False).status_code == 302
+    assert not lf.exists()                                              # consumed -> file gone
+    assert anon(web).get(f"/?k={LAUNCH}", follow_redirects=False).status_code == 403   # replay refused
+    web.app.state.launch.rotate()                                       # what SIGUSR1 does
+    new = lf.read_text().strip().split("?k=")[1]
+    assert new != LAUNCH and oct(lf.stat().st_mode & 0o777) == "0o600"
+    assert anon(web).get(f"/?k={new}", follow_redirects=False).status_code == 302
+    assert anon(web).get(f"/?k={new}", follow_redirects=False).status_code == 403

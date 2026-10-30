@@ -367,3 +367,52 @@ def test_ws_to_real_local_adapter_to_http_end_to_end(monkeypatch, tmp_db):
     assert len(_FakeOpenAI.bodies) == len(_AGENTS)
     assert all(b["messages"][0]["content"].endswith(suffix) for b in _FakeOpenAI.bodies)
     assert next(e for e in events if e["type"] == "session.start")["report_language"] == "zh-TW"
+
+
+def test_second_full_graph_run_is_refused_while_one_is_active(monkeypatch, tmp_db):
+    """The full graph mutates process-global config/env, so a concurrent run is refused
+    explicitly (run_busy) instead of racing; the slot frees when the first run ends."""
+    import threading
+
+    from fastapi.testclient import TestClient
+    from engine import server as srv
+
+    pytest.importorskip("tradingagents")
+    from engine import full_debate as fd
+
+    release = threading.Event()
+
+    async def fake_full(*_a, **_k):
+        yield {"type": "session.start", "ticker": "AAPL", "trade_date": "2026-10-30"}
+        while not release.is_set():
+            await asyncio.sleep(0.02)
+        yield {"type": "session.complete", "ticker": "AAPL", "trade_date": "2026-10-30",
+               "decision": {"stance": "neutral", "conviction": 0.5, "reasoning": "ok"}, "live": True}
+
+    async def no_data(**_):
+        return None
+
+    async def no_news(**_):
+        return []
+
+    monkeypatch.setattr(fd, "full_debate", fake_full)
+    monkeypatch.setattr(srv, "_fetch_summary_safe", no_data)
+    monkeypatch.setattr(srv, "_fetch_news_safe", no_news)
+    frame = {"ticker": "AAPL", "trade_date": "2026-10-30", "engine": "full",
+             "pro_config": {"selected_analysts": ["market"]},
+             "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "m"}}
+    app = srv.build_app(token="t")
+    with TestClient(app) as c:
+        with c.websocket_connect("/stream?token=t") as first:
+            first.send_json(frame)
+            assert first.receive_json()["type"] == "session.start"
+            with c.websocket_connect("/stream?token=t") as second:
+                second.send_json(frame)
+                ev = second.receive_json()
+                assert ev["type"] == "run.error" and ev["code"] == "run_busy"
+            release.set()
+            while first.receive_json()["type"] != "session.complete":
+                pass
+        with c.websocket_connect("/stream?token=t") as third:     # slot is free again
+            third.send_json(frame)
+            assert third.receive_json()["type"] == "session.start"

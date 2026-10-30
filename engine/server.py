@@ -502,6 +502,8 @@ def build_app(*, token: str) -> FastAPI:
             "agents": [],
         }
 
+    run_slot = {"busy": False}
+
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
         # WS auth via query param (browsers cannot set Authorization headers on WS).
@@ -512,6 +514,7 @@ def build_app(*, token: str) -> FastAPI:
         await ws.accept()
 
         captured_events: list[dict] = []
+        slot_held = False
         # Bound before the try so the `except WebSocketDisconnect` handler can
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
@@ -574,6 +577,17 @@ def build_app(*, token: str) -> FastAPI:
             pro_config_raw = start.get("pro_config") or {}
             if not isinstance(pro_config_raw, dict):
                 pro_config_raw = {}
+            # The full graph mutates process-global library config / env while it runs, so only
+            # one such run may be active; a second is refused explicitly rather than racing.
+            if is_pro:
+                if run_slot["busy"]:
+                    evt = {"type": "run.error", "code": "run_busy",
+                           "error": "Another full-graph run is already in progress. Wait for it to finish, then retry."}
+                    await ws.send_json(evt)
+                    await ws.close(code=1008, reason="run_busy")
+                    return
+                run_slot["busy"] = True
+                slot_held = True
 
             # Optional. Per-stream webhook configs (Phase 8a). Renderer sends
             # the full list each time; engine fires them after persist + before
@@ -945,6 +959,9 @@ def build_app(*, token: str) -> FastAPI:
         except WebSocketDisconnect:
             sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
             return
+        finally:
+            if slot_held:
+                run_slot["busy"] = False
 
     return app
 

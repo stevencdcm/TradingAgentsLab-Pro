@@ -606,6 +606,7 @@ def build_app(*, token: str) -> FastAPI:
             # (no-op in the desktop build). The browser never held the values.
             try:
                 start = secret_refs.resolve_start_frame(await ws.receive_json())
+                run_t0 = time.monotonic()      # whole-run wall clock starts when the start frame arrives
             except secret_refs.SecretRefError as exc:
                 await ws.send_json({"type": "run.error", "error": str(exc), "code": "secret_ref_rejected"})
                 await ws.close(code=1008, reason="secret_ref_rejected")
@@ -985,6 +986,9 @@ def build_app(*, token: str) -> FastAPI:
                           continue
                       if isinstance(event, dict) and event.get("type") == "run.error" and isinstance(event.get("error"), str):
                           event = {**event, "error": llm_providers.local_auth_hint(config, event["error"])}
+                      if isinstance(event, dict) and event.get("type") == "session.complete":
+                          # Whole-run wall time (data fetch + Dexter + debate), frozen here and persisted once.
+                          event = {**event, "elapsed_s": round(time.monotonic() - run_t0, 1)}
                       await ws.send_json(event)
                       captured_events.append(event)
                       await asyncio.sleep(0.15)

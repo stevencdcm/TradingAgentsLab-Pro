@@ -9,37 +9,34 @@
  * wheel, evokes "trading floor" without being green/red gain-loss-coded.
  */
 :root {
-  /* Surfaces */
-  --tal-bg-base:        #0d1117;
-  --tal-bg-elevated:    #161b22;
-  --tal-bg-overlay:     #1c232c;
-  --tal-bg-input:       #0a0d12;
+  /* Surfaces — Hermes workbench palette (dark). Values mirror workbench-palette.css so Lab Pro reads as
+     part of the same product; see HER-30-S9 theme contract. */
+  --tal-bg-base:        oklch(0.115 0.012 264);
+  --tal-bg-elevated:    oklch(0.158 0.016 264);
+  --tal-bg-overlay:     oklch(0.205 0.019 264);
+  --tal-bg-input:       oklch(0.095 0.012 264);
 
   /* Borders */
-  --tal-border-subtle:  #21262d;
-  --tal-border-default: #30363d;
-  --tal-border-strong:  #484f58;
+  --tal-border-subtle:  oklch(0.25 0.016 264);
+  --tal-border-default: oklch(0.32 0.018 264);
+  --tal-border-strong:  oklch(0.46 0.02 264);
 
-  /* Text */
-  --tal-text-primary:   #e6edf3;
-  --tal-text-secondary: #9ea7b3;
-  --tal-text-muted:     #6e7681;
-  --tal-text-inverse:   #0d1117;
+  /* Text — secondary/muted lifted so grey text keeps >= 4.5:1 on every surface (checked in
+     tests/unit/theme-contrast.test.ts). */
+  --tal-text-primary:   oklch(0.965 0.008 255);
+  --tal-text-secondary: oklch(0.82 0.015 264);
+  --tal-text-muted:     oklch(0.71 0.02 264);
+  --tal-text-inverse:   oklch(0.13 0.016 264);
 
-  /* Accent — Pro indigo. Refined cool accent for a premium fintech feel
-     (Robinhood/Coinbase-adjacent), deliberately diverging from the free app's
-     amber so Pro reads as distinct. Cool tone keeps it clear of the green/red
-     gain-loss semantics and of Clawless cyan. */
-  --tal-accent:         #5b74f0;
-  --tal-accent-strong:  #8a9bff;
-  /* Brighter indigo for hover states. Some rules reference this with an amber
-     fallback left over from the pre-indigo palette; defining it here keeps
-     hovers on-theme instead of flashing the old amber. */
-  --tal-accent-bright:  #7d92ff;
-  --tal-accent-muted:   rgba(91, 116, 240, 0.15);
-  --tal-accent-border:  rgba(91, 116, 240, 0.38);
-  /* Pro accent-glow: a soft indigo halo for hero/active surfaces. */
-  --tal-accent-glow:    0 0 0 1px rgba(91, 116, 240, 0.28), 0 8px 26px rgba(91, 116, 240, 0.14);
+  --tal-accent:         oklch(0.75 0.115 278);
+  --tal-accent-strong:  oklch(0.83 0.1 278);
+  --tal-accent-bright:  oklch(0.8 0.11 278);
+  --tal-accent-muted:   oklch(0.75 0.115 278 / 15%);
+  --tal-accent-border:  oklch(0.75 0.115 278 / 40%);
+  --tal-accent-glow:    0 0 0 1px oklch(0.75 0.115 278 / 28%), 0 8px 26px oklch(0.75 0.115 278 / 14%);
+  --tal-warning:        oklch(0.8 0.14 80);
+  --tal-danger:         oklch(0.72 0.17 25);
+  --tal-success:        oklch(0.76 0.15 150);
 
   /* Semantic — gain/loss (used sparingly, not the brand color) */
   --tal-positive:       #3fb950;
@@ -88,4 +85,67 @@
   --tal-ease-out:     cubic-bezier(0.16, 1, 0.3, 1);
   --tal-duration-fast: 120ms;
   --tal-duration-base: 200ms;
+}
+
+/* Light theme (workbench light palette). Applied by an explicit choice (data-theme="light") or, when the
+   choice is "system", by the OS preference. */
+:root[data-theme="light"] {
+  --tal-bg-base:        oklch(0.985 0.005 278);
+  --tal-bg-elevated:    oklch(0.995 0.003 278);
+  --tal-bg-overlay:     oklch(0.95 0.015 278);
+  --tal-bg-input:       oklch(1 0 0);
+  --tal-border-subtle:  oklch(0.9 0.012 270);
+  --tal-border-default: oklch(0.84 0.018 270);
+  --tal-border-strong:  oklch(0.68 0.03 270);
+  --tal-text-primary:   oklch(0.2 0.02 270);
+  --tal-text-secondary: oklch(0.36 0.03 270);
+  --tal-text-muted:     oklch(0.46 0.03 268);
+  --tal-text-inverse:   oklch(1 0 0);
+  --tal-accent:         oklch(0.48 0.17 278);
+  --tal-accent-strong:  oklch(0.4 0.17 278);
+  --tal-accent-bright:  oklch(0.55 0.17 278);
+  --tal-accent-muted:   oklch(0.48 0.17 278 / 10%);
+  --tal-accent-border:  oklch(0.48 0.17 278 / 35%);
+  --tal-accent-glow:    0 0 0 1px oklch(0.48 0.17 278 / 22%), 0 8px 22px oklch(0.48 0.17 278 / 10%);
+  --tal-warning:        oklch(0.5 0.12 70);
+  --tal-danger:         oklch(0.5 0.19 25);
+  --tal-success:        oklch(0.45 0.13 150);
+  --tal-positive:       oklch(0.45 0.13 150);
+  --tal-negative:       oklch(0.5 0.19 25);
+  --tal-shadow-sm:      0 1px 2px rgba(20, 24, 40, 0.08);
+  --tal-shadow-md:      0 4px 16px rgba(20, 24, 40, 0.1);
+  --tal-shadow-lg:      0 16px 40px rgba(20, 24, 40, 0.14);
+  color-scheme: light;
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --tal-bg-base:        oklch(0.985 0.005 278);
+    --tal-bg-elevated:    oklch(0.995 0.003 278);
+    --tal-bg-overlay:     oklch(0.95 0.015 278);
+    --tal-bg-input:       oklch(1 0 0);
+    --tal-border-subtle:  oklch(0.9 0.012 270);
+    --tal-border-default: oklch(0.84 0.018 270);
+    --tal-border-strong:  oklch(0.68 0.03 270);
+    --tal-text-primary:   oklch(0.2 0.02 270);
+    --tal-text-secondary: oklch(0.36 0.03 270);
+    --tal-text-muted:     oklch(0.46 0.03 268);
+    --tal-text-inverse:   oklch(1 0 0);
+    --tal-accent:         oklch(0.48 0.17 278);
+    --tal-accent-strong:  oklch(0.4 0.17 278);
+    --tal-accent-bright:  oklch(0.55 0.17 278);
+    --tal-accent-muted:   oklch(0.48 0.17 278 / 10%);
+    --tal-accent-border:  oklch(0.48 0.17 278 / 35%);
+    --tal-accent-glow:    0 0 0 1px oklch(0.48 0.17 278 / 22%), 0 8px 22px oklch(0.48 0.17 278 / 10%);
+    --tal-warning:        oklch(0.5 0.12 70);
+    --tal-danger:         oklch(0.5 0.19 25);
+    --tal-success:        oklch(0.45 0.13 150);
+    --tal-positive:       oklch(0.45 0.13 150);
+    --tal-negative:       oklch(0.5 0.19 25);
+    --tal-shadow-sm:      0 1px 2px rgba(20, 24, 40, 0.08);
+    --tal-shadow-md:      0 4px 16px rgba(20, 24, 40, 0.1);
+    --tal-shadow-lg:      0 16px 40px rgba(20, 24, 40, 0.14);
+    color-scheme: light;
+  }
 }

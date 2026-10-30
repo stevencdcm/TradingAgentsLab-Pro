@@ -1,3 +1,4 @@
+import { applyTheme, loadTheme, type ThemeChoice } from './lib/theme';
 import proIcon from './assets/pro-icon.png';
 import { useCallback, useEffect, useState } from 'react';
 import Analyze from './pages/Analyze';
@@ -26,6 +27,8 @@ function App() {
   const { t, locale, setLocale } = useI18n();
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   const [newAnalysisTick, setNewAnalysisTick] = useState(0);
+  const [theme, setTheme] = useState<ThemeChoice>(() => loadTheme());
+  useEffect(() => applyTheme(theme), []); // apply the saved choice once on start
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   /** Upstream-check modal state. null = closed; "checking" = in flight;
    * UpstreamCheckResult once the IPC round-trip returns. */
@@ -140,6 +143,22 @@ function App() {
           </span>
           <div className={styles.titleBarRight}>
             <span className={styles.connectionPill}>{t('app.connection.standalone')}</span>
+            <select
+              className={`${styles.langSelect} app-no-drag`}
+              value={theme}
+              onChange={(e) => {
+                const next = e.target.value as ThemeChoice;
+                setTheme(next);
+                applyTheme(next);
+              }}
+              title={t('app.theme.title')}
+              aria-label={t('app.theme.label')}
+              data-testid="theme-select"
+            >
+              <option value="system">{t('app.theme.system')}</option>
+              <option value="light">{t('app.theme.light')}</option>
+              <option value="dark">{t('app.theme.dark')}</option>
+            </select>
             <select
               className={`${styles.langSelect} app-no-drag`}
               value={locale}

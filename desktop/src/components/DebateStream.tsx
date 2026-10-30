@@ -1,3 +1,4 @@
+import { formatRunDuration } from '../lib/duration';
 import { findResearch, researchNotes } from '../lib/research-notes';
 import { useEffect, useRef, useState } from 'react';
 import type {
@@ -254,6 +255,7 @@ interface DecisionMeta {
   inputTokens?: number;
   outputTokens?: number;
   estimatedCostUsd?: number | null;
+  elapsedS?: number | null;
 }
 
 function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
@@ -266,6 +268,7 @@ function findDecisionMeta(events: DebateEvent[]): DecisionMeta {
       inputTokens: complete.input_tokens,
       outputTokens: complete.output_tokens,
       estimatedCostUsd: complete.estimated_cost_usd,
+      elapsedS: complete.elapsed_s ?? null,
     };
   }
   return { live: false };
@@ -686,6 +689,8 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                   provider: meta.provider ?? 'openai',
                   model: meta.model ?? '?',
                 })}
+                {' · '}
+                <span data-testid="decision-duration">{formatRunDuration(meta.elapsedS, t)}</span>
               </span>
             )}
           </div>

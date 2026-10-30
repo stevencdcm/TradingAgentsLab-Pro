@@ -150,3 +150,8 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* narrow screens: single-column forms/rows, nothing wider than the viewport */
+@media (max-width: 820px) {
+  .progressRow { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--tal-space-1); }
+}

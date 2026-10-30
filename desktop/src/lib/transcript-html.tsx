@@ -20,6 +20,7 @@
  * They are baked into the document, not optional.
  */
 
+import { formatRunDuration } from './duration';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -177,6 +178,12 @@ export function buildTranscriptHtml(
   );
   parts.push(
     `<div class="meta">${esc(t('export.html.generated', { time: new Date().toISOString() }))}</div>`,
+    ...(() => {
+      const d = events.find((e) => e.type === 'session.complete');
+      return d && d.type === 'session.complete' && d.live
+        ? [`<div class="meta">${esc(`${d.provider ?? ''} · ${d.model ?? ''} · ${formatRunDuration(d.elapsed_s, t)}`)}</div>`]
+        : [];
+    })(),
   );
   parts.push(`<div class="banner">${richHtml(t('export.html.banner'))}</div>`);
   parts.push('</header>');

@@ -167,6 +167,8 @@ interface TradingAgentsLabBridge {
     handler: (...args: unknown[]) => void,
   ) => () => void;
   checkUpstream: () => Promise<UpstreamCheckResultBridge>;
+  /** Tell main the UI language ('zh-TW' | 'en') so the native menu follows. */
+  setLocale: (locale: string) => Promise<string>;
   shutdown: () => Promise<void>;
   restart: () => Promise<void>;
 }

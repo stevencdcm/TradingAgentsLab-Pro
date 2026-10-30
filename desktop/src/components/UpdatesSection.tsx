@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useI18n, type I18n } from '../i18n';
 import styles from './UpdatesSection.module.css';
 
 /**
@@ -30,29 +31,37 @@ interface UpdateStatus {
   message?: string;
 }
 
-function statusLabel(status: UpdateStatus | null, supported: boolean): string {
-  if (!supported) return 'Updates apply to the installed app (not this dev build).';
+function statusLabel(status: UpdateStatus | null, supported: boolean, t: I18n['t']): string {
+  if (!supported) return t('updates.status.devBuild');
   switch (status?.state) {
     case 'checking':
-      return 'Checking for updates…';
+      return t('updates.status.checking');
     case 'available':
-      return `Update available${status.version ? ` (v${status.version})` : ''}, downloading…`;
+      return status.version
+        ? t('updates.status.availableVersion', { version: status.version })
+        : t('updates.status.available');
     case 'downloading':
-      return `Downloading update… ${status.percent ?? 0}%`;
+      return t('updates.status.downloading', { percent: status.percent ?? 0 });
     case 'downloaded':
-      return `Update ready${status.version ? ` (v${status.version})` : ''}. It installs when you quit.`;
+      return status.version
+        ? t('updates.status.downloadedVersion', { version: status.version })
+        : t('updates.status.downloaded');
     case 'not-available':
-      return 'You are on the latest version.';
+      return t('updates.status.latest');
     case 'error':
-      return `Update check failed${status.message ? `: ${status.message}` : ''}.`;
+      // status.message is the updater's own text (English); shown verbatim.
+      return status.message
+        ? t('updates.status.errorDetail', { message: status.message })
+        : t('updates.status.error');
     case 'dev':
-      return 'Updates apply to the installed app (not this dev build).';
+      return t('updates.status.devBuild');
     default:
       return '';
   }
 }
 
 export default function UpdatesSection() {
+  const { t } = useI18n();
   const [state, setState] = useState<UpdatesState | null>(null);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -100,7 +109,7 @@ export default function UpdatesSection() {
 
   const supported = state?.supported ?? false;
   const downloaded = status?.state === 'downloaded';
-  const label = statusLabel(status, supported);
+  const label = statusLabel(status, supported, t);
 
   return (
     <div className={styles.section}>
@@ -111,17 +120,17 @@ export default function UpdatesSection() {
           onChange={onToggle}
           disabled={!state}
         />
-        <span>Automatically check for updates</span>
+        <span>{t('updates.auto')}</span>
       </label>
       <p className={styles.hint}>
-        The app checks our GitHub releases for a newer version. This is the only
-        update-related network call, it sends no information about you, and you
-        can turn it off here.
+        {t('updates.hint')}
       </p>
       <div className={styles.actions}>
         {downloaded ? (
           <button type="button" onClick={onInstall} className={styles.installBtn}>
-            Restart &amp; install{status?.version ? ` v${status.version}` : ''}
+            {status?.version
+              ? t('updates.installVersion', { version: status.version })
+              : t('updates.install')}
           </button>
         ) : (
           <button
@@ -130,7 +139,7 @@ export default function UpdatesSection() {
             disabled={busy || !supported}
             className={styles.checkBtn}
           >
-            {busy ? 'Checking…' : 'Check for updates'}
+            {busy ? t('updates.checking') : t('updates.check')}
           </button>
         )}
         {label && <span className={styles.status}>{label}</span>}

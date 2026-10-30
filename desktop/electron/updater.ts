@@ -18,6 +18,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import electronUpdater from 'electron-updater';
 import { getAutoUpdate, setAutoUpdate } from './prefs';
+import { tm } from './i18n-main';
 
 const { autoUpdater } = electronUpdater;
 
@@ -60,13 +61,12 @@ export function registerUpdater(getWindow: () => BrowserWindow | null): void {
     // (autoInstallOnAppQuit). The renderer also shows status in Settings.
     const opts = {
       type: 'info' as const,
-      buttons: ['Restart now', 'Later'],
+      buttons: [tm('update.restartNow'), tm('update.later')],
       defaultId: 0,
       cancelId: 1,
-      title: 'Update ready',
-      message: `Trading Agents Lab Pro ${info.version} is ready to install.`,
-      detail:
-        'Restart now to update, or it will install automatically the next time you quit.',
+      title: tm('update.title'),
+      message: tm('update.message', { version: info.version }),
+      detail: tm('update.detail'),
     };
     const onChoice = (result: Electron.MessageBoxReturnValue) => {
       if (result.response === 0) autoUpdater.quitAndInstall();

@@ -12,7 +12,6 @@ import {
   getModelStorageKey,
   getRecommendedModel,
   type ModelChoice,
-  PROVIDER_LABEL,
   PROVIDER_PRIORITY,
   PROVIDER_SECRET_KEY,
 } from '../lib/engine-client';
@@ -29,6 +28,10 @@ import ProviderSetupCallout from '../components/ProviderSetupCallout';
 import { getLocalRuntimes } from '../lib/engine-client';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
 import { useCodexModels } from '../lib/codex-models';
+import { useI18n } from '../i18n';
+import { describeEngineError } from '../lib/engine-errors';
+import { providerLabel } from '../lib/provider-label';
+import { modelNoteLabel } from '../lib/model-notes';
 
 /** Persists the dropdown choice across app sessions (per founder, 2026-05-09). */
 const SELECTED_PROVIDER_STORAGE_KEY = 'tal:analyze:selected-provider';
@@ -41,6 +44,8 @@ interface AnalyzeProps {
 }
 
 function Analyze({ resetSignal = 0 }: AnalyzeProps) {
+  const i18n = useI18n();
+  const { t, rich, locale } = i18n;
   // Honor a watchlist hand-off if one is queued in sessionStorage. Falls
   // back to the default NVDA when there isn't one. Since 2026-05-17 App.tsx
   // hides-not-unmounts pages (so an in-flight debate's WebSocket survives
@@ -181,7 +186,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       // the user's last choice — better than silently swapping models.
       const ids = new Set(localModels);
       const seed: ModelChoice[] = localSavedModel && !ids.has(localSavedModel)
-        ? [{ id: localSavedModel, label: `${localSavedModel} (last used, runtime offline)` }]
+        ? [{ id: localSavedModel, label: t('analyze.model.lastUsedOffline', { model: localSavedModel }) }]
         : [];
       const detected: ModelChoice[] = localModels.map((m) => ({ id: m, label: m }));
       return [...seed, ...detected];
@@ -192,7 +197,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       return codexModels.models;
     }
     return getAvailableModels(activeProvider, openaiAuthKind);
-  }, [activeProvider, openaiAuthKind, localModels, localSavedModel, codexModels.models]);
+  }, [activeProvider, openaiAuthKind, localModels, localSavedModel, codexModels.models, t]);
 
   /**
    * The model that will run the next debate. Pulls from per-(provider,auth)
@@ -318,7 +323,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         setEngineStatus('error');
         engineReadyRef.current = false;
         setEngineError(
-          lastErr instanceof Error ? lastErr.message : String(lastErr ?? 'unknown'),
+          lastErr instanceof Error ? lastErr.message : String(lastErr ?? t('status.unknown')),
         );
       }
     })();
@@ -597,7 +602,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         {
           onEvent: (event) => setEvents((prev) => [...prev, event]),
           onError: (err) => {
-            setStreamError(err instanceof Error ? err.message : 'stream error');
+            setStreamError(err instanceof Error ? err.message : t('analyze.err.stream'));
           },
           // Open the existing CostGuard modal and await the user's choice.
           // Preserves the established UX where Cancel aborts and Override
@@ -617,16 +622,14 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       );
 
       if (result.kind === 'cancelled') {
-        setStreamError(
-          'Cost guard cap reached. Adjust caps in Settings or override at run time.',
-        );
+        setStreamError(t('analyze.err.costCap'));
         return;
       }
 
       handleRef.current = result.handle;
       await result.handle.done;
     } catch (err) {
-      setStreamError(err instanceof Error ? err.message : 'stream failed');
+      setStreamError(err instanceof Error ? err.message : t('analyze.err.streamFailed'));
     } finally {
       handleRef.current = null;
       isStreamingRef.current = false;
@@ -670,13 +673,17 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
 
   const onCopyTranscript = async () => {
     if (!events.length) return;
-    const md = buildTranscriptMarkdown(events);
+    const md = buildTranscriptMarkdown(events, locale);
     try {
       await navigator.clipboard.writeText(md);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (err) {
-      setStreamError(`copy failed: ${err instanceof Error ? err.message : 'unknown'}`);
+      setStreamError(
+        t('analyze.err.copyFailed', {
+          error: err instanceof Error ? err.message : t('status.unknown'),
+        }),
+      );
     }
   };
 
@@ -688,11 +695,13 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     if (!events.length) return;
     try {
       const { buildTranscriptHtml } = await import('../lib/transcript-html');
-      const { html, suggestedName } = buildTranscriptHtml(events);
+      const { html, suggestedName } = buildTranscriptHtml(events, locale);
       await window.tradingAgentsLab.transcript.openHtml(html, suggestedName);
     } catch (err) {
       setStreamError(
-        `open in HTML failed: ${err instanceof Error ? err.message : 'unknown'}`,
+        t('analyze.err.openHtmlFailed', {
+          error: err instanceof Error ? err.message : t('status.unknown'),
+        }),
       );
     }
   };
@@ -726,17 +735,12 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       )}
       <header className={styles.pageHeader}>
         <div className={styles.pageHeaderTitleBlock}>
-          <h1 className={styles.pageTitle}>Analyze</h1>
-          <p className={styles.pageSubtitle}>
-            Run <strong>the Diligence</strong> on a ticker. Twelve AI agents
-            (analyst, researcher, trader, risk-manager) deliberate from
-            independent angles and converge on a recommendation. Educational
-            research only; not investment advice.
-          </p>
+          <h1 className={styles.pageTitle}>{t('analyze.title')}</h1>
+          <p className={styles.pageSubtitle}>{rich('analyze.subtitle')}</p>
         </div>
         <div className={styles.pageHeaderProvider}>
           <label className={styles.providerLabel} htmlFor="run-with">
-            Run with
+            {t('analyze.runWith')}
           </label>
           <select
             id="run-with"
@@ -750,8 +754,10 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               const configured = configuredProviders.has(p);
               const isOpenAIOAuth = p === 'openai' && openaiAuthKind === 'oauth';
               const label = configured
-                ? `${PROVIDER_LABEL[p]}${isOpenAIOAuth ? ' (OAuth)' : ''}`
-                : `${PROVIDER_LABEL[p]} (configure in Settings)`;
+                ? isOpenAIOAuth
+                  ? t('analyze.option.oauth', { provider: providerLabel(p, t) })
+                  : providerLabel(p, t)
+                : t('analyze.option.configure', { provider: providerLabel(p, t) });
               return (
                 <option key={p} value={p} disabled={!configured}>
                   {label}
@@ -760,7 +766,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             })}
             {configuredProviders.size === 0 && (
               <option value="" disabled>
-                Stub debate (no LLM configured)
+                {t('analyze.option.stub')}
               </option>
             )}
           </select>
@@ -770,14 +776,14 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               value={activeModel ?? ''}
               onChange={(e) => onSelectModel(e.target.value)}
               disabled={isStreaming || engineStatus !== 'running'}
-              aria-label="Select model"
+              aria-label={t('analyze.model.aria')}
               data-testid="model-select"
             >
               {availableModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
-                  {m.recommended ? ' (recommended)' : ''}
-                  {m.note ? ` (${m.note})` : ''}
+                  {m.recommended ? t('analyze.model.recommended') : ''}
+                  {m.note ? t('analyze.model.note', { note: modelNoteLabel(m.note, t) }) : ''}
                 </option>
               ))}
             </select>
@@ -794,10 +800,10 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               className={styles.providerReset}
               onClick={onResetOverrides}
               disabled={isStreaming}
-              title="Reset provider and model to recommended defaults"
-              aria-label="Reset provider and model to recommended defaults"
+              title={t('analyze.resetTitle')}
+              aria-label={t('analyze.resetTitle')}
             >
-              Reset
+              {t('analyze.reset')}
             </button>
           )}
         </div>
@@ -808,14 +814,18 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         // success until OpenAI's next model retirement breaks OAuth again.
         <p className={styles.helper} data-testid="codex-models-source">
           {codexModels.loading
-            ? 'Models: checking your ChatGPT account...'
+            ? t('analyze.codex.checking')
             : codexModels.source === 'live'
-              ? 'Models: live from your ChatGPT account.'
+              ? t('analyze.codex.live')
               : codexModels.source === 'cached' && !codexModels.error
-                ? 'Models: last list from your ChatGPT account.'
-                : `Models: built-in list. OpenAI catalog unavailable${
-                    codexModels.error ? ` (${codexModels.error})` : ''
-                  }.`}{' '}
+                ? t('analyze.codex.cached')
+                : t('analyze.codex.fallback', {
+                    detail: codexModels.error
+                      ? t('analyze.codex.fallbackDetail', {
+                          error: describeEngineError(codexModels.error, i18n),
+                        })
+                      : '',
+                  })}{' '}
           <button
             type="button"
             className={styles.providerReset}
@@ -823,7 +833,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             disabled={codexModels.loading || isStreaming}
             data-testid="codex-models-refresh"
           >
-            Refresh
+            {t('analyze.codex.refresh')}
           </button>
         </p>
       )}
@@ -833,7 +843,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       <section className={styles.card}>
         <div className={styles.fieldRow}>
           <div className={styles.field}>
-            <label className={styles.label} htmlFor="ticker">Ticker</label>
+            <label className={styles.label} htmlFor="ticker">{t('analyze.ticker')}</label>
             <input
               id="ticker"
               className={styles.input}
@@ -846,7 +856,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.label} htmlFor="date">As-of date</label>
+            <label className={styles.label} htmlFor="date">{t('analyze.asOfDate')}</label>
             <input
               id="date"
               type="date"
@@ -866,7 +876,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                 type="button"
                 data-testid="stop-button"
               >
-                Stop
+                {t('analyze.stop')}
               </button>
             ) : (
               <button
@@ -876,22 +886,30 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                 type="button"
                 data-testid="analyze-button"
               >
-                Analyze
+                {t('analyze.run')}
               </button>
             )}
           </div>
         </div>
         <div className={styles.cardFooter}>
           <p className={styles.helper}>
-            {engineStatus === 'pending' && 'Engine starting, please wait. Python sidecar is coming online.'}
+            {engineStatus === 'pending' && t('analyze.helper.pending')}
             {engineStatus === 'running' && !isStreaming && activeProvider && activeModel &&
-              `Live debate: ${PROVIDER_LABEL[activeProvider]}${openaiAuthKind === 'oauth' && activeProvider === 'openai' ? ' (OAuth)' : ''} · ${activeModel}, capped per agent.`}
+              t('analyze.helper.live', {
+                provider:
+                  openaiAuthKind === 'oauth' && activeProvider === 'openai'
+                    ? t('analyze.option.oauth', { provider: providerLabel(activeProvider, t) })
+                    : providerLabel(activeProvider, t),
+                model: activeModel,
+              })}
             {engineStatus === 'running' && !isStreaming && !activeProvider &&
-              'Stub debate. Paste an LLM key in Settings to switch to live agents.'}
+              t('analyze.helper.stub')}
             {engineStatus === 'running' && isStreaming &&
-              'Streaming agent debate from sidecar. Stop to abort.'}
+              t('analyze.helper.streaming')}
             {engineStatus === 'error' &&
-              `Engine could not start after several retries: ${engineError ?? 'unknown error'}. Use the app menu (⏻ top right) to Restart.`}
+              t('analyze.helper.engineError', {
+                error: engineError ? describeEngineError(engineError, i18n) : t('status.unknown'),
+              })}
           </p>
           {transcriptReady && !isStreaming && (
             <>
@@ -900,7 +918,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                 onClick={onCopyTranscript}
                 type="button"
               >
-                {copied ? 'Copied ✓' : 'Copy transcript (Markdown)'}
+                {copied ? t('analyze.copied') : t('analyze.copyTranscript')}
               </button>
               <button
                 className={styles.transcriptButton}
@@ -908,13 +926,15 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                 type="button"
                 data-testid="open-html-transcript"
               >
-                Open in HTML
+                {t('analyze.openHtml')}
               </button>
             </>
           )}
         </div>
         {streamError && (
-          <p className={styles.errorBanner}>Stream error: {streamError}</p>
+          <p className={styles.errorBanner}>
+            {t('analyze.streamError', { error: describeEngineError(streamError, i18n) })}
+          </p>
         )}
       </section>
 
@@ -925,25 +945,13 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
 
       {engineStatus === 'error' && engineError && (
         <div className={styles.engineErrorBanner}>
-          <strong>Engine error:</strong> {engineError}
+          {rich('analyze.engineError', { error: describeEngineError(engineError, i18n) })}
         </div>
       )}
 
       <DebateStream events={events} isStreaming={isStreaming} />
 
-      <section className={styles.disclaimer}>
-        <strong>For educational and research purposes only.</strong> Trading
-        Agents Lab is <strong>not a registered investment advisor</strong> and
-        does not provide investment, financial, legal, or tax advice. The
-        multi-agent LLM analyses on this page may be inaccurate, incomplete,
-        or outdated: large language models can and do hallucinate. Nothing
-        produced by this software is a recommendation to buy, sell, or hold
-        any security, cryptocurrency, or other asset. Consult a qualified
-        financial professional before making any investment decision. You
-        assume all risk for any action you take based on this analysis. The
-        maintainers and contributors accept no liability for losses arising
-        from use of this software.
-      </section>
+      <section className={styles.disclaimer}>{rich('analyze.disclaimer')}</section>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron';
+import { tm } from './i18n-main';
 
 /**
  * In-app Alpha Vantage free-key signup (defensive against funnelling our paying
@@ -40,7 +41,7 @@ export function openAlphaVantageSignup(
       modal: false,
       width: 760,
       height: 800,
-      title: 'Get a free Alpha Vantage key',
+      title: tm('avSignup.title'),
       backgroundColor: '#0d1117',
       autoHideMenuBar: true,
       webPreferences: {

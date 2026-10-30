@@ -1,3 +1,4 @@
+import { useT } from '../i18n';
 import styles from './ProviderSetupCallout.module.css';
 
 /**
@@ -8,16 +9,12 @@ import styles from './ProviderSetupCallout.module.css';
  * is added. The button deep-links to Settings (LLM Providers is the default tab).
  */
 export default function ProviderSetupCallout() {
+  const t = useT();
   return (
     <div className={styles.callout} role="status">
       <div className={styles.body}>
-        <h2 className={styles.title}>Connect an AI model to run the real analysis</h2>
-        <p className={styles.text}>
-          No LLM provider is set up yet, so the Diligence runs a built-in sample
-          rather than a real multi-agent analysis. Add a provider to unlock the
-          full thing. Paste an API key for OpenAI, Anthropic, OpenRouter, or
-          Google Gemini.
-        </p>
+        <h2 className={styles.title}>{t('providerCallout.title')}</h2>
+        <p className={styles.text}>{t('providerCallout.text')}</p>
       </div>
       <button
         type="button"
@@ -27,7 +24,7 @@ export default function ProviderSetupCallout() {
         }}
         data-testid="setup-provider-cta"
       >
-        Set up a provider
+        {t('providerCallout.cta')}
       </button>
     </div>
   );

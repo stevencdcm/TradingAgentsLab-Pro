@@ -1,0 +1,30 @@
+/** Exported transcripts (Markdown + standalone HTML). The model-written body stays in its original language. */
+export const exportMsgs = {
+  'export.md.title': '# TradingAgentsLab: {ticker} · {date}',
+  'export.md.titleNone': '# TradingAgentsLab: debate transcript',
+  'export.md.generated': '_Generated {time}_',
+  'export.md.banner':
+    '> **For educational research and paper trading.** TradingAgentsLab does not provide investment advice.',
+  'export.md.facts.stance': '**{stance}**, conviction {pct}%',
+  'export.md.facts.bullBear': 'bull thesis {bull}/100, bear thesis {bear}/100',
+  'export.md.facts.risk': 'risk {risk}',
+  'export.dataSummary': 'Data summary',
+  'export.avgDailyVolume': 'Avg daily volume',
+  'export.sessions': 'Sessions',
+  'export.source': 'Source',
+  'export.sourceLine': '{source} · as of {asOf}',
+  'export.news': 'News headlines',
+  'export.md.footer': 'Transcript exported from TradingAgentsLab.',
+  'export.html.brand': 'Trading Agents Lab Pro · The Diligence',
+  'export.html.titleNone': 'Debate transcript',
+  'export.html.pageTitle': '{what} · Trading Agents Lab Pro',
+  'export.html.generated': 'Generated {time}',
+  'export.html.banner':
+    '<b>For educational research and paper trading.</b> Trading Agents Lab does not provide investment advice.',
+  'export.html.facts.conviction': 'conviction {pct}%',
+  'export.html.facts.bull': 'bull thesis {n}/100',
+  'export.html.facts.bear': 'bear thesis {n}/100',
+  'export.html.facts.scenario': 'modeled scenario {value}',
+  'export.html.facts.horizon': 'horizon {value}',
+  'export.html.thesis': 'Investment thesis',
+} as const;

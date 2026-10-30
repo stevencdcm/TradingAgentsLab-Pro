@@ -1,0 +1,28 @@
+import type { batch } from '../en/batch';
+
+export const batchZhTW: Record<keyof typeof batch, string> = {
+  'batch.title': '批次盡職調查',
+  'batch.noTickers': '關注清單中沒有股票代碼',
+  'batch.ready.one': '已準備 {count} 檔',
+  'batch.ready.other': '已準備 {count} 檔',
+  'batch.running': '執行中：第 {current} / {total} 檔',
+  'batch.complete': '批次已完成',
+  'batch.cancelled': '批次已取消',
+  'batch.stop': '停止批次',
+  'batch.runAll': '全部執行（{count}）',
+  'batch.row.queued': '排隊中',
+  'batch.row.running': '執行中…',
+  'batch.row.done': '完成',
+  'batch.row.failed': '失敗：{error}',
+  'batch.row.skipped': '已略過',
+  'batch.summary.complete': '已完成 {done} / {total}',
+  'batch.summary.bullish': '看多：{n}',
+  'batch.summary.bearish': '看空：{n}',
+  'batch.summary.neutral': '中立：{n}',
+  'batch.summary.failed': '失敗：{n}',
+  'batch.summary.cost': '成本：{cost}',
+  'batch.err.noProvider': '尚未設定 LLM 供應商。請開啟「設定 → LLM 供應商」。',
+  'batch.err.costCapShort': '已達成本守門上限',
+  'batch.err.costBlocked': '成本守門攔下了 {ticker}，請至設定調整上限，或停止批次。',
+  'batch.secondsShort': '{n} 秒',
+};

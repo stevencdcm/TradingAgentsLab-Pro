@@ -48,6 +48,7 @@ from . import cost_guard, llm_providers, local_llm_detect, secret_refs, sentimen
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
+from starlette.concurrency import run_in_threadpool
 from .ticker import normalize_ticker, taiwan_code, taiwan_unsupported_message
 
 
@@ -205,8 +206,29 @@ def build_app(*, token: str) -> FastAPI:
 
     @app.post("/watchlist", dependencies=bearer)
     async def add_watchlist_endpoint(req: WatchlistAddRequest) -> dict[str, Any]:
+        ticker, market, name = req.ticker, None, None
+        tw = taiwan_code(req.ticker)
+        if tw:
+            # Canonical Taiwan identity = bare code + official market (never .TW/.TWO suffixes).
+            from . import tw_symbols
+
+            ticker = tw
+            try:
+                idx = await run_in_threadpool(tw_symbols.load_index)
+                hit = tw_symbols.lookup(idx, tw)
+            except tw_symbols.SymbolIndexError:
+                hit = None
+                if req.market:
+                    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                        detail="Taiwan symbol index unavailable: cannot verify the market of this code")
+            if hit is None and req.market:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{tw} is not in the official TWSE/TPEx index")
+            if hit is not None:
+                if req.market and req.market != hit["market"]:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{tw} is listed on {hit['market']}, not {req.market}")
+                market, name = hit["market"], hit["name"]
         try:
-            entry = storage.add_watchlist(ticker=req.ticker, note=req.note)
+            entry = storage.add_watchlist(ticker=ticker, note=req.note, market=market, name=name)
         except storage.WatchlistConflict as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -218,6 +240,21 @@ def build_app(*, token: str) -> FastAPI:
                 detail=str(exc),
             )
         return storage.watchlist_to_dict(entry)
+
+    @app.get("/tw/symbols", dependencies=bearer)
+    async def tw_symbols_search(q: str = "", limit: int = 20, refresh: bool = False) -> dict[str, Any]:
+        """Search the official TWSE/TPEx symbol index by code or name ('2330' and '台積電' both work)."""
+        from . import tw_symbols
+
+        try:
+            idx = await run_in_threadpool(tw_symbols.load_index, refresh=refresh)
+        except tw_symbols.SymbolIndexError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True, "results": tw_symbols.search(idx, q, max(1, min(limit, 50))),
+            "as_of": idx.get("as_of"), "fetched_at": idx.get("fetched_at"), "count": len(idx["entries"]),
+            "stale": idx.get("stale", False), "refresh_error": idx.get("error"), "sources": idx.get("sources"),
+        }
 
     @app.delete("/watchlist/{ticker}", dependencies=bearer)
     async def remove_watchlist_endpoint(ticker: str) -> dict[str, Any]:
@@ -1193,6 +1230,9 @@ class AnalyzeRequest(BaseModel):
 class WatchlistAddRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=8)
     note: str | None = Field(default=None, max_length=200)
+    # Taiwan entries: official identity from the symbol index (validated server-side, not trusted).
+    market: str | None = Field(default=None, max_length=8)
+    name: str | None = Field(default=None, max_length=60)
 
 
 class CostGuardConfigRequest(BaseModel):

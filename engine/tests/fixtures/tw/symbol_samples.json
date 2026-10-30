@@ -1,0 +1,118 @@
+{
+ "twse_companies": [
+  {
+   "出表日期": "1151029",
+   "公司代號": "1101",
+   "公司簡稱": "台泥"
+  },
+  {
+   "出表日期": "1151029",
+   "公司代號": "2317",
+   "公司簡稱": "鴻海"
+  },
+  {
+   "出表日期": "1151029",
+   "公司代號": "2330",
+   "公司簡稱": "台積電"
+  },
+  {
+   "出表日期": "1151029",
+   "公司代號": "6202",
+   "公司簡稱": "盛群"
+  }
+ ],
+ "tpex_companies": [
+  {
+   "Date": "1151029",
+   "SecuritiesCompanyCode": "1240",
+   "CompanyName": "茂生農經股份有限公司",
+   "CompanyAbbreviation": "茂生農經"
+  },
+  {
+   "Date": "1151029",
+   "SecuritiesCompanyCode": "3105",
+   "CompanyName": "穩懋半導體股份有限公司",
+   "CompanyAbbreviation": "穩懋"
+  },
+  {
+   "Date": "1151029",
+   "SecuritiesCompanyCode": "6488",
+   "CompanyName": "環球晶圓股份有限公司",
+   "CompanyAbbreviation": "環球晶"
+  }
+ ],
+ "twse_daily": [
+  {
+   "Date": "1151029",
+   "Code": "00400A",
+   "Name": "主動國泰動能高息"
+  },
+  {
+   "Date": "1151029",
+   "Code": "0050",
+   "Name": "元大台灣50"
+  },
+  {
+   "Date": "1151029",
+   "Code": "1101",
+   "Name": "台泥"
+  },
+  {
+   "Date": "1151029",
+   "Code": "2317",
+   "Name": "鴻海"
+  },
+  {
+   "Date": "1151029",
+   "Code": "2330",
+   "Name": "台積電"
+  },
+  {
+   "Date": "1151029",
+   "Code": "2882A",
+   "Name": "國泰特"
+  },
+  {
+   "Date": "1151029",
+   "Code": "6202",
+   "Name": "盛群"
+  }
+ ],
+ "tpex_daily": [
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "006201",
+   "CompanyName": "元大富櫃50"
+  },
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "1240",
+   "CompanyName": "茂生農經"
+  },
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "3105",
+   "CompanyName": "穩懋"
+  },
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "6488",
+   "CompanyName": "環球晶"
+  },
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "020001",
+   "CompanyName": "富邦存股雙十N"
+  },
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "020025",
+   "CompanyName": "統一亞洲半導體N"
+  },
+  {
+   "Date": "1151030",
+   "SecuritiesCompanyCode": "020033",
+   "CompanyName": "統一恒生科期N"
+  }
+ ]
+}

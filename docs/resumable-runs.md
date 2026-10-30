@@ -41,6 +41,17 @@ never reserves cost again and never calls the model again.
   (`earliest_seq`). A finished run drops its memory buffer after 10 minutes (the database copy remains).
 * `run_busy` (one Pro/Taiwan run at a time) carries `active_run_id` for the SAME owner so the page can attach instead of retrying.
 
+## Cancel hardening (D10)
+
+* `cancel` is idempotent: the run's task is cancelled once; later callers (double click, second tab, menu + button) only wait, and one
+  `run.cancelling` event tells every tab. A run whose result is already saved (webhooks finishing) is not cancellable and completes.
+* The drain of an in-flight model call runs in a shielded task and `with_heartbeat` waits for the wrapped generator to REALLY finish, so
+  a second cancellation can neither shorten the wait nor release the slot early. If the call has not landed by `TAL_CANCEL_DRAIN_S`, the
+  reservation settles as unknown (the reserved estimate is held, never 0) and, while that worker thread is alive, no new Pro/Taiwan run
+  may start (`run_busy`).
+* A completed run whose History write failed is settled as incomplete spend instead of vanishing. Webhook failure text is scrubbed
+  (URLs, bot-token shapes) before it can reach events. `usage_partial` marks cancelled/failed/interrupted runs (partial or estimated figures).
+
 Known limits: single engine process (no cross-process run sharing); a Dexter sandbox job already started keeps running to its
 own limit after a cancel; history rows (`sessions`) have no owner column: owner isolation covers the run APIs, not the History list, so this is meant for a
 single-owner deployment; a stopped free-engine call's usage is a lower bound; deploying a new engine restarts the process and so

@@ -190,7 +190,16 @@ def redact(text: str, *extra: Optional[str]) -> str:
     return out
 
 
-_KEY_SHAPES = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9._\-]{8,}|@@secret:[^@\s]+@@)")
+_KEY_SHAPES = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9._\-]{8,}|@@secret:[^@\s]+@@"
+    r"|\b\d{6,}:[A-Za-z0-9_\-]{20,}|\bbot\d{6,}:[A-Za-z0-9_\-]{10,})"              # Telegram bot tokens (digits:token)
+)
+_URL = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def scrub_urls_and_tokens(text: str) -> str:
+    """For error text that may echo a webhook endpoint (Telegram / Discord / Slack URLs ARE tokens): URLs become [url]."""
+    return scrub_key_shapes(_URL.sub("[url]", str(text)))
 
 
 def scrub_key_shapes(text: str) -> str:

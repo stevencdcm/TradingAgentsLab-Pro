@@ -192,6 +192,17 @@ class RunCancelled(Exception):
 
 CANCEL_DRAIN_S = float(os.environ.get("TAL_CANCEL_DRAIN_S", "240"))
 
+# Meters of runs whose worker thread was STILL inside a model call when the drain timed out. The graph mutates process-global state
+# (config, env, Taiwan cutoff), so no other full-graph run may start while such a thread can still touch it.
+_ZOMBIE_METERS: list = []
+_ZOMBIE_MAX_AGE_S = 3600.0
+
+
+def graph_thread_still_running() -> bool:
+    now = time.monotonic()
+    _ZOMBIE_METERS[:] = [m for m in _ZOMBIE_METERS if m.inflight > 0 and now - getattr(m, "zombie_since", now) < _ZOMBIE_MAX_AGE_S]
+    return bool(_ZOMBIE_METERS)
+
 
 class _TokenMeter(BaseCallbackHandler):
     """Meter token usage across the whole graph run and abort when over cap.
@@ -479,6 +490,7 @@ def _finalize_reservation(
     auth_kind: str,
     merged: Dict[str, Any],
     meter: "_TokenMeter",
+    unknown: bool = False,
 ) -> None:
     """Settle the pre-flight CostGuard reservation with the metered cost.
 
@@ -496,7 +508,7 @@ def _finalize_reservation(
         # A per-token run on a model (deep OR quick) with no verified price has an UNKNOWN cost: settle as NULL, not 0.
         _cost_guard.finalize_reservation(
             reservation_id,
-            actual_cost_usd=_run_cost(auth_kind, merged, meter) if _run_cost_known(auth_kind, merged) else None,
+            actual_cost_usd=_run_cost(auth_kind, merged, meter) if (_run_cost_known(auth_kind, merged) and not unknown) else None,
         )
     except Exception as exc:  # noqa: BLE001 — finalize is best-effort
         sys.stderr.write(
@@ -817,13 +829,27 @@ async def full_debate(
     finally:
         # A cancelled graph can still have a model call in flight on a worker thread: wait (bounded) for it to land so its
         # tokens are counted before the reservation is settled and the run slot is released. Never settle early.
+        # The wait runs in its own task and is shielded, so a SECOND cancellation (double click, shutdown, an enclosing cancel) can
+        # neither cut it short nor skip it: only the deadline ends it.
         deadline = time.monotonic() + CANCEL_DRAIN_S
-        while meter.inflight > 0 and time.monotonic() < deadline:
+
+        async def _drain() -> None:
+            while meter.inflight > 0 and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+
+        drain = asyncio.ensure_future(_drain())
+        while not drain.done():
             try:
-                await asyncio.sleep(0.25)
-            except BaseException:  # noqa: BLE001 — a second cancel must not skip the settlement
-                break
-        _finalize_reservation(reservation_id, auth_kind, merged, meter)
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                continue
+        still_running = meter.inflight > 0
+        if still_running:
+            meter.zombie_since = time.monotonic()
+            _ZOMBIE_METERS.append(meter)
+        # A call that never came back inside the deadline has an UNKNOWN cost: settle as NULL (the run's incomplete accounting then
+        # holds the reserved estimate) rather than a too-low measured value.
+        _finalize_reservation(reservation_id, auth_kind, merged, meter, unknown=still_running)
 
 
 def _extract_content(node: str, delta: Dict[str, Any], phase: str) -> str:

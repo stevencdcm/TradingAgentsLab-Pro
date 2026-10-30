@@ -697,7 +697,13 @@ def build_app(*, token: str) -> FastAPI:
             # The full graph mutates process-global library config / env while it runs, so only
             # one such run may be active; a second is refused explicitly rather than racing.
             if is_pro or tw_mode:
-                if run_slot["busy"]:
+                try:
+                    from . import full_debate as _fd_mod
+
+                    _lingering = _fd_mod.graph_thread_still_running()      # a cancelled run's model call is still finishing
+                except ImportError:                                         # no full-graph engine installed
+                    _lingering = False
+                if run_slot["busy"] or _lingering:
                     evt = {"type": "run.error", "code": "run_busy",
                            "error": "Another full-graph / Taiwan research run is already in progress. Wait for it to finish, then retry."}
                     # Same owner only: hand over the id of the run that holds the slot so the page can attach to it.
@@ -1171,7 +1177,10 @@ def build_app(*, token: str) -> FastAPI:
                         )
                         report_evt = {
                             "type": "webhook.report",
-                            "results": [r.to_dict() for r in results],
+                            "results": [
+                                {**d, "error": secret_refs.scrub_urls_and_tokens(d["error"])} if isinstance(d.get("error"), str) else d
+                                for d in (r.to_dict() for r in results)
+                            ],
                         }
                         await ws.send_json(report_evt)
                         captured_events.append(report_evt)
@@ -1319,10 +1328,15 @@ async def with_heartbeat(agen, *, meta: dict, interval: float = 0.0):
             yield ev
     finally:
         pending.cancel()
-        try:
-            await pending
-        except BaseException:  # noqa: BLE001 — cancelled / already exhausted
-            pass
+        # Wait until the wrapped generator has REALLY finished (it may be draining an in-flight model call), even if this task is
+        # cancelled again meanwhile: shield, and keep waiting; the generator's own deadline bounds it.
+        while not pending.done():
+            try:
+                await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:  # noqa: BLE001 — the generator raised: it is finished
+                break
         aclose = getattr(agen, "aclose", None)
         if aclose is not None:
             try:

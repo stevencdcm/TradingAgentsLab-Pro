@@ -35,6 +35,10 @@ export interface RunClock {
   connection?: 'connected' | 'reconnecting' | 'offline';
   /** True when this page re-attached to a run that was already going (page reload / second tab). */
   resumed?: boolean;
+  /** A stop was requested; the engine is waiting for the model call in flight to land before it settles. */
+  cancelling?: boolean;
+  /** The run ended without completing: token / cost figures are partial. */
+  usagePartial?: boolean;
 }
 
 export type RunState =

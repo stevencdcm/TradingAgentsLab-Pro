@@ -397,7 +397,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   useEffect(() => {
     if (resetSignal === 0) return;
     // "New analysis" is an explicit stop: cancel the engine-side run (leaving or reloading the page never does).
-    void handleRef.current?.cancel();
+    requestCancel();
     forgetRun();
     setEvents([]);
     setStreamError(null);
@@ -605,8 +605,15 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       return;
     }
     // Run bookkeeping events update the clock, they are not part of the debate transcript.
+    if (type === 'run.cancelling') {
+      setRunClock((c) => ({ ...c, cancelling: true }));
+      return;
+    }
     if (type === 'run.attached' || type === 'run.finished' || type === 'run.resync') {
-      if (type === 'run.finished') setRunClock((c) => (c.endedAt ? c : { ...c, endedAt: Date.now() }));
+      if (type === 'run.finished') {
+        const state = (event as unknown as { state?: string }).state;
+        setRunClock((c) => ({ ...c, endedAt: c.endedAt ?? Date.now(), cancelling: false, usagePartial: state !== undefined && state !== 'completed' }));
+      }
       return;
     }
     setRunClock((c) => ({ ...c, lastEventAt: Date.now() }));
@@ -624,6 +631,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
 
   /** Re-attach to an engine-side run and replay it from the start (reload, second tab, finished run shown again). */
   const resumeFromEngine = async (st: RunStatusSnapshot) => {
+    cancellingRef.current = !!st.cancelling;
     isStreamingRef.current = st.active;
     setEvents([]);
     setStreamError(null);
@@ -639,6 +647,8 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       endedAt: st.ended_at ? st.ended_at * 1000 : null,
       lastEventAt: st.since_last_event_s === null ? null : Date.now() - st.since_last_event_s * 1000,
       resumed: st.active,
+      cancelling: !!st.cancelling,
+      usagePartial: !st.active && st.state !== 'completed',
       connection: 'connected',
     });
     rememberRun({ runId: st.run_id, ticker: st.ticker ?? '' });
@@ -706,6 +716,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     setStreamError(null);
     setCopied(false);
     forgetRun();
+    cancellingRef.current = false;
     // Reset asset class so the previous run's "crypto" badge doesn't bleed
     // into a new equity analysis (or vice versa) before the first
     // data.summary event arrives. dataProvider stays as-is — it's the
@@ -778,16 +789,29 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   };
 
   // Stop is an explicit cancel: the engine stops the analysis and settles its cost. (Leaving the page only unsubscribes.)
-  const onStop = () => {
-    void handleRef.current?.cancel();
+  // One entry point for every stop gesture (button, menu, shortcut, New analysis): idempotent here AND in the handle, and the UI
+  // shows "cancelling" until the engine reports the end.
+  const cancellingRef = useRef(false);
+  const requestCancel = () => {
+    const h = handleRef.current;
+    if (!h || cancellingRef.current) return; // already asked: Stop + shortcut + menu + New analysis never ask twice
+    cancellingRef.current = true;
+    setRunClock((c) => (c.cancelling ? c : { ...c, cancelling: true }));
+    void h.cancel().then((ok) => {
+      if (ok === false) {
+        cancellingRef.current = false;
+        setRunClock((c) => ({ ...c, cancelling: false }));
+      }
+    });
   };
+  const onStop = requestCancel;
 
   // Listen for the App menu "Stop streaming" command.
   useEffect(() => {
     const bridge = window.tradingAgentsLab;
     if (!bridge?.onMenuCommand) return;
     return bridge.onMenuCommand('menu:stop-stream', () => {
-      void handleRef.current?.cancel();
+      requestCancel();
     });
   }, []);
 
@@ -804,7 +828,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         if (engineReadyRef.current && !isStreamingRef.current) onAnalyze();
       } else if (e.key === '.') {
         e.preventDefault();
-        void handleRef.current?.cancel();
+        requestCancel();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1014,6 +1038,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               <button
                 className={`${styles.button} ${styles.buttonStop}`}
                 onClick={onStop}
+                disabled={!!runClock.cancelling}
                 type="button"
                 data-testid="stop-button"
               >

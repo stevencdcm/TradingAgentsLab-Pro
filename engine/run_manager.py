@@ -178,6 +178,7 @@ class Run:
             "replay_truncated": self.truncated, "replay_earliest_seq": self.first_kept_seq, "subscribers": len(self.subs),
             # A user cancel is asked for but the run has not actually ended yet (a model call already in flight is awaited).
             "cancelling": self.cancel_requested and self.active,
+            "usage_partial": (not self.active) and self.state != "completed",
             # Usage is complete only for a finished analysis; a stopped one is measured through the last completed model call.
             "usage_complete": self.state == "completed",
         }
@@ -430,7 +431,9 @@ class RunManager:
                 state = "failed"
                 code = (run.close_code[1] if run.close_code and run.close_code[1] else None) or ("run_error" if run.error else "ended_without_result")
         except asyncio.CancelledError:
-            if run.cancel_requested:
+            if run.session_id:                                  # the result was already saved: this run completed
+                state, code = "completed", None
+            elif run.cancel_requested:
                 state, code = "cancelled", "user_cancelled"
                 run.emit({"type": "run.cancelled", "message": "Stopped by the user."})
             else:                                               # process shutdown
@@ -458,7 +461,9 @@ class RunManager:
         run.state, run.terminal_code, run.ended_at = state, code, _now()
         run.emit({"type": "run.finished", "state": state, "code": code, "elapsed_s": run.elapsed_s(), "input_tokens": run.input_tokens,
                   "output_tokens": run.output_tokens, "estimated_cost_usd": run.cost, "cost_known": run.cost_known, "session_id": run.session_id})
-        if state != "completed":
+        if state != "completed" or run.session_id is None:
+            # Not completed, OR completed but its history row was never written (storage failure): there is no session whose
+            # cost the caps would count, so settle the hold as incomplete spend instead of letting the cost vanish.
             cost_guard.settle_run_end(run.reservation_id, billable_started=run.engine_started)
         self._save_meta(run)
         run.finish_subs()
@@ -473,14 +478,21 @@ class RunManager:
                 self._keys.pop((r.owner, r.key), None)
 
     async def cancel(self, run: Run, timeout: float = 5.0) -> Run:
-        """Explicit stop. The run body's own `finally` blocks settle the cost reservation with the measured usage."""
-        if run.active and run.task is not None and not run.task.done():
+        """Explicit stop, idempotent: the run's task is cancelled exactly ONCE however many callers ask (double click, two tabs,
+        menu + button). Later callers only wait. The run body's own `finally` blocks settle the cost reservation once the model
+        call already in flight has really landed; `timeout` only bounds how long THIS request waits, not the cancellation."""
+        if not run.active or run.task is None or run.task.done():
+            return run
+        if run.completed_seen or run.session_id:
+            return run                       # the result already exists (webhooks are finishing): nothing left to stop, never double-count
+        if not run.cancel_requested:
             run.cancel_requested = True
+            run.emit({"type": "run.cancelling", "message": "Stop requested: waiting for the model call already in flight to finish."})
             run.task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(run.task), timeout)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
-                pass
+        try:
+            await asyncio.wait_for(asyncio.shield(run.task), timeout)
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
+            pass
         return run
 
     # ---- subscription loop shared by /stream and /runs/{id}/stream -------------------------------------------------

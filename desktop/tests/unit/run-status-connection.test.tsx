@@ -31,4 +31,12 @@ describe('RunStatus connection line', () => {
     show({ connection: 'connected' });
     expect(screen.queryByTestId('run-status-connection')).toBeNull();
   });
+
+  it('cancelling and partial-usage notes', () => {
+    show({ cancelling: true });
+    expect(screen.getByTestId('run-status-cancelling').textContent).toMatch(/取消中/);
+    cleanup();
+    show({ usagePartial: true }, false);
+    expect(screen.getByTestId('run-status-usage-partial').textContent).toMatch(/不是最終數字/);
+  });
 });

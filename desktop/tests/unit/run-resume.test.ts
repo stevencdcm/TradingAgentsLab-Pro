@@ -133,4 +133,23 @@ describe('subscribeRun (streamDebate / resumeRun)', () => {
     expect(conn[conn.length - 1]).toBe('offline');
     expect(String(await p)).toMatch(/stream closed with code 1006/);
   });
+
+  it('cancel() is idempotent (one POST however many callers), stays subscribed, and can be retried after a failed request', async () => {
+    const ec = await load({ port: 8765, token: 'tok', proxy: false });
+    const h = await ec.resumeRun('run_7', () => {});
+    FakeWS.all[0].open();
+    const [a, b, c] = await Promise.all([h.cancel(), h.cancel(), h.cancel()]);
+    expect([a, b, c]).toEqual([true, true, true]);
+    expect(calls.filter((x) => x.url.includes('/runs/run_7/cancel'))).toHaveLength(1);
+    // still subscribed: a drop while cancelling re-subscribes instead of giving up
+    FakeWS.all[0].drop(1006);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(FakeWS.all[1].url).toContain('/runs/run_7/stream');
+    // failed request -> false, and a retry is allowed
+    (fetch as any).mockImplementationOnce(async () => new Response('x', { status: 500 }));
+    const h2 = await ec.resumeRun('run_8', () => {});
+    FakeWS.all[2].open();
+    expect(await h2.cancel()).toBe(false);
+    expect(await h2.cancel()).toBe(true);
+  });
 });

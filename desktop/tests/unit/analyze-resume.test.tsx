@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 const calls = { resume: [] as string[], cancel: 0, close: 0, reserve: 0, runAnalysis: 0, cancelRun: [] as string[] };
 let doneResolve: () => void = () => {};
 
+let statusOverride: Record<string, unknown> = {};
 const status = {
   run_id: 'run_abc', state: 'running', active: true, ticker: 'AAPL', trade_date: '2026-10-30', provider: 'openai', model: 'gpt-6.1-sol',
   auth_kind: 'oauth', engine: 'pro', phase: 'debate', steps_done: 3, started_at: Date.now() / 1000 - 120, ended_at: null, elapsed_s: 120, last_seq: 4,
@@ -21,12 +22,12 @@ vi.mock('../../src/lib/engine-client', async () => {
     getHealth: vi.fn(async () => ({ ok: true, version: 't', uptime_seconds: 1, engine_state: 'ready', data_provider: 'yfinance', live_supported: true, providers: [] })),
     getLocalRuntimes: vi.fn(async () => ({ runtimes: [] })),
     listLocalModels: vi.fn(async () => ({ models: [] })),
-    getRunStatus: vi.fn(async (id: string) => (id === 'run_abc' ? status : null)),
+    getRunStatus: vi.fn(async (id: string) => (id === 'run_abc' ? { ...status, ...statusOverride } : null)),
     getActiveRuns: vi.fn(async () => ({ runs: [], recent: [] })),
     resumeRun: vi.fn(async (id: string) => {
       calls.resume.push(id);
       const done = new Promise<void>((r) => { doneResolve = r; });
-      return { close: () => { calls.close++; doneResolve(); }, cancel: async () => { calls.cancel++; doneResolve(); }, runId: () => id, done };
+      return { close: () => { calls.close++; doneResolve(); }, cancel: async () => { calls.cancel++; return true; }, runId: () => id, done };
     }),
   };
 });
@@ -48,7 +49,7 @@ import Analyze from '../../src/pages/Analyze';
 import { I18nProvider } from '../../src/i18n';
 
 beforeEach(() => {
-  calls.resume = []; calls.cancel = 0; calls.close = 0; calls.reserve = 0; calls.runAnalysis = 0;
+  calls.resume = []; calls.cancel = 0; calls.close = 0; calls.reserve = 0; calls.runAnalysis = 0; statusOverride = {};
   sessionStorage.clear();
   (window as any).tradingAgentsLab = { platform: 'web', getEngineHandshake: async () => ({ port: 8765, proxy: true }), consent: { get: async () => ({}) } };
 });
@@ -92,5 +93,39 @@ describe('Analyze + engine-side runs', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(calls.resume).toEqual([]);
     expect(calls.cancel).toBe(0);
+  });
+
+  it('every stop gesture asks the engine ONCE; the page shows "cancelling" and Stop is disabled meanwhile', async () => {
+    sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+    const { rerender } = mount({ resetSignal: 0 });
+    await waitFor(() => expect(calls.resume).toHaveLength(1));
+    const stop = (await screen.findByTestId('stop-button')) as HTMLButtonElement;
+    await act(async () => { fireEvent.click(stop); });
+    expect(calls.cancel).toBe(1);
+    await waitFor(() => expect(screen.getByTestId('run-status-cancelling').textContent).toMatch(/取消中/));
+    expect((screen.getByTestId('stop-button') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { fireEvent.click(stop); });                                              // double click
+    await act(async () => { fireEvent.keyDown(window, { key: '.', metaKey: true }); });             // shortcut
+    rerender(<I18nProvider initialLocale="zh-TW"><Analyze resetSignal={1} /></I18nProvider>);       // New analysis
+    await new Promise((r) => setTimeout(r, 30));
+    expect(calls.cancel).toBe(1);
+  });
+
+  it('reload while the engine is still cancelling: shows "cancelling", Stop disabled, and does not cancel again', async () => {
+    statusOverride = { cancelling: true };
+    sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+    mount();
+    await waitFor(() => expect(calls.resume).toHaveLength(1));
+    await waitFor(() => expect(screen.getByTestId('run-status-cancelling')).toBeTruthy());
+    expect((screen.getByTestId('stop-button') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { fireEvent.keyDown(window, { key: '.', ctrlKey: true }); });
+    expect(calls.cancel).toBe(0);
+  });
+
+  it('a finished-but-not-completed run replayed after reload says its usage is partial', async () => {
+    statusOverride = { state: 'cancelled', active: false, ended_at: Date.now() / 1000 - 5, terminal_code: 'user_cancelled' };
+    sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+    mount();
+    await waitFor(() => expect(screen.getByTestId('run-status-usage-partial').textContent).toMatch(/不是最終數字/));
   });
 });

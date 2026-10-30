@@ -581,7 +581,8 @@ export interface StreamHandle {
   /** Unsubscribe only. The analysis keeps running in the engine (refresh / navigation never cancel it). */
   close(): void;
   /** Explicit user stop: asks the engine to cancel the run and settle its cost. */
-  cancel(): Promise<void>;
+  /** Resolves false when the engine could not be asked (the caller may retry); true otherwise. */
+  cancel(): Promise<boolean>;
   runId(): string | null;
   done: Promise<void>;
 }
@@ -1211,6 +1212,10 @@ export interface RunStatusSnapshot {
   run_id: string;
   state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   active: boolean;
+  /** A stop was requested but the engine is still waiting for the model call in flight to finish. */
+  cancelling?: boolean;
+  /** Finished without completing: tokens/cost are what was measured, not a final figure. */
+  usage_partial?: boolean;
   ticker: string | null;
   trade_date: string | null;
   provider: string | null;
@@ -1267,6 +1272,7 @@ async function subscribeRun(
   let attempt = 0;
   let ws: WebSocket | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let cancelPromise: Promise<boolean> | null = null;
   let resolveDone!: () => void;
   let rejectDone!: (err: unknown) => void;
   const done = new Promise<void>((resolve, reject) => {
@@ -1346,18 +1352,27 @@ async function subscribeRun(
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
       else resolveDone();
     },
-    cancel: async () => {
-      if (runId) {
+    // Idempotent: Stop button, menu, shortcut, New analysis and a second tab may all ask; the engine is asked once per handle and the
+    // stream stays subscribed (and re-subscribes if it drops) until the engine reports run.finished.
+    cancel: () => {
+      cancelPromise ??= (async (): Promise<boolean> => {
+        if (!runId) {
+          userClosed = true; // never attached: nothing to stop on the engine, just stop trying to start
+          if (timer) clearTimeout(timer);
+          if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
+          else resolveDone();
+          return true;
+        }
         try {
           await cancelRun(runId);
+          return true;
         } catch (err) {
+          cancelPromise = null; // the request failed: allow another attempt
           onError?.(err);
+          return false;
         }
-      }
-      userClosed = true;
-      if (timer) clearTimeout(timer);
-      // The server closes the stream after run.finished; if the socket is gone, just settle.
-      if (!ws || ws.readyState === WebSocket.CLOSED) resolveDone();
+      })();
+      return cancelPromise;
     },
     runId: () => runId,
     done,

@@ -44,6 +44,8 @@ from typing import Any, Literal, Optional
 
 import httpx
 
+from . import secret_refs
+
 
 WebhookKind = Literal["generic", "slack", "discord", "telegram"]
 WebhookStatus = Literal["fired", "filtered", "failed"]
@@ -346,7 +348,8 @@ async def _fire_one(
             id=config.id,
             name=config.name,
             status="failed",
-            error=f"{type(exc).__name__}: {exc}",
+            # Exception text can echo the endpoint (httpx names the URL); URLs and token shapes are scrubbed.
+            error=f"{type(exc).__name__}: {secret_refs.scrub_urls_and_tokens(str(exc))}"[:200],
         )
 
 

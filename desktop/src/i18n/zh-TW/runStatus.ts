@@ -8,6 +8,8 @@ export const runStatusZhTW: Record<keyof typeof runStatus, string> = {
   'runStatus.conn.resumed': '已重新連線到進行中的分析：分析在引擎上持續執行，重新整理頁面不會中斷。',
   'runStatus.conn.reconnecting': '頁面與引擎的連線暫時中斷，正在重新連線——分析仍在引擎上執行（不是模型停了）。',
   'runStatus.conn.offline': '無法重新連線。分析可能仍在引擎上執行；重新整理頁面即可恢復顯示。',
+  'runStatus.cancelling': '取消中：正在等待已送出的模型呼叫結束，之後才會結算用量；請不要重複按停止。',
+  'runStatus.usagePartial': '此分析未完成：用量與費用只是已量測到的部分（或保守估計），不是最終數字。',
   'runStatus.state.demo': '示範模式——沒有呼叫模型',
   'runStatus.state.completed': '已完成',
   'runStatus.state.failed': '失敗',

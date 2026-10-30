@@ -7,6 +7,8 @@ export const runStatus = {
   'runStatus.conn.resumed': 'Re-attached to a run in progress: the analysis keeps running in the engine; reloading the page does not interrupt it.',
   'runStatus.conn.reconnecting': 'The page lost its connection to the engine and is reconnecting. The analysis is still running in the engine (the model has not stopped).',
   'runStatus.conn.offline': 'Could not reconnect. The analysis may still be running in the engine; reload the page to show it again.',
+  'runStatus.cancelling': 'Cancelling: waiting for the model call already in flight to finish before usage is settled. No need to press Stop again.',
+  'runStatus.usagePartial': 'This analysis did not complete: usage and cost are only what was measured (or a conservative estimate), not a final figure.',
   'runStatus.state.demo': 'Demo run — no model is called',
   'runStatus.state.completed': 'Completed',
   'runStatus.state.failed': 'Failed',

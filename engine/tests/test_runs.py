@@ -843,3 +843,260 @@ def test_cancel_flag_stops_new_model_calls_from_starting():
     with pytest.raises(fd.RunCancelled):
         meter.on_chat_model_start({}, [])
     assert meter.inflight == 1                                                      # the refused call is not counted as in flight
+
+
+# ---- D10: cancel is idempotent and drains for real; second cancellations cannot cut the settlement short ------------------------
+
+
+def make_fake_graph(monkeypatch, *, call_s: float, record: dict):
+    """A graph whose single node makes a model call on a WORKER THREAD that takes `call_s` and reports 1000/200 tokens when it lands."""
+    from engine import full_debate as fd
+
+    class Resp:
+        llm_output = {"usage": {"input_tokens": 1000, "output_tokens": 200}}
+        generations: list = []
+
+    class FakeGraph:
+        def __init__(self, *, callbacks, **_):
+            meter = callbacks[0]
+            self.propagator = type("P", (), {"create_initial_state": staticmethod(lambda *a, **k: {})})()
+            self.memory_log = type("M", (), {"get_past_context": staticmethod(lambda t: "")})()
+
+            class G:
+                async def astream(self, state, **kw):
+                    def node_call():
+                        meter.on_chat_model_start({}, [])
+                        record["started"] = time.monotonic()
+                        time.sleep(call_s)
+                        record["landed"] = time.monotonic()
+                        meter.on_llm_end(Resp())
+
+                    await asyncio.get_running_loop().run_in_executor(None, node_call)
+                    yield "values", {}
+
+            self.graph = G()
+
+    monkeypatch.setattr(fd, "TradingAgentsGraph", FakeGraph)
+    return fd
+
+
+def pro_frame(key, **over):
+    return frame(key=key, engine="pro", pro_config={"selected_analysts": ["market"]}, **over)
+
+
+@pytest.fixture
+def pro_world(monkeypatch):
+    pytest.importorskip("tradingagents")
+
+    async def none(**_):
+        return None
+
+    async def empty(**_):
+        return []
+
+    monkeypatch.setattr(srv, "_fetch_summary_safe", none)
+    monkeypatch.setattr(srv, "_fetch_news_safe", empty)
+
+
+def wait_flag(d, key, timeout=10):
+    end = time.time() + timeout
+    while key not in d and time.time() < end:
+        time.sleep(0.02)
+    assert key in d
+
+
+def test_double_cancel_does_not_end_the_drain_early_or_free_the_slot(pro_world, monkeypatch):
+    """B1: two cancels (>5 s apart in a real UI) must still wait for the in-flight call, count its late usage and hold the slot."""
+    import concurrent.futures as cf
+
+    rec: dict = {}
+    fd = make_fake_graph(monkeypatch, call_s=6.5, record=rec)
+    monkeypatch.setattr(fd, "CANCEL_DRAIN_S", 30.0)
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        rid = cost_guard.reserve(model="gpt-4o", auth_kind="api_key", max_tokens=50).reservation_id
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(pro_frame("pro-a", reservation_id=rid))
+            run_id = read_until(ws, lambda e: e["type"] == "graph.plan")[0]["run_id"]
+        wait_flag(rec, "started")
+        with cf.ThreadPoolExecutor(3) as pool:
+            f1 = pool.submit(lambda: c.post(f"/runs/{run_id}/cancel", headers=H).json())      # waits ~5 s, returns "cancelling"
+            time.sleep(0.5)
+            f2 = pool.submit(lambda: c.post(f"/runs/{run_id}/cancel", headers=H).json())      # a second click / another tab
+            first, second = f1.result(), f2.result()
+        assert "landed" not in rec                                                           # the call is STILL in flight
+        for st in (first, second):
+            assert st["state"] == "running" and st["cancelling"] is True and st["active"]
+        assert res_row(rid)[0] == 0                                                          # not settled early (was 0.0 before the fix)
+        # the slot is held: a second Pro run is refused while the first graph thread is still inside its model call
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws2:
+            ws2.send_json(pro_frame("pro-b"))
+            err = read_until(ws2, lambda e: e["type"] == "run.error")[-1]
+        assert err["code"] == "run_busy" and err["active_run_id"] == run_id
+        st = wait_state(c, run_id, ("cancelled",), timeout=20)
+        assert rec["landed"] <= time.monotonic()
+        row = res_row(rid)
+        assert row[0] == 1 and row[1] > 0                                                    # settled AFTER landing, with the late tokens
+        assert st["input_tokens"] is None or st["input_tokens"] >= 0
+        evs = c.get(f"/runs/{run_id}/events?limit=2000", headers=H).json()["events"]
+        assert [e["type"] for e in evs].count("run.cancelling") == 1 and [e["type"] for e in evs].count("run.cancelled") == 1
+        # and now the slot is free again
+        rec2: dict = {}
+        make_fake_graph(monkeypatch, call_s=0.1, record=rec2)
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws3:
+            ws3.send_json(pro_frame("pro-c"))
+            assert read_until(ws3, lambda e: e["type"] == "session.start")
+
+
+def test_drain_timeout_keeps_the_estimate_hold_and_the_slot_while_the_thread_is_alive(pro_world, monkeypatch):
+    """A call that does not land inside the deadline is UNKNOWN cost (estimate held, never a fake 0) and still blocks a new graph."""
+    rec: dict = {}
+    fd = make_fake_graph(monkeypatch, call_s=3.0, record=rec)
+    monkeypatch.setattr(fd, "CANCEL_DRAIN_S", 0.6)
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        rid = cost_guard.reserve(model="gpt-4o", auth_kind="api_key", max_tokens=50).reservation_id
+        est = cost_guard.reserve(model="gpt-4o", auth_kind="api_key", max_tokens=50).est_cost_usd
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(pro_frame("pro-t", reservation_id=rid))
+            run_id = read_until(ws, lambda e: e["type"] == "graph.plan")[0]["run_id"]
+        wait_flag(rec, "started")
+        c.post(f"/runs/{run_id}/cancel", headers=H)
+        st = wait_state(c, run_id, ("cancelled",), timeout=10)
+        assert "landed" not in rec                                                            # the run ended while the thread is still alive
+        with cost_guard._connect() as conn:
+            row = conn.execute("SELECT finalized, finalized_cost_usd, settled_as FROM cost_reservations WHERE id=?", (rid,)).fetchone()
+        assert row[0] == 1 and row[1] is None and row[2] == "incomplete"                      # unknown, held at the estimate, not 0
+        assert spend_today() >= est - 1e-9
+        assert st["usage_partial"] is True
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws2:                            # a new graph must not start next to the live thread
+            ws2.send_json(pro_frame("pro-u"))
+            err = read_until(ws2, lambda e: e["type"] == "run.error")[-1]
+        assert err["code"] == "run_busy"
+        wait_flag(rec, "landed")
+        time.sleep(0.2)
+        make_fake_graph(monkeypatch, call_s=0.1, record={})
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws3:                            # thread gone: allowed again
+            ws3.send_json(pro_frame("pro-v"))
+            assert read_until(ws3, lambda e: e["type"] == "session.start")
+
+
+def test_cancel_is_idempotent_and_concurrent_callers_only_wait():
+    async def go():
+        mgr = rm.RunManager()
+        seen = {"cancels": 0, "drained": False}
+
+        async def body(sink):
+            await sink.send_json({"type": "session.start"})
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                seen["cancels"] += 1
+                await asyncio.sleep(0.6)                 # settling: a SECOND task.cancel() would interrupt this
+                seen["drained"] = True
+                raise
+
+        run, _ = await mgr.start_or_attach("local", {"ticker": "AAPL"}, body)
+        await asyncio.sleep(0.05)
+        await asyncio.gather(*(mgr.cancel(run, timeout=0.1) for _ in range(5)))
+        assert run.active and run.cancel_requested                                           # not finished yet, but not cancelled twice
+        await asyncio.wait_for(asyncio.shield(run.task), 5)
+        assert seen == {"cancels": 1, "drained": True} and run.state == "cancelled"
+        assert [e["type"] for e in run.events].count("run.cancelling") == 1
+        assert (await mgr.cancel(run)).state == "cancelled"                                  # after the end: a no-op
+
+    asyncio.run(go())
+
+
+def test_a_run_whose_result_is_already_saved_is_not_cancellable_and_is_never_double_counted():
+    async def go():
+        mgr = rm.RunManager()
+
+        async def body(sink):
+            await sink.send_json({"type": "session.complete", "decision": {}})
+            sink.run.session_id = "sess-1"               # history row written; webhooks still being dispatched
+            await asyncio.sleep(0.5)
+
+        run, _ = await mgr.start_or_attach("local", {"ticker": "AAPL"}, body)
+        await asyncio.sleep(0.1)
+        assert run.active and run.session_id
+        out = await mgr.cancel(run)
+        assert out.cancel_requested is False
+        await asyncio.wait_for(asyncio.shield(run.task), 3)
+        assert run.state == "completed" and run.terminal_code is None
+
+    asyncio.run(go())
+
+
+def test_completed_run_whose_history_write_failed_still_counts_its_spend(world, monkeypatch):
+    """P3-c: reservation finalized, no session row -> the cost must not vanish."""
+    world.free = 10_000
+    monkeypatch.setattr(srv.storage, "write_session_from_events", lambda **kw: None)
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        rid = reservation(c)
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(frame(reservation_id=rid))
+            evs = drain(ws)
+        st = wait_state(c, evs[0]["run_id"], ("completed",))
+        assert st["session_id"] is None and n_sessions() == 0
+        with cost_guard._connect() as conn:
+            assert conn.execute("SELECT settled_as FROM cost_reservations WHERE id=?", (rid,)).fetchone()[0] == "incomplete"
+        assert spend_today() > 0
+
+
+def test_webhook_failure_text_with_a_bot_token_never_reaches_run_events(world, monkeypatch):
+    """P3-b: the REAL dispatcher fails with an exception that echoes the endpoint; nothing token-like may be stored or replayed."""
+    import httpx
+
+    token = "123456789:AAEhBP0abcDEFghiJKLmnoPQRstuVWXyz01"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    async def decided(**kw):                         # a parseable decision, so the real dispatcher actually tries to fire
+        yield {"type": "session.start", "ticker": "AAPL", "trade_date": "2026-10-30"}
+        yield {"type": "session.complete", "decision": {"stance": "bullish", "conviction": 0.8, "reasoning": "x"}, "live": True, "provider": "openai",
+               "auth_kind": "api_key", "model": "gpt-4o-mini", "input_tokens": 5, "output_tokens": 2, "estimated_cost_usd": 0.0}
+
+    monkeypatch.setattr(srv, "live_debate", decided)
+
+    async def boom(self, *a, **k):
+        raise httpx.ConnectError(f"connection refused for {url}")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", boom)
+    f = frame()
+    f["webhooks"] = [{"id": "w1", "url": url, "kind": "generic"}]
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(f)
+            evs = drain(ws)
+        rid = evs[0]["run_id"]
+        wait_state(c, rid, ("completed",))
+        report = next(e for e in evs if e["type"] == "webhook.report")
+        assert report["results"][0]["status"] == "failed" and "ConnectError" in report["results"][0]["error"]
+        texts = [json.dumps(evs), c.get(f"/runs/{rid}/events?limit=2000", headers=H).text]
+        with c.websocket_connect(f"/runs/{rid}/stream?token={TOKEN}&after=0") as ws2:
+            texts.append(json.dumps(drain(ws2)))
+    with sqlite3.connect(storage.db_path()) as conn:
+        dump = json.dumps([list(r) for t in ("runs", "run_events") for r in conn.execute(f"SELECT * FROM {t}")])
+    for blob in texts + [dump]:
+        assert token not in blob and "AAEhBP0" not in blob and "api.telegram.org/bot" not in blob
+
+
+def test_scrubbers_cover_bot_tokens_and_urls():
+    from engine import secret_refs as sr
+
+    assert "[redacted]" in sr.scrub_key_shapes("x 123456789:AAEhBP0abcDEFghiJKLmnoPQRstuVWXyz01 y")
+    assert sr.scrub_urls_and_tokens("failed https://hooks.slack.com/services/T000/B000/XXXX ok") == "failed [url] ok"
+
+
+def test_two_tabs_see_one_cancelling_event_and_the_same_end(world):
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        run_id, _, _ = start_and_get_two_messages(c, frame())
+        with c.websocket_connect(f"/runs/{run_id}/stream?token={TOKEN}&after=0") as a, \
+                c.websocket_connect(f"/runs/{run_id}/stream?token={TOKEN}&after=0") as b:
+            read_until(a, lambda e: e.get("seq", 0) >= 3)
+            read_until(b, lambda e: e.get("seq", 0) >= 3)
+            c.post(f"/runs/{run_id}/cancel", headers=H)
+            c.post(f"/runs/{run_id}/cancel", headers=H)
+            ta, tb = [e["type"] for e in drain(a)], [e["type"] for e in drain(b)]
+        for t in (ta, tb):
+            assert t.count("run.cancelling") <= 1 and "run.cancelled" in t and t[-1] == "run.finished"
+        st = c.get(f"/runs/{run_id}", headers=H).json()
+        assert st["state"] == "cancelled" and st["usage_partial"] is True and st["usage_complete"] is False

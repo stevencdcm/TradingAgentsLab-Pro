@@ -451,3 +451,14 @@ def test_dexter_can_be_turned_off_per_run_and_is_then_reported_not_hidden(routed
     dx = next(e for e in evs if e["type"] == "dexter.result")
     assert seen_kw["enabled"] is False and dx["ran"] is False
     assert any(x["code"] == "dexter_skipped" for x in evs[-1]["limitations"])
+
+
+def test_model_supplied_curr_date_cannot_pass_the_trade_date_and_revenue_rows_are_filtered(env):
+    cutoff = (TODAY - timedelta(days=2)).isoformat()
+    tg.begin_run(cutoff)
+    assert tg.mode() == "latest"
+    assert tg._clamp_to_trade_date(TODAY.isoformat()) == cutoff and tg._clamp_to_trade_date("2000-01-01") == "2000-01-01"
+    out = tg.get_fundamentals("2330", TODAY.isoformat())              # the model asks for a later date than the run's
+    assert "Monthly revenue" in out
+    rows = [l.split(" | ")[0] for l in out.splitlines() if l[:2] == "20" and " | revenue=" in l]
+    assert rows and all(r <= cutoff[:7] for r in rows)

@@ -315,6 +315,12 @@ def _not_after_cutoff(rows: list[dict]) -> list[dict]:
     return keep
 
 
+def _clamp_to_trade_date(d: str) -> str:
+    """A model-supplied `curr_date` can never move a tool past the run's selected trade date."""
+    td = _run.get("trade_date")
+    return min(d, td) if td else d
+
+
 def _usable(r: FetchResult) -> list[dict]:
     """latest: everything the source returned up to the trade date (publication time labelled unknown); historical: provably-public rows only."""
     return _not_after_cutoff(r.records + (r.unknown_records if mode() == "latest" else []))
@@ -358,20 +364,20 @@ def _financial(dataset: str, label: str, symbol: str, curr_date: str, freq: str 
 
 
 def get_income_statement(ticker: str, freq: str = "quarterly", curr_date: str = None):
-    return _with_limits(_financial("income", "Income statement", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq))
+    return _with_limits(_financial("income", "Income statement", ticker, _clamp_to_trade_date(curr_date or _run["trade_date"] or date.today().isoformat()), freq))
 
 
 def get_balance_sheet(ticker: str, freq: str = "quarterly", curr_date: str = None):
-    return _with_limits(_financial("balance", "Balance sheet", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq))
+    return _with_limits(_financial("balance", "Balance sheet", ticker, _clamp_to_trade_date(curr_date or _run["trade_date"] or date.today().isoformat()), freq))
 
 
 def get_cashflow(ticker: str, freq: str = "quarterly", curr_date: str = None):
-    return _with_limits(_financial("cash_flow", "Cash-flow statement", ticker, curr_date or _run["trade_date"] or date.today().isoformat(), freq))
+    return _with_limits(_financial("cash_flow", "Cash-flow statement", ticker, _clamp_to_trade_date(curr_date or _run["trade_date"] or date.today().isoformat()), freq))
 
 
 def get_fundamentals(ticker: str, curr_date: str = None):
     """Company overview = monthly revenue (FinMind) + the latest income-statement rows."""
-    cd = curr_date or _run["trade_date"] or date.today().isoformat()
+    cd = _clamp_to_trade_date(curr_date or _run["trade_date"] or date.today().isoformat())
     code = taiwan_code(ticker)
     if not code:
         return _unavailable("fundamentals", f"'{ticker}' is not a Taiwan stock code")
@@ -381,6 +387,7 @@ def get_fundamentals(ticker: str, curr_date: str = None):
             with _lock, _client() as c:
                 rev = tw_evidence.fetch_finmind(c, "TaiwanStockMonthRevenue", code, (date.fromisoformat(cd) - timedelta(days=500)).isoformat(), cd, _run.get("token"))
             _note("finmind_free", "ok")
+            rev = _not_after_cutoff([{**r, "data_period": r.get("date")} for r in rev])      # FinMind row date; never after the trade date
             rev = sorted(rev, key=lambda r: (r.get("revenue_year"), r.get("revenue_month")))[-13:]
             parts.append("## Monthly revenue (TWD) — source: FinMind TaiwanStockMonthRevenue; publication time unknown (legal deadline is NOT assumed)")
             parts += [f"{r.get('revenue_year')}-{int(r.get('revenue_month', 0)):02d} | revenue={r.get('revenue')}" for r in rev]

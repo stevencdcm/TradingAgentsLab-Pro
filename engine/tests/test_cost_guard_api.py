@@ -378,6 +378,7 @@ def test_ws_pro_run_with_unpriced_quick_model_is_blocked_without_override(client
         while ev["type"] != "cost.blocked":
             ev = ws.receive_json()
     assert ev["type"] == "cost.blocked" and ev["over_dimension"] == "unknown_price"
+    assert _fin(pre)[0] == 1                                                  # the held estimate is released, not left to expire
 
 
 def test_dexter_never_starts_for_an_unpriced_paid_model_and_shares_the_run_budget(monkeypatch, tmp_db):

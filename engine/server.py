@@ -914,6 +914,7 @@ def build_app(*, token: str) -> FastAPI:
                            "spend": cost_guard.spend_to_dict(cost_guard.check(model=reserve_model, auth_kind=config.auth_kind, max_tokens=config.max_tokens, extra_models=guard_models).current),
                            "config": cost_guard.config_to_dict(cost_guard.get_config()), "est_cost_usd": 0.0,
                            "message": "A model in this run has no verified price, so its cost is unknown. Use an explicit per-run override to continue."}
+                    cost_guard.finalize_reservation(reservation_id, actual_cost_usd=0.0)       # nothing ran: release the held estimate
                     await ws.send_json(evt)
                     captured_events.append(evt)
                     await ws.close(code=1008, reason="cost_guard_blocked")

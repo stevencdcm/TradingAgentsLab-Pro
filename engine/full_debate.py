@@ -48,9 +48,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from tradingagents.agents.utils.rating import extract_rating
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+from .rating_parse import extract_pm_rating
 from .report_language import library_output_language, normalize_report_language
 
 
@@ -279,12 +281,17 @@ def _parse_pm_decision(final_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if final_state:
         text = final_state.get("final_trade_decision") or ""
 
-    rating_match = re.search(r"\*\*Rating\*\*:\s*([A-Za-z]+)", text)
-    rating = rating_match.group(1).strip() if rating_match else ""
-    rating_key = rating.lower()
-
-    stance = _RATING_TO_STANCE.get(rating_key, "neutral")
-    conviction = _RATING_TO_CONVICTION.get(rating_key, 0.5)
+    # NFKC + English label/word passes + labelled Chinese forms ("**評級**：增持").
+    # None means NOTHING parseable: report that honestly (stance "review") instead
+    # of defaulting to neutral / 0.5, which would present a made-up conclusion.
+    rating = extract_pm_rating(text)
+    rating_key = (rating or "").lower()
+    if rating:
+        stance = _RATING_TO_STANCE[rating_key]
+        conviction = _RATING_TO_CONVICTION[rating_key]
+    else:
+        stance = "review"
+        conviction = 0.0
 
     summary_match = re.search(
         r"\*\*Executive Summary\*\*:\s*(.+?)(?:\n\*\*|\Z)", text, re.DOTALL
@@ -302,6 +309,7 @@ def _parse_pm_decision(final_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "stance": stance,
         "conviction": conviction,
+        "rating_status": "parsed" if rating else "unparsed",
         "reasoning": reasoning,
         # Pro-richer native fields. price_target is displayed as the
         # "modeled scenario range" in the UI (an analytical estimate, not
@@ -720,12 +728,22 @@ async def full_debate(
         # Persist to the memory log so the NEXT same-ticker run can reflect on
         # this decision. Bypassing the library's _run_graph means we replicate
         # this hook explicitly; skipping it silently disables cross-run learning.
+        #
+        # Only decisions with a parsed rating are remembered. The library's own
+        # tagging defaults an unparseable decision to "Hold"; writing that would
+        # feed a made-up history into the next run's reflection. When the rating
+        # came from a Chinese label the library cannot read, a machine label is
+        # prepended so the stored tag is the real rating rather than Hold.
         try:
-            if final_state is not None and final_state.get("final_trade_decision"):
+            raw_decision = (final_state or {}).get("final_trade_decision")
+            if raw_decision and decision.get("rating_status") == "parsed":
+                to_store = raw_decision
+                if extract_rating(raw_decision) is None:
+                    to_store = f"**Rating**: {extract_pm_rating(raw_decision)}\n\n{raw_decision}"
                 graph.memory_log.store_decision(
                     ticker=ticker,
                     trade_date=trade_date,
-                    final_trade_decision=final_state["final_trade_decision"],
+                    final_trade_decision=to_store,
                 )
         except Exception:
             pass  # memory is best-effort; never fail the run over it

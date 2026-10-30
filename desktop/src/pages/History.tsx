@@ -8,7 +8,7 @@ import {
   type SessionDetail,
   type SessionSummary,
 } from '../lib/engine-client';
-import { stanceLabel, stanceLean } from '../lib/stance';
+import { isReview, stanceLabel, stanceLean } from '../lib/stance';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { useI18n } from '../i18n';
 import { formatRelativeTime } from '../lib/relative-time';
@@ -363,9 +363,11 @@ function History() {
                   <span className={styles.rowTicker}>{s.ticker}</span>
                   <span className={`${styles.actionPill} ${stancePillClass(s.decision_action)}`}>
                     {stanceLabel(s.decision_action, t)}
-                    <span className={styles.actionConfidence}>
-                      {Math.round(s.decision_confidence * 100)}%
-                    </span>
+                    {!isReview(s.decision_action) && (
+                      <span className={styles.actionConfidence}>
+                        {Math.round(s.decision_confidence * 100)}%
+                      </span>
+                    )}
                   </span>
                   {s.live && (
                     <span className={styles.livePill}>

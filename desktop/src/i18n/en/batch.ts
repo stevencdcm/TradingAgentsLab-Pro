@@ -17,6 +17,7 @@ export const batch = {
   'batch.summary.complete': '{done} of {total} complete',
   'batch.summary.bullish': 'Bullish: {n}',
   'batch.summary.bearish': 'Bearish: {n}',
+  'batch.summary.review': 'Needs review: {n}',
   'batch.summary.neutral': 'Neutral: {n}',
   'batch.summary.failed': 'Failed: {n}',
   'batch.summary.cost': 'Cost: {cost}',

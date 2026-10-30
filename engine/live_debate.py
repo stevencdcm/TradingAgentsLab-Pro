@@ -447,8 +447,10 @@ def _parse_decision(content: str) -> dict:
     """
     import re
 
-    stance = "neutral"
-    conviction = 0.5
+    # No STANCE line => no conclusion is claimed ("review"), not a made-up neutral.
+    stance = "review"
+    conviction = 0.0
+    parsed_stance = False
     bull_strength = 50
     bear_strength = 50
     risk_level = "moderate"
@@ -460,6 +462,8 @@ def _parse_decision(content: str) -> dict:
     )
     if m:
         stance = m.group(1).lower()
+        parsed_stance = True
+        conviction = 0.5
     m = re.search(r"CONVICTION\s*=\s*([0-9]*\.?[0-9]+)", content, re.IGNORECASE)
     if m:
         try:
@@ -497,6 +501,7 @@ def _parse_decision(content: str) -> dict:
     return {
         "stance": stance,
         "conviction": conviction,
+        "rating_status": "parsed" if parsed_stance else "unparsed",
         "bull_strength": bull_strength,
         "bear_strength": bear_strength,
         "risk_level": risk_level,

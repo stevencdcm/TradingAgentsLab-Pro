@@ -7,7 +7,7 @@ import type {
   NewsHeadlinesEvent,
 } from '../lib/engine-client';
 import Markdown from './Markdown';
-import { normalizeStance, riskLabel, stanceLabel, stanceLean } from '../lib/stance';
+import { isReview, normalizeStance, riskLabel, stanceLabel, stanceLean } from '../lib/stance';
 import { useI18n, type I18n } from '../i18n';
 import { localizeEngineError } from '../lib/engine-errors';
 import styles from './DebateStream.module.css';
@@ -620,12 +620,19 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
           <div className={styles.decisionAction} data-testid="decision-stance">
             {stanceLabel(decision.stance, t)}
           </div>
-          <div className={styles.decisionConfidence}>
-            {t('debate.decision.conviction')}{' '}
-            <span className={styles.decisionConfidenceValue}>
-              {(decision.conviction * 100).toFixed(0)}%
-            </span>
-          </div>
+          {isReview(decision.stance) && (
+            <div className={styles.decisionConfidence} data-testid="decision-review-note">
+              {t('debate.decision.reviewNote')}
+            </div>
+          )}
+          {!isReview(decision.stance) && (
+            <div className={styles.decisionConfidence}>
+              {t('debate.decision.conviction')}{' '}
+              <span className={styles.decisionConfidenceValue}>
+                {(decision.conviction * 100).toFixed(0)}%
+              </span>
+            </div>
+          )}
           {decision.bull_strength != null && decision.bear_strength != null && (
             <div className={styles.decisionStrengths}>
               <div className={styles.strengthRow}>

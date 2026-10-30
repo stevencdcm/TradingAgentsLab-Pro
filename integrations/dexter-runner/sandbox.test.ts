@@ -53,3 +53,18 @@ test('a symlink inside the job dir (file or directory) is refused', async () => 
   expect(await read(job, 'evidence/link.txt')).not.toContain('TOP-SECRET');
   expect(await read(job, 'dirlink/secret.txt')).not.toContain('TOP-SECRET');
 });
+
+test('~ paths are refused even when HOME holds data (HOME is NOT overridden; the sandbox is the boundary)', async () => {
+  const { job, base } = setup();
+  const fakeHome = path.join(base, 'home');
+  mkdirSync(fakeHome, { recursive: true });
+  writeFileSync(path.join(fakeHome, 'canary.txt'), 'HOME-CANARY');
+  const prevHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    expect(await read(job, '~/canary.txt')).not.toContain('HOME-CANARY');
+    expect(await read(job, '~')).not.toContain('HOME-CANARY');
+  } finally {
+    process.env.HOME = prevHome;
+  }
+});

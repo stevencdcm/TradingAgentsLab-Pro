@@ -63,4 +63,5 @@ export const costReportZhTW: Record<keyof typeof costReport, string> = {
   'costReport.note.no_cache_write_price_billed_at_input_rate': '此模型沒有公布快取寫入價，寫入的 token 以輸入價計。',
   'costReport.note.priced_via_undated_alias_of_snapshot': '價格頁沒有列出的帶日期快照代號，以其不帶日期的別名計價。',
   'costReport.note.reasoning_exceeds_output_not_added': '回報的推理 token 多於輸出 token，不另外加總。',
+  'costReport.note.usage_gap_subtotal_is_a_lower_bound': '有些模型呼叫沒有回報用量，所以顯示的金額只涵蓋有回報的呼叫——是下限，不是總額。',
 };

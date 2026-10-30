@@ -844,7 +844,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
 
   const onCopyTranscript = async () => {
     if (!events.length) return;
-    const md = buildTranscriptMarkdown(events, locale);
+    const md = buildTranscriptMarkdown(events, locale, runClock.costReport ?? null);
     try {
       await navigator.clipboard.writeText(md);
       setCopied(true);
@@ -866,7 +866,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     if (!events.length) return;
     try {
       const { buildTranscriptHtml } = await import('../lib/transcript-html');
-      const { html, suggestedName } = buildTranscriptHtml(events, locale);
+      const { html, suggestedName } = buildTranscriptHtml(events, locale, runClock.costReport ?? null);
       await window.tradingAgentsLab.transcript.openHtml(html, suggestedName);
     } catch (err) {
       setStreamError(
@@ -878,7 +878,10 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   };
 
   const buttonDisabled = engineStatus !== 'running' || isStreaming;
-  const transcriptReady = events.some((e) => e.type === 'session.complete');
+  // A run that ended without a result (cancelled / failed / interrupted) can still be exported: its usage report is the engine's
+  // current partial one (same object the status panel shows), so no session.complete has to be invented.
+  const transcriptReady =
+    events.some((e) => e.type === 'session.complete') || (!isStreaming && events.length > 0 && !!runClock.usagePartial && !!runClock.costReport);
 
   const onCostGuardConfirm = useCallback(() => {
     setCostGuardBlocked(null);

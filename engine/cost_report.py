@@ -235,6 +235,7 @@ def _line_report(ln: _Line, billing: str) -> dict[str, Any]:
         "cache_write_12h_tokens": ln.cache_write_12h_tokens, "cache_write_unsplit_tokens": ln.cache_write_unsplit_tokens,
         "output_tokens": ln.output_tokens,
         "reasoning_tokens": ln.reasoning_tokens if not ln.reasoning_unreported_calls else None,
+        "usage_unreported_calls": ln.nousage_calls,
         "context": ln.context, "usd": None, "usd_max": None, "usd_basis": None, "price": None, "unpriced_reason": None,
         "missing": missing,
     }
@@ -243,6 +244,13 @@ def _line_report(ln: _Line, billing: str) -> dict[str, Any]:
         return out
     if ln.reasoning_tokens > ln.output_tokens:
         out.setdefault("notes", []).append("reasoning_exceeds_output_not_added")
+    all_unreported = ln.nousage_calls > 0 and ln.nousage_calls >= ln.calls
+    if all_unreported and billing != "local":
+        # Every call on this line finished without usage: its cost is UNKNOWN. Pricing zero tokens would show a fake $0.
+        out["unpriced_reason"] = "usage_not_reported"
+        return out
+    if ln.nousage_calls:
+        out.setdefault("notes", []).append("usage_gap_subtotal_is_a_lower_bound")
     if billing == "local":
         out.update(usd=0.0, usd_basis="local_no_external_api_fee")
         return out

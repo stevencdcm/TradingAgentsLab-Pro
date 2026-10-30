@@ -501,3 +501,73 @@ def test_with_run_state_marks_an_existing_report_partial():
     assert done["totals"]["complete"] is True and cut["totals"]["complete"] is False
     assert cut["totals"]["api_estimate_usd"] == done["totals"]["api_estimate_usd"] and cut["run_state"] == "cancelled"
     assert with_run_state(None, "failed") is None
+
+
+# ---- D19: a call with no usage is UNKNOWN, never $0 --------------------------------------------------------------------
+
+def _no_usage_ledger(n=2, provider="openai", model="gpt-6.1-sol"):
+    led = UsageLedger(provider=provider)
+    for _ in range(n):
+        led.record_no_usage(stage="debate", agent="analyst", provider=provider, model=model)
+    return led
+
+
+def test_all_calls_without_usage_is_unknown_not_zero_dollars():
+    r = build_report(_no_usage_ledger(), billing="api_key")
+    ln = r["lines"][0]
+    assert ln["calls"] == 2 and ln["usd"] is None and ln["usd_basis"] is None and ln["unpriced_reason"] == "usage_not_reported"
+    assert r["totals"]["api_estimate_usd"] is None and r["totals"]["complete"] is False                 # no measurable paid line: the total is unknown too
+    assert "debate:usage_not_reported" in r["totals"]["incomplete_reasons"]
+
+
+def test_oauth_with_no_usage_has_no_reference_and_local_keeps_its_zero_external_fee():
+    o = build_report(_no_usage_ledger(), billing="oauth")
+    assert o["totals"]["api_equivalent_reference_usd"] is None and o["totals"]["api_estimate_usd"] is None and o["lines"][0]["usd"] is None
+    loc = build_report(_no_usage_ledger(provider="local", model="qwen"), billing="local")
+    assert loc["totals"]["external_api_usd"] == 0.0 and loc["lines"][0]["usd"] == 0.0               # a local model has no external fee whatever it reports
+    assert loc["totals"]["complete"] is False                                                        # but the missing usage is still flagged
+
+
+def test_mixed_measured_and_unmeasured_lists_a_known_subtotal_and_says_it_is_a_lower_bound():
+    led = _one()                                                   # one measured line: 0.3 USD
+    led.record_no_usage(stage="debate", agent="other", provider="openai", model="gpt-6-luna")
+    r = build_report(led, billing="api_key")
+    by = {ln["agent"]: ln for ln in r["lines"]}
+    assert by["other"]["usd"] is None and by["market"]["usd"] == pytest.approx(0.3)
+    assert r["totals"]["api_estimate_usd"] == pytest.approx(0.3) and r["totals"]["complete"] is False
+    same_line = _one(model_billed="gpt-6.1-sol", service_tier=None, tier_reported=False)           # same key: measured + unmeasured on ONE line
+    same_line.record_no_usage(stage="debate", agent="market", provider="openai", model="gpt-6.1-sol")
+    m = build_report(same_line, billing="api_key")["lines"][0]
+    assert m["calls"] == 2 and m["usage_unreported_calls"] == 1 and m["usd"] is not None
+    assert "usage_gap_subtotal_is_a_lower_bound" in m["notes"]
+
+
+def test_raw_model_events_with_and_without_usage_reach_the_report():
+    from engine.full_debate import _TokenMeter
+
+    m = _TokenMeter(None)
+    m.ledger = UsageLedger(provider="openai")
+    m.on_chat_model_start({}, [], run_id="a", metadata={"langgraph_node": "analyst"}, invocation_params={"model": "gpt-6.1-sol"})
+    m.on_chat_model_start({}, [], run_id="b", metadata={"langgraph_node": "trader"}, invocation_params={"model": "gpt-6.1-sol"})
+    m.on_llm_end(SimpleNamespace(generations=[[]], llm_output={}), run_id="a")                    # only this one: no usage at all
+    r = build_report(m.ledger, billing="api_key")
+    assert r["totals"]["api_estimate_usd"] is None and r["lines"][0]["usd"] is None
+    m.on_llm_end(_real_chat_llm_result(OFFICIAL_USAGE), run_id="b")
+    r2 = build_report(m.ledger, billing="api_key")
+    assert r2["totals"]["api_estimate_usd"] == pytest.approx(0.0399) and r2["totals"]["complete"] is False   # known part + visible gap
+
+
+@pytest.mark.asyncio
+async def test_live_debate_zero_token_calls_are_unknown_in_the_completed_report(monkeypatch):
+    class Zero(_Adapter):
+        async def complete(self, **kw):
+            text, _i, _o = await super().complete(**kw)
+            return text, 0, 0
+
+    from engine.live_debate import ProviderConfig, SentimentBlock, live_debate
+
+    monkeypatch.setattr("engine.live_debate.adapter_for", lambda _c: Zero(None))
+    cfg = ProviderConfig(provider="openai", auth={"type": "api_key", "api_key": "sk-fake"}, model="gpt-6.1-sol", max_tokens=400)
+    evs = [e async for e in live_debate(ticker="NVDA", trade_date="2026-05-15", summary=None, headlines=None, config=cfg, sentiment=SentimentBlock())]
+    t = next(e for e in evs if e["type"] == "session.complete")["cost_report"]["totals"]
+    assert t["api_estimate_usd"] is None and t["complete"] is False

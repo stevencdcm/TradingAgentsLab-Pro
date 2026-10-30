@@ -26,6 +26,8 @@ export interface CostReportLine {
   cache_write_12h_tokens?: number;
   cache_write_unsplit_tokens?: number;
   notes?: string[];
+  /** Calls on this line that finished without any usage numbers (all of them => the line is unknown, never $0). */
+  usage_unreported_calls?: number;
   usd_basis: 'official_api_estimate' | 'api_equivalent_reference' | 'local_no_external_api_fee' | null;
   unpriced_reason: string | null;
   missing: string[];
@@ -62,6 +64,7 @@ const SHOWN_NOTES = [
   'dexter_input_tokens_assumed_to_include_cached_tokens', 'cache_write_ttl_unsplit_priced_as_range_30m_to_12h',
   'service_tier_not_reported_assumed_standard', 'no_cached_input_price_billed_at_input_rate',
   'no_cache_write_price_billed_at_input_rate', 'priced_via_undated_alias_of_snapshot', 'reasoning_exceeds_output_not_added',
+  'usage_gap_subtotal_is_a_lower_bound',
 ];
 
 const KNOWN_REASONS = new Set([
@@ -154,6 +157,10 @@ export function formatCostReport(r: CostReport, t: T, fmt: Fmt): FormattedCostRe
     const amount = ln.usd === null ? null : ln.usd_max != null && ln.usd_max !== ln.usd ? `${formatUsd(ln.usd)}–${formatUsd(ln.usd_max)}` : formatUsd(ln.usd);
     const usd =
       amount === null ? t('costReport.unpriced') : ln.usd_basis === 'api_equivalent_reference' ? `${amount} (${t('costReport.reference')})` : amount;
+    if ((ln.usage_unreported_calls ?? 0) > 0 && (ln.usage_unreported_calls ?? 0) >= ln.calls) {
+      // No call on this line reported usage: show the gap, not zeros.
+      return { agent: who, model: ln.model ?? unknown, input: unknown, cached: unknown, write: unknown, output: unknown, reasoning: unknown, usd };
+    }
     return {
       agent: who,
       model: ln.model ?? unknown,

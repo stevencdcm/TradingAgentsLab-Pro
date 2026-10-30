@@ -110,6 +110,43 @@ describe('D17: cache-write TTL range, assumptions and partial runs', () => {
   });
 });
 
+describe('D19: unknown cost is never shown as $0 (screen, Markdown, HTML) and a cancelled run exports its partial report', () => {
+  const gap = line({ calls: 2, input_tokens: 0, cached_input_tokens: 0, uncached_input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, usd: null, usd_basis: null,
+    unpriced_reason: 'usage_not_reported', missing: ['usage_not_reported'], usage_unreported_calls: 2 });
+  const unknownTotals = { api_estimate_usd: null, complete: false, incomplete_reasons: ['debate:usage_not_reported'] };
+  it('a line whose every call reported no usage shows unknown cells and no dollar sign; the total is unknown', () => {
+    wrap(<CostReportPanel report={report({ lines: [gap] }, unknownTotals)} />);
+    const cells = Array.from(document.querySelectorAll('tbody td')).map((c) => c.textContent);
+    expect(cells.slice(2)).toEqual(['未知', '未知', '未知', '未知', '未知', '未知']);
+    const text = screen.getByTestId('cost-report').textContent ?? '';
+    expect(text).not.toMatch(/\$0/); expect(screen.getByTestId('cost-report-total').textContent).toMatch(/未知/);
+    expect(text).toMatch(/模型呼叫結束了卻沒有任何用量數字/);
+  });
+  it('mixed measured + unmeasured: a known subtotal, stated as incomplete, the gap line unknown', () => {
+    wrap(<CostReportPanel report={report({ lines: [line({}), gap], notes: ['usage_gap_subtotal_is_a_lower_bound'] }, { api_estimate_usd: 0.0201, complete: false, incomplete_reasons: ['debate:usage_not_reported'] })} />);
+    expect(screen.getByTestId('cost-report-total').textContent).toMatch(/\$0\.0201/);
+    expect(screen.getByTestId('cost-report-status').textContent).toMatch(/不完整/);
+    const rows = Array.from(document.querySelectorAll('tbody tr')).map((r) => r.textContent ?? '');
+    expect(rows[1]).toMatch(/未知$/); expect(screen.getByTestId('cost-report').textContent).toMatch(/下限，不是總額/);
+  });
+  it('Markdown and HTML exports of an unknown total print no $0', () => {
+    const r = report({ lines: [gap] }, unknownTotals);
+    const evs = [{ type: 'agent.message', agent: 'market_analyst', phase: 'analysts', content: 'partial note' } as unknown as DebateEvent];
+    const md = buildTranscriptMarkdown(evs, 'zh-TW', r);
+    const { html } = buildTranscriptHtml(evs, 'zh-TW', r);
+    for (const out of [md, html]) { expect(out).not.toMatch(/\$0/); expect(out).toMatch(/API 價格估算：未知/); expect(out).toMatch(/不完整/); }
+  });
+  it('a cancelled run (no session.complete in its events) exports the passed partial report in both formats', () => {
+    const r = report({ run_state: 'cancelled' }, { complete: false, incomplete_reasons: ['run_cancelled_usage_is_partial'] });
+    const evs = [{ type: 'agent.message', agent: 'market_analyst', phase: 'analysts', content: 'partial note' } as unknown as DebateEvent];
+    expect(evs.some((e) => e.type === 'session.complete')).toBe(false);
+    const md = buildTranscriptMarkdown(evs, 'zh-TW', r);
+    expect(md).toMatch(/## Token 用量與 API 價格估算/); expect(md).toMatch(/已取消，只計入目前量測到的用量/); expect(md).toMatch(/\| Dexter \| gpt-6-luna \|/);
+    const { html } = buildTranscriptHtml(evs, 'zh-TW', r);
+    expect(html).toMatch(/data-testid="cost-report"/); expect(html).toMatch(/已取消，只計入目前量測到的用量/);
+  });
+});
+
 describe('where the report appears', () => {
   const events = (cr?: CostReport | null): DebateEvent[] => [
     { type: 'session.start', ticker: 'NVDA', trade_date: '2026-10-30' } as DebateEvent,

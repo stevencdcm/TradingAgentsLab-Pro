@@ -63,4 +63,5 @@ export const costReport = {
   'costReport.note.no_cache_write_price_billed_at_input_rate': 'This model has no published cache-write price; written tokens are priced at the input rate.',
   'costReport.note.priced_via_undated_alias_of_snapshot': 'A dated snapshot id that the price page does not list was priced at its undated alias.',
   'costReport.note.reasoning_exceeds_output_not_added': 'Reported reasoning tokens exceed output tokens; they are not added.',
+  'costReport.note.usage_gap_subtotal_is_a_lower_bound': 'Some model calls reported no usage, so the amount shown covers only the calls that did — a lower bound, not the total.',
 } as const;

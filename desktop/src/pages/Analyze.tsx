@@ -21,7 +21,7 @@ import {
 } from '../lib/cost-guard';
 import { runAnalysis } from '../lib/run-analysis';
 import { buildTranscriptMarkdown } from '../lib/transcript';
-import { listSecrets } from '../lib/secrets';
+import { listSecrets, onSecretsChanged } from '../lib/secrets';
 import { consumePendingTicker } from '../lib/handoff';
 import { loadLocalApiKey, loadLocalConfig, saveLocalConfig } from '../lib/local-llm';
 import ProviderSetupCallout from '../components/ProviderSetupCallout';
@@ -393,6 +393,11 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     setCopied(false);
   }, [resetSignal]);
 
+  // Settings writes secrets in the same window; re-read availability right away (the page can stay
+  // mounted while another tab is shown, so a remount cannot be relied on).
+  const [secretsTick, setSecretsTick] = useState(0);
+  useEffect(() => onSecretsChanged(() => setSecretsTick((n) => n + 1)), []);
+
   // Re-poll secret presence + OAuth status whenever the page mounts, when
   // the user returns from Settings (resetSignal), and when a session ends.
   // The *only* meaningful transition for is-streaming is `true → false` —
@@ -440,7 +445,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     return () => {
       cancelled = true;
     };
-  }, [resetSignal, isStreaming]);
+  }, [resetSignal, isStreaming, secretsTick]);
 
   // Refresh local runtime detection + saved-model state whenever the
   // Settings tab might have updated them. Probes /llm/local-runtimes and
@@ -497,7 +502,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     return () => {
       cancelled = true;
     };
-  }, [resetSignal, isStreaming, configuredProviders]);
+  }, [resetSignal, isStreaming, configuredProviders, secretsTick]);
 
   // When the saved manual choice no longer has credentials (user deleted
   // the key in Settings), drop it so the priority resolver takes over.

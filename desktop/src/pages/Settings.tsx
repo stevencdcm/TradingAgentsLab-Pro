@@ -761,7 +761,11 @@ function LocalLLMRow({ disabled, onChange }: LocalLLMRowProps) {
         if (res.models.length > 0 && !manualModel.trim()) setManualModel(res.models[0]);
       } else {
         setSaveError(
-          res.status === 401
+          res.reason === 'key_missing'
+            ? t('settings.local.err.keyMissing')
+            : res.reason === 'key_rejected'
+              ? t('settings.local.err.keyRejected')
+              : res.status === 401
             ? t('settings.local.err.unauthorized')
             : t('settings.local.err.list', { error: res.error }),
         );

@@ -110,6 +110,23 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
 }
 
 
+_AUTH_FAIL_RE = re.compile(r"\b401\b|invalid api key|unauthori[sz]ed|incorrect api key", re.I)
+
+
+def local_auth_hint(config: "ProviderConfig | None", error_text: str) -> str:
+    """Tell a missing local key apart from a rejected one.
+
+    A local OpenAI-compatible server (oMLX) answers 401 "Invalid API key" both when NO key is sent and
+    when a WRONG key is sent. The engine knows which it was, so the message must say so instead of
+    making the user guess. Returns the text unchanged for anything that is not a local 401.
+    """
+    if config is None or config.provider != "local" or not _AUTH_FAIL_RE.search(error_text or ""):
+        return error_text
+    if (config.auth or {}).get("api_key"):
+        return f"{error_text} [local server rejected the stored API key: it is wrong or was rotated; re-enter it in Settings → Local LLM]"
+    return f"{error_text} [this local server requires an API key but none is stored: add it in Settings → Local LLM → manual entry, then Save]"
+
+
 def is_priced(model: str) -> bool:
     return model in _COST_PER_M_TOKENS
 

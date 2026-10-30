@@ -110,6 +110,21 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
 }
 
 
+def is_priced(model: str) -> bool:
+    return model in _COST_PER_M_TOKENS
+
+
+def estimate_cost_or_none(model: str, in_tokens: int, out_tokens: int) -> float | None:
+    """Like estimate_cost, but None (unknown) instead of 0.0 for a model with no price."""
+    return estimate_cost(model, in_tokens, out_tokens) if model in _COST_PER_M_TOKENS else None
+
+
+def worst_case_job_cost(model: str, total_tokens: int) -> float | None:
+    """Upper bound for a job capped at `total_tokens`: every token at the dearer rate."""
+    r = _COST_PER_M_TOKENS.get(model)
+    return None if r is None else total_tokens * max(r["input"], r["output"]) / 1_000_000
+
+
 def estimate_cost(model: str, in_tokens: int, out_tokens: int) -> float:
     rates = _COST_PER_M_TOKENS.get(model)
     if rates is None:

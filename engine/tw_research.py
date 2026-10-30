@@ -20,11 +20,12 @@ import os
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
-from . import secret_refs, storage, tw_evidence
+from . import cost_guard, secret_refs, storage, tw_evidence
 from .data_providers import QuoteSummary
 from .dexter_job import run_dexter_job
 from .live_debate import live_debate
-from .llm_providers import ProviderConfig
+from .dexter_job import HARD_LIMITS
+from .llm_providers import ProviderConfig, estimate_cost_or_none, is_priced, worst_case_job_cost
 from .report_language import normalize_report_language
 
 DEXTER_ROOT = Path(os.environ.get("TAL_DEXTER_ROOT", Path.home() / ".local" / "share" / "her30" / "dexter"))
@@ -125,8 +126,12 @@ async def tw_research(
 
     # --- Dexter (read_file over the pack only) -----------------------------------------
     model, env, unsupported = dexter_model_and_env(config)
-    if not run_dexter or model is None:
-        dexter = {"schema": "her30.dexter.result/1", "status": "unsupported", "reason": unsupported or "disabled", "findings": [],
+    billable = config.auth_kind not in ("oauth", "local")
+    worst = worst_case_job_cost(config.model, HARD_LIMITS["max_total_tokens"]) if billable else 0.0
+    blocked = cost_guard.check_extra_usd(est_cost_usd=worst or 0.0, auth_kind=config.auth_kind) if model is not None else None
+    if not run_dexter or model is None or blocked:
+        reason = unsupported or ("cost_guard_blocked:" + blocked if blocked else "disabled")
+        dexter = {"schema": "her30.dexter.result/1", "status": "unsupported", "reason": reason, "findings": [],
                   "unknowns": [], "tool_calls": [], "usage": {"measured": False}}
     else:
         question = ("請針對最新價量與營收趨勢，列出有證據支持的重點與反證。" if lang == "zh-TW"
@@ -136,6 +141,19 @@ async def tw_research(
             jobs_root=out_dir.parent / "dexter-jobs", dexter_root=DEXTER_ROOT, provider_env=env, market="TW", report_language=lang,
         )
         dexter["unknowns"] = [secret_refs.redact(str(u)) for u in dexter.get("unknowns", [])]
+    dexter_ran = dexter.get("status") != "unsupported"
+    du = dexter.get("usage") or {}
+    # Cost of the Dexter job: measured tokens x price; never 0 for "unknown". Unmeasured usage of a
+    # job that ran is billed at the job's hard ceiling (conservative) when the model has a price.
+    d_in, d_out = int(du.get("input_tokens") or 0), int(du.get("output_tokens") or 0)
+    if not dexter_ran or not billable:
+        d_cost: Optional[float] = 0.0
+    elif du.get("measured"):
+        d_cost = estimate_cost_or_none(config.model, d_in, d_out)
+    else:
+        d_cost = worst
+    dexter_usage = {"input_tokens": d_in, "output_tokens": d_out, "measured": bool(du.get("measured")),
+                    "est_cost_usd": d_cost, "ran": dexter_ran}
     yield {"type": "dexter.result", **{k: dexter.get(k) for k in ("status", "reason", "findings", "unknowns", "answer_markdown", "tool_calls", "usage", "elapsed_ms", "job_id")}}
 
     # --- Debate grounded on the pack ----------------------------------------------------
@@ -147,6 +165,18 @@ async def tw_research(
         if ev["type"] == "session.start":
             continue
         if ev["type"] == "session.complete":
-            ev = {**ev, "market": "TW", "evidence": {"snapshot_id": pack["snapshot_id"], "path_name": path.name},
-                  "dexter": {"status": dexter.get("status"), "reason": dexter.get("reason")}}
+            debate_cost = ev.get("estimated_cost_usd")
+            cost_known = d_cost is not None and debate_cost is not None
+            ev = {**ev, "market": "TW", "engine": "simplified",
+                  "evidence": {"snapshot_id": pack["snapshot_id"], "path_name": path.name},
+                  "dexter": {"status": dexter.get("status"), "reason": dexter.get("reason")},
+                  "usage_breakdown": {"debate": {"input_tokens": ev.get("input_tokens"), "output_tokens": ev.get("output_tokens"),
+                                                 "est_cost_usd": debate_cost},
+                                      "dexter": dexter_usage},
+                  # Totals include the Dexter job. Unmeasured Dexter usage stays flagged, never silently 0.
+                  "input_tokens": (ev.get("input_tokens") or 0) + d_in,
+                  "output_tokens": (ev.get("output_tokens") or 0) + d_out,
+                  "estimated_cost_usd": round((debate_cost or 0.0) + (d_cost or 0.0), 4),
+                  "cost_complete": bool(cost_known and (not billable or is_priced(config.model)) and (du.get("measured") or not dexter_ran or not billable)),
+                  "usage_complete": bool(du.get("measured") or not dexter_ran)}
         yield ev

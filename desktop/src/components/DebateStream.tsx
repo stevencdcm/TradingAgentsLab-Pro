@@ -1,3 +1,4 @@
+import { findResearch, researchNotes } from '../lib/research-notes';
 import { useEffect, useRef, useState } from 'react';
 import type {
   DebateEvent,
@@ -339,6 +340,7 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
   const dexter = events.find((e) => e.type === 'dexter.result') as
     | Extract<DebateEvent, { type: 'dexter.result' }>
     | undefined;
+  const researchNotesList = researchNotes(findResearch(events), t, i18n.formatNumber);
   const groups = groupByPhase(events);
   const decision = findDecision(events);
   const meta = findDecisionMeta(events);
@@ -479,6 +481,18 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
                 <span className={styles.newsMeta}>{t('dexter.noFindings')}</span>
               </li>
             )}
+          </ul>
+        </div>
+      )}
+
+      {researchNotesList.length > 0 && (
+        <div className={styles.news} data-testid="research-notes">
+          <ul className={styles.newsList}>
+            {researchNotesList.map((n, i) => (
+              <li key={i} className={styles.newsItem}>
+                <span className={styles.newsMeta}>{n}</span>
+              </li>
+            ))}
           </ul>
         </div>
       )}

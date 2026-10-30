@@ -433,7 +433,8 @@ def build_app(*, token: str) -> FastAPI:
             return {"ok": False, "error": "not a Taiwan stock code"}
         as_of = req.as_of or time.strftime("%Y-%m-%dT%H:%M:%S+08:00", time.gmtime(time.time() + 8 * 3600))
         try:
-            pack = await run_in_threadpool(tw_evidence.build_tw_evidence, code, as_of, token=secret_refs.resolve(req.finmind_token) if req.finmind_token else None)
+            fm_token = secret_refs.resolve_named(req.finmind_token, "data:finmind") if req.finmind_token else None
+            pack = await run_in_threadpool(tw_evidence.build_tw_evidence, code, as_of, token=fm_token)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": secret_refs.redact(f"{type(exc).__name__}: {exc}")}
         out_dir = Path(os.environ.get("TAL_EVIDENCE_DIR") or storage._default_db_path().parent / "evidence")
@@ -615,10 +616,10 @@ def build_app(*, token: str) -> FastAPI:
                 pro_config_raw = {}
             # The full graph mutates process-global library config / env while it runs, so only
             # one such run may be active; a second is refused explicitly rather than racing.
-            if is_pro:
+            if is_pro or tw_mode:
                 if run_slot["busy"]:
                     evt = {"type": "run.error", "code": "run_busy",
-                           "error": "Another full-graph run is already in progress. Wait for it to finish, then retry."}
+                           "error": "Another full-graph / Taiwan research run is already in progress. Wait for it to finish, then retry."}
                     await ws.send_json(evt)
                     await ws.close(code=1008, reason="run_busy")
                     return

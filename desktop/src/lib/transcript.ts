@@ -6,6 +6,7 @@ import type {
 } from './engine-client';
 import { isReview, riskLabel, stanceLabel } from './stance';
 import { makeTranslator, type Locale } from '../i18n';
+import { findResearch, researchMarkdown } from './research-notes';
 import type { MessageKey } from '../i18n/messages';
 
 const KNOWN_PHASES = ['analysts', 'researchers', 'trader', 'risk'];
@@ -216,6 +217,8 @@ export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 
     );
     lines.push('');
   }
+
+  lines.push(...researchMarkdown(findResearch(events), t));
 
   const news = findNews(events);
   if (news && news.headlines.length > 0) {

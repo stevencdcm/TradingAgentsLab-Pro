@@ -14,4 +14,12 @@ export const evidence = {
   'dexter.unverified': 'unverified',
   'dexter.pitUnknown': 'availability time unknown',
   'dexter.noFindings': 'No findings were produced.',
+  'evidence.engineSimplified': 'Taiwan research runs on the simplified debate engine, not the Pro full graph.',
+  'evidence.notNumberChecked': 'Only Dexter findings marked ✓ were checked against the evidence pack; the debate text itself is not number-checked.',
+  'evidence.usage': 'Usage — debate {debate} tokens · Dexter {dexter} tokens',
+  'evidence.usageIncomplete': 'Dexter token usage was not measured: totals are incomplete (not zero).',
+  'evidence.costIncomplete': 'Cost is incomplete (a model price or Dexter usage is unknown); do not read the figure as the full spend.',
+  'evidence.summaryDropped': 'Dexter summary hidden: it contained numbers that are not in the verified citations.',
+  'evidence.findingsHeading': 'Dexter findings',
+  'evidence.unknownsHeading': 'Known gaps',
 } as const;

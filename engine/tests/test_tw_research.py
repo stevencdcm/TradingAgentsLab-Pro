@@ -133,3 +133,98 @@ def test_stub_mode_taiwan_code_is_still_refused_with_an_explanation(tw_env):
             ws.send_json({"ticker": "2330", "trade_date": "2026-10-29", "report_language": "zh-TW"})
             ev = ws.receive_json()
     assert ev["type"] == "run.error" and "台股" in ev["error"]
+
+
+# ---- E8: usage / cost / engine label (Dexter and debate stubbed; accounting is what is tested) -----------
+
+
+def _collect(monkeypatch, tmp_path, *, model, auth, dexter_usage, dexter_status="succeeded", caps=None):
+    import asyncio
+
+    from engine import cost_guard, tw_evidence, tw_research as twr
+    from engine.llm_providers import ProviderConfig
+
+    monkeypatch.setenv("TAL_EVIDENCE_DIR", str(tmp_path / "ev"))
+    real = tw_evidence.build_tw_evidence
+    monkeypatch.setattr(tw_evidence, "build_tw_evidence", lambda code, as_of, **kw: real(code, as_of, client=_mock_client()))
+    ran = {"n": 0}
+
+    def fake_job(**_):
+        ran["n"] += 1
+        return {"status": dexter_status, "reason": None, "findings": [], "unknowns": [], "tool_calls": [], "usage": dexter_usage}
+
+    async def fake_debate(**kw):
+        yield {"type": "session.start"}
+        yield {"type": "session.complete", "decision": {"stance": "neutral"}, "live": True, "provider": "x", "auth_kind": auth,
+               "model": model, "input_tokens": 1000, "output_tokens": 200, "estimated_cost_usd": 0.0 if auth != "api_key" else 0.01}
+
+    monkeypatch.setattr(twr, "run_dexter_job", fake_job)
+    monkeypatch.setattr(twr, "live_debate", fake_debate)
+    if caps is not None:
+        monkeypatch.setattr(cost_guard, "check_extra_usd", lambda **_: caps)
+    cfg = ProviderConfig(provider="openai", auth={"type": "api_key" if auth == "api_key" else "local", "api_key": "k", "base_url": "http://x/v1"}, model=model)
+
+    async def go():
+        return [e async for e in twr.tw_research(code="2330", trade_date="2026-10-29", config=cfg, report_language="zh-TW")]
+
+    return asyncio.run(go()), ran
+
+
+def test_session_totals_include_dexter_and_are_labelled_simplified(tmp_db, tmp_path, monkeypatch):
+    evs, _ = _collect(monkeypatch, tmp_path, model="gpt-4o-mini", auth="api_key",
+                      dexter_usage={"input_tokens": 4000, "output_tokens": 500, "total_tokens": 4500, "measured": True})
+    done = next(e for e in evs if e["type"] == "session.complete")
+    assert done["engine"] == "simplified" and done["market"] == "TW"
+    assert done["input_tokens"] == 5000 and done["output_tokens"] == 700
+    assert done["usage_breakdown"]["dexter"]["input_tokens"] == 4000 and done["usage_breakdown"]["debate"]["input_tokens"] == 1000
+    assert done["estimated_cost_usd"] == pytest.approx(0.01 + (4000 * 0.15 + 500 * 0.60) / 1e6, abs=1e-4)
+    assert done["cost_complete"] is True and done["usage_complete"] is True
+
+
+def test_unmeasured_dexter_usage_is_never_recorded_as_zero(tmp_db, tmp_path, monkeypatch):
+    evs, _ = _collect(monkeypatch, tmp_path, model="gpt-4o-mini", auth="api_key", dexter_usage={"measured": False}, dexter_status="failed")
+    done = next(e for e in evs if e["type"] == "session.complete")
+    assert done["usage_complete"] is False and done["cost_complete"] is False
+    assert done["usage_breakdown"]["dexter"]["est_cost_usd"] > 0.0          # billed at the job's hard ceiling, not 0
+
+
+def test_unpriced_model_cost_is_unknown_not_zero(tmp_db, tmp_path, monkeypatch):
+    evs, _ = _collect(monkeypatch, tmp_path, model="some-unpriced-model", auth="api_key",
+                      dexter_usage={"input_tokens": 10, "output_tokens": 10, "measured": True})
+    done = next(e for e in evs if e["type"] == "session.complete")
+    assert done["usage_breakdown"]["dexter"]["est_cost_usd"] is None and done["cost_complete"] is False
+
+
+def test_cost_guard_block_skips_dexter_instead_of_overspending(tmp_db, tmp_path, monkeypatch):
+    evs, ran = _collect(monkeypatch, tmp_path, model="gpt-4o-mini", auth="api_key", dexter_usage={"measured": False}, caps="daily")
+    dex = next(e for e in evs if e["type"] == "dexter.result")
+    assert ran["n"] == 0 and dex["status"] == "unsupported" and dex["reason"] == "cost_guard_blocked:daily"
+
+
+def test_taiwan_run_is_refused_while_another_exclusive_run_is_active(tw_env, monkeypatch):
+    """Taiwan research shares the single run slot with the full graph (process-global state)."""
+    import threading
+
+    from engine import tw_research as twr
+
+    release = threading.Event()
+
+    async def slow(**kw):
+        import asyncio
+
+        yield {"type": "session.start", "ticker": "2330", "trade_date": "2026-10-29"}
+        while not release.is_set():
+            await asyncio.sleep(0.02)
+        yield {"type": "session.complete", "decision": {"stance": "neutral"}, "live": True}
+
+    monkeypatch.setattr(twr, "tw_research", slow)
+    frame = {"ticker": "2330", "trade_date": "2026-10-29", "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "m"}}
+    with TestClient(tw_env.build_app(token="t")) as c:
+        with c.websocket_connect("/stream?token=t") as a:
+            a.send_json(frame)
+            assert a.receive_json()["type"] in ("session.start", "evidence.pack", "data.summary")
+            with c.websocket_connect("/stream?token=t") as b:
+                b.send_json(frame)
+                ev = b.receive_json()
+                assert ev["type"] == "run.error" and ev["code"] == "run_busy"
+            release.set()

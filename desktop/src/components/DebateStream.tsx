@@ -333,6 +333,12 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
   const start = findStart(events);
   const summary = findSummary(events);
   const news = findHeadlines(events);
+  const evidencePack = events.find((e) => e.type === 'evidence.pack') as
+    | Extract<DebateEvent, { type: 'evidence.pack' }>
+    | undefined;
+  const dexter = events.find((e) => e.type === 'dexter.result') as
+    | Extract<DebateEvent, { type: 'dexter.result' }>
+    | undefined;
   const groups = groupByPhase(events);
   const decision = findDecision(events);
   const meta = findDecisionMeta(events);
@@ -423,6 +429,58 @@ function DebateStream({ events, isStreaming }: DebateStreamProps) {
             </div>
           )}
         </header>
+      )}
+
+      {evidencePack && (
+        <div className={styles.news} data-testid="evidence-pack">
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('evidence.title')}</span>
+            <span className={styles.newsSource}>
+              {t('evidence.snapshot', { id: evidencePack.snapshot_id.slice(0, 12), asOf: evidencePack.as_of.slice(0, 10) })}
+            </span>
+          </div>
+          <ul className={styles.newsList}>
+            {evidencePack.unknowns.map((u, i) => (
+              <li key={i} className={styles.newsItem}>
+                <span className={styles.newsMeta}>{t('evidence.unknown')} {u}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {dexter && (
+        <div className={styles.news} data-testid="dexter-result" data-status={dexter.status}>
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('dexter.title')}</span>
+            <span className={styles.newsSource}>
+              {t(`dexter.status.${dexter.status}` as const)}
+              {dexter.reason ? ` · ${dexter.reason}` : ''}
+              {dexter.usage?.measured
+                ? ` · ${t('dexter.tokens', { n: i18n.formatNumber(dexter.usage.total_tokens ?? 0) })}`
+                : ''}
+            </span>
+          </div>
+          <ul className={styles.newsList}>
+            {dexter.findings.map((f) => (
+              <li key={f.id} className={styles.newsItem} data-verification={f.verification}>
+                <span className={styles.newsTitle}>
+                  {f.verification === 'verified' ? '✓' : '✗'} {f.claim}
+                </span>
+                <span className={styles.newsMeta}>
+                  {f.citations.map((c) => `[${c.kind} ${c.period}]`).join(' ')}
+                  {f.verification === 'unverified' && f.reason ? ` · ${t('dexter.unverified')}: ${f.reason}` : ''}
+                  {f.verification === 'verified' && f.point_in_time === 'unknown' ? ` · ${t('dexter.pitUnknown')}` : ''}
+                </span>
+              </li>
+            ))}
+            {dexter.findings.length === 0 && (
+              <li className={styles.newsItem}>
+                <span className={styles.newsMeta}>{t('dexter.noFindings')}</span>
+              </li>
+            )}
+          </ul>
+        </div>
       )}
 
       {summary && (

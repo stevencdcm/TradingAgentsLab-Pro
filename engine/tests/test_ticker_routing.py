@@ -32,7 +32,7 @@ def _ws_error(client, token, frame):
         return ws.receive_json()
 
 
-def test_ws_refuses_taiwan_and_invalid_tickers_before_any_provider_call(tmp_db, monkeypatch):
+def test_ws_refuses_stub_taiwan_and_invalid_tickers_before_any_provider_call(tmp_db, monkeypatch):
     from engine import server as srv
 
     called = {"n": 0}
@@ -44,8 +44,8 @@ def test_ws_refuses_taiwan_and_invalid_tickers_before_any_provider_call(tmp_db, 
     monkeypatch.setattr(srv, "live_debate", boom)
     token = "t"
     with TestClient(srv.build_app(token=token)) as c:
-        ev = _ws_error(c, token, {"ticker": "2330", "trade_date": "2026-10-30", "report_language": "zh-TW",
-                                  "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "m"}})
+        # Without a configured model (stub mode) a Taiwan code is refused: there is nothing to ground on.
+        ev = _ws_error(c, token, {"ticker": "2330", "trade_date": "2026-10-30", "report_language": "zh-TW"})
         assert ev["type"] == "run.error" and ev["code"] == "ticker_unsupported" and "台股" in ev["error"]
         ev = _ws_error(c, token, {"ticker": "2330.TW", "trade_date": "2026-10-30"})
         assert ev["type"] == "run.error" and "Taiwan" in ev["error"]

@@ -489,6 +489,34 @@ export interface RunErrorEvent {
   error: string;
 }
 
+/** Taiwan research: the immutable evidence pack the run is grounded on. */
+export interface EvidencePackEvent {
+  type: 'evidence.pack';
+  security_id: string;
+  snapshot_id: string;
+  as_of: string;
+  coverage: Record<string, unknown>;
+  unknowns: string[];
+}
+
+/** Result of the sandboxed Dexter job. `status` is never "succeeded" unless a finding was verified. */
+export interface DexterResultEvent {
+  type: 'dexter.result';
+  status: 'succeeded' | 'partial' | 'failed' | 'timeout' | 'canceled' | 'unsupported';
+  reason: string | null;
+  findings: Array<{
+    id: string;
+    claim: string;
+    verification: 'verified' | 'unverified';
+    reason?: string;
+    point_in_time: 'ok' | 'unknown';
+    citations: Array<{ kind: string; period: string }>;
+  }>;
+  unknowns: string[];
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; measured?: boolean };
+  elapsed_ms?: number;
+}
+
 export type DebateEvent =
   | { type: 'session.start'; ticker: string; trade_date: string }
   | ({ type: 'data.summary' } & QuoteSummary)
@@ -508,6 +536,8 @@ export type DebateEvent =
   | { type: 'phase.transition'; from: string; to: string }
   | CostUsageEvent
   | SessionCompleteEvent
+  | EvidencePackEvent
+  | DexterResultEvent
   | CostBlockedEvent
   | RunTokenCapEvent
   | RunErrorEvent

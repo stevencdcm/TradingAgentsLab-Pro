@@ -15,7 +15,11 @@ export const STANCES: Stance[] = [
   'bearish',
 ];
 
-const DISPLAY: Record<Stance, string> = {
+/** A decision whose rating could not be parsed. Not a stance: it claims no conclusion. */
+export type DecisionStance = Stance | 'review';
+
+const DISPLAY: Record<DecisionStance, string> = {
+  review: 'Needs review (rating could not be parsed)',
   bullish: 'Bullish',
   moderately_bullish: 'Moderately bullish',
   neutral: 'Neutral',
@@ -31,8 +35,9 @@ const LEGACY: Record<string, Stance> = {
 
 /** Coerce a stored or wire value (including legacy BUY/SELL/HOLD) to a
  * canonical stance. Unknown values read as neutral. */
-export function normalizeStance(value: unknown): Stance {
+export function normalizeStance(value: unknown): DecisionStance {
   const raw = String(value ?? '').trim();
+  if (raw.toLowerCase() === 'review') return 'review';
   if ((STANCES as string[]).includes(raw.toLowerCase())) {
     return raw.toLowerCase() as Stance;
   }
@@ -49,9 +54,15 @@ export function stanceLabel(value: unknown, t?: Tr): string {
 /** Bucket for styling and summary counts: which way the stance leans. */
 export function stanceLean(value: unknown): 'bullish' | 'neutral' | 'bearish' {
   const s = normalizeStance(value);
+  if (s === 'review') return 'neutral'; // styling only; counted separately via isReview
   if (s === 'bullish' || s === 'moderately_bullish') return 'bullish';
   if (s === 'bearish' || s === 'moderately_bearish') return 'bearish';
   return 'neutral';
+}
+
+/** True when the decision carries no parseable rating (show "needs review", hide conviction). */
+export function isReview(value: unknown): boolean {
+  return normalizeStance(value) === 'review';
 }
 
 /** Risk level label with a neutral fallback. */

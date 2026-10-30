@@ -1,6 +1,7 @@
 import type { debate } from '../en/debate';
 
 export const debateZhTW: Record<keyof typeof debate, string> = {
+  'stance.review': '無法解析評級（需人工檢視）',
   'stance.bullish': '看多',
   'stance.moderately_bullish': '偏多',
   'stance.neutral': '中立',
@@ -63,6 +64,7 @@ export const debateZhTW: Record<keyof typeof debate, string> = {
   'debate.decision.label': '委員會評估',
   'debate.decision.live': '即時 · {provider} · {model}',
   'debate.decision.conviction': '信心度',
+  'debate.decision.reviewNote': '最終決策文字中找不到可辨識的評級，因此不宣稱任何結論，也未寫入記憶庫。請閱讀下方推論內容，或重新執行。',
   'debate.decision.bull': '多方論點',
   'debate.decision.bear': '空方論點',
   'debate.decision.risk': '風險：{risk}',

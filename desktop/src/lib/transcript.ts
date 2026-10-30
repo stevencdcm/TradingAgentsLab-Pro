@@ -4,7 +4,7 @@ import type {
   AnalyzeDecision,
   NewsHeadlinesEvent,
 } from './engine-client';
-import { riskLabel, stanceLabel } from './stance';
+import { isReview, riskLabel, stanceLabel } from './stance';
 import { makeTranslator, type Locale } from '../i18n';
 import type { MessageKey } from '../i18n/messages';
 
@@ -169,13 +169,18 @@ export function buildTranscriptMarkdown(events: DebateEvent[], locale: Locale = 
 
   if (decision) {
     lines.push(`## ${t('debate.decision.label')}`, '');
+    const review = isReview(decision.stance);
+    // An unparseable decision claims no conclusion: no percentage, an explicit note instead.
     const facts = [
-      t('export.md.facts.stance', {
-        stance: stanceLabel(decision.stance, t),
-        pct: (decision.conviction * 100).toFixed(0),
-      }),
+      review
+        ? `**${stanceLabel(decision.stance, t)}**`
+        : t('export.md.facts.stance', {
+            stance: stanceLabel(decision.stance, t),
+            pct: (decision.conviction * 100).toFixed(0),
+          }),
     ];
-    if (decision.bull_strength != null && decision.bear_strength != null) {
+    if (review) facts.push(t('debate.decision.reviewNote'));
+    if (!review && decision.bull_strength != null && decision.bear_strength != null) {
       facts.push(
         t('export.md.facts.bullBear', {
           bull: decision.bull_strength,

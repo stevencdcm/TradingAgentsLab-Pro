@@ -1048,9 +1048,19 @@ def _format_decision_reply(
         if risk:
             strengths += f" · Risk {risk}"
         strengths += "\n"
+    if str(decision.get("stance", "")).lower() == "review":
+        head = (
+            f"*{ticker}* on {trade_date}\n"
+            f"Committee stance: *Needs review* (the final decision text had no readable rating; "
+            f"no conclusion is claimed)\n"
+        )
+    else:
+        head = (
+            f"*{ticker}* on {trade_date}\n"
+            f"Committee stance: *{stance}*  (conviction {conviction * 100:.0f}%)\n"
+        )
     return (
-        f"*{ticker}* on {trade_date}\n"
-        f"Committee stance: *{stance}*  (conviction {conviction * 100:.0f}%)\n"
+        f"{head}"
         f"{strengths}\n"
         f"{reasoning}\n\n"
         f"_Run mode: {mode}. Cost: ${cost_usd:.4f}. Today: "

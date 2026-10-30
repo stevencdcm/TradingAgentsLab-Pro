@@ -449,3 +449,10 @@
   font-size: var(--tal-text-xs);
   letter-spacing: 0.04em;
 }
+
+/* Unparseable decision: amber, clearly not a stance. */
+.pill_review {
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid rgba(210, 153, 34, 0.4);
+}

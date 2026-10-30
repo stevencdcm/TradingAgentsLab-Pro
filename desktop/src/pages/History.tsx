@@ -8,7 +8,7 @@ import {
   type SessionDetail,
   type SessionSummary,
 } from '../lib/engine-client';
-import { stanceLabel, stanceLean } from '../lib/stance';
+import { isReview, stanceLabel, stanceLean } from '../lib/stance';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { useI18n } from '../i18n';
 import { formatRelativeTime } from '../lib/relative-time';
@@ -29,6 +29,7 @@ const SORT_STORAGE_KEY = 'tal:history:sort';
 // decision_action holds the stance string for new rows and BUY/SELL/HOLD
 // for rows persisted before the stance relabel — stanceLean normalizes both.
 function stancePillClass(value: string): string {
+  if (isReview(value)) return styles.pill_review;
   const lean = stanceLean(value);
   if (lean === 'bullish') return styles.pill_bullish;
   if (lean === 'bearish') return styles.pill_bearish;
@@ -363,9 +364,11 @@ function History() {
                   <span className={styles.rowTicker}>{s.ticker}</span>
                   <span className={`${styles.actionPill} ${stancePillClass(s.decision_action)}`}>
                     {stanceLabel(s.decision_action, t)}
-                    <span className={styles.actionConfidence}>
-                      {Math.round(s.decision_confidence * 100)}%
-                    </span>
+                    {!isReview(s.decision_action) && (
+                      <span className={styles.actionConfidence}>
+                        {Math.round(s.decision_confidence * 100)}%
+                      </span>
+                    )}
                   </span>
                   {s.live && (
                     <span className={styles.livePill}>

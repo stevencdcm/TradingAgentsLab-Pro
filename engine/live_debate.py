@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
 from .data_providers import Headline, QuoteSummary
+from .secret_refs import redact as redact_secrets
 from .report_language import free_engine_suffix, normalize_report_language
 from .llm_providers import (
     LLMAdapter,
@@ -447,8 +448,10 @@ def _parse_decision(content: str) -> dict:
     """
     import re
 
-    stance = "neutral"
-    conviction = 0.5
+    # No STANCE line => no conclusion is claimed ("review"), not a made-up neutral.
+    stance = "review"
+    conviction = 0.0
+    parsed_stance = False
     bull_strength = 50
     bear_strength = 50
     risk_level = "moderate"
@@ -460,6 +463,8 @@ def _parse_decision(content: str) -> dict:
     )
     if m:
         stance = m.group(1).lower()
+        parsed_stance = True
+        conviction = 0.5
     m = re.search(r"CONVICTION\s*=\s*([0-9]*\.?[0-9]+)", content, re.IGNORECASE)
     if m:
         try:
@@ -497,6 +502,7 @@ def _parse_decision(content: str) -> dict:
     return {
         "stance": stance,
         "conviction": conviction,
+        "rating_status": "parsed" if parsed_stance else "unparsed",
         "bull_strength": bull_strength,
         "bear_strength": bear_strength,
         "risk_level": risk_level,
@@ -621,7 +627,7 @@ async def live_debate(
                     "type": "agent.message",
                     "agent": agent.name,
                     "phase": agent.phase,
-                    "content": f"[live debate error] {type(exc).__name__}: {exc}",
+                    "content": f"[live debate error] {redact_secrets(f'{type(exc).__name__}: {exc}', config.credential)}",
                 }
                 # If the very first agent fails, abort early — no point continuing.
                 if not state.transcript:

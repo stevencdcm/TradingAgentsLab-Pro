@@ -69,7 +69,11 @@ class WebhookFilter:
     """Inclusive floor. 0.0 = no floor."""
 
     def passes(self, *, stance: str, conviction: float) -> bool:
-        from .stance import normalize_stance
+        from .stance import REVIEW, normalize_stance
+
+        # An unparseable decision claims no conclusion, so it never triggers a push.
+        if normalize_stance(stance) == REVIEW:
+            return False
 
         if self.stances:
             allowed = {normalize_stance(s) for s in self.stances}

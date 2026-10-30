@@ -1,5 +1,6 @@
 /** Debate stream, stance / risk vocabulary, agent roster, webhook report. */
 export const debate = {
+  'stance.review': 'Needs review (rating could not be parsed)',
   'stance.bullish': 'Bullish',
   'stance.moderately_bullish': 'Moderately bullish',
   'stance.neutral': 'Neutral',
@@ -62,6 +63,7 @@ export const debate = {
   'debate.decision.label': 'Committee Assessment',
   'debate.decision.live': 'Live · {provider} · {model}',
   'debate.decision.conviction': 'Conviction',
+  'debate.decision.reviewNote': 'The final decision text had no recognisable rating, so no conclusion is claimed and nothing was saved to memory. Read the reasoning below or re-run.',
   'debate.decision.bull': 'Bull thesis',
   'debate.decision.bear': 'Bear thesis',
   'debate.decision.risk': 'Risk: {risk}',

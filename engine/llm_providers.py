@@ -740,7 +740,15 @@ class AnthropicAdapter:
     async def open(self, *, api_key: str) -> None:
         from anthropic import AsyncAnthropic
 
-        self._client = AsyncAnthropic(api_key=api_key, timeout=_LLM_HTTP_TIMEOUT)
+        # The SDK has its own timeout type (anthropic 2.x uses httpx2, so an
+        # httpx.Timeout is rejected). Use the SDK-native one; same limits as the
+        # other cloud clients.
+        from anthropic import Timeout as AnthropicTimeout
+
+        self._client = AsyncAnthropic(
+            api_key=api_key,
+            timeout=AnthropicTimeout(connect=10.0, read=90.0, write=30.0, pool=10.0),
+        )
 
     async def close(self) -> None:
         if self._client is not None:

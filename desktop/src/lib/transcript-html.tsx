@@ -24,7 +24,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DebateEvent } from './engine-client';
-import { riskLabel, stanceLabel, stanceLean } from './stance';
+import { isReview, riskLabel, stanceLabel, stanceLean } from './stance';
 import { htmlLang, makeTranslator, splitRich, type Locale } from '../i18n';
 import {
   agentLabelFor,
@@ -97,6 +97,7 @@ const STYLE = `
   .action { font-family: var(--mono); font-size: 30px; font-weight: 700; }
   .action.buy { color: var(--buy); } .action.sell { color: var(--sell); }
   .action.hold { color: var(--hold); }
+  .action.review { color: #d29922; font-size: 18px; }
   .decision .facts { color: var(--muted); font-family: var(--mono);
     font-size: 13.5px; margin: 6px 0 12px; }
   .ownership { color: var(--muted); font-size: 12.5px; margin-top: 16px; }
@@ -181,11 +182,12 @@ export function buildTranscriptHtml(
 
   if (decision) {
     const lean = stanceLean(decision.stance);
-    const cls = lean === 'bullish' ? 'buy' : lean === 'bearish' ? 'sell' : 'hold';
-    const facts: string[] = [
-      t('export.html.facts.conviction', { pct: (decision.conviction * 100).toFixed(0) }),
-    ];
-    if (decision.bull_strength != null && decision.bear_strength != null) {
+    const review = isReview(decision.stance);
+    const cls = review ? 'review' : lean === 'bullish' ? 'buy' : lean === 'bearish' ? 'sell' : 'hold';
+    const facts: string[] = review
+      ? [t('debate.decision.reviewNote')]
+      : [t('export.html.facts.conviction', { pct: (decision.conviction * 100).toFixed(0) })];
+    if (!review && decision.bull_strength != null && decision.bear_strength != null) {
       facts.push(
         t('export.html.facts.bull', { n: decision.bull_strength }),
         t('export.html.facts.bear', { n: decision.bear_strength }),

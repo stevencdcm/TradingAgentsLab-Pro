@@ -29,11 +29,10 @@ import {
   getRecommendedModel,
   type DebateEvent,
   type LLMProvider,
-  type Stance,
   type StreamHandle,
 } from '../lib/engine-client';
 import { listSecrets } from '../lib/secrets';
-import { normalizeStance, stanceLabel, stanceLean } from '../lib/stance';
+import { isReview, normalizeStance, stanceLabel, stanceLean, type DecisionStance } from '../lib/stance';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
 import { runAnalysis } from '../lib/run-analysis';
 
@@ -48,7 +47,7 @@ type BatchPhase = 'idle' | 'running' | 'complete' | 'cancelled';
 interface PerTickerState {
   ticker: string;
   status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
-  decisionStance?: Stance;
+  decisionStance?: DecisionStance;
   decisionConviction?: number;
   estCostUsd?: number;
   elapsedSec?: number;
@@ -136,7 +135,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
 
       // Per-ticker stream state. We watch session.complete for the
       // committee assessment; that fires before the WS close.
-      let decisionStance: Stance | undefined;
+      let decisionStance: DecisionStance | undefined;
       let decisionConviction: number | undefined;
       let estCostUsd: number | undefined;
       let perError: string | undefined;
@@ -289,7 +288,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
               </span>
               <span className={`${styles.progressDecision} ${row.decisionStance ? styles[`progressDecision_${stanceLean(row.decisionStance)}`] : ''}`}>
                 {row.decisionStance
-                  ? `${stanceLabel(row.decisionStance, t)}${typeof row.decisionConviction === 'number' ? ` ${Math.round(row.decisionConviction * 100)}%` : ''}`
+                  ? `${stanceLabel(row.decisionStance, t)}${typeof row.decisionConviction === 'number' && !isReview(row.decisionStance) ? ` ${Math.round(row.decisionConviction * 100)}%` : ''}`
                   : ''}
               </span>
               <span className={styles.progressMeta}>
@@ -318,6 +317,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
           </span>
           {summary.bullish > 0 && <span>{t('batch.summary.bullish', { n: summary.bullish })}</span>}
           {summary.bearish > 0 && <span>{t('batch.summary.bearish', { n: summary.bearish })}</span>}
+          {summary.review > 0 && <span>{t('batch.summary.review', { n: summary.review })}</span>}
           {summary.neutral > 0 && <span>{t('batch.summary.neutral', { n: summary.neutral })}</span>}
           {summary.failed > 0 && <span>{t('batch.summary.failed', { n: summary.failed })}</span>}
           {summary.totalCostUsd > 0 && (
@@ -353,23 +353,28 @@ function useSummary(rows: PerTickerState[]) {
   let bullish = 0;
   let bearish = 0;
   let neutral = 0;
+  let review = 0;
   let failed = 0;
   let totalCostUsd = 0;
   for (const r of rows) {
     if (r.status === 'done') {
       done += 1;
       if (r.decisionStance) {
+        if (isReview(r.decisionStance)) {
+          review += 1;
+        } else {
         const lean = stanceLean(r.decisionStance);
         if (lean === 'bullish') bullish += 1;
         else if (lean === 'bearish') bearish += 1;
         else neutral += 1;
+        }
       }
       if (typeof r.estCostUsd === 'number') totalCostUsd += r.estCostUsd;
     } else if (r.status === 'failed') {
       failed += 1;
     }
   }
-  return { done, bullish, bearish, neutral, failed, totalCostUsd };
+  return { done, bullish, bearish, neutral, review, failed, totalCostUsd };
 }
 
 function formatUsdShort(value: number): string {

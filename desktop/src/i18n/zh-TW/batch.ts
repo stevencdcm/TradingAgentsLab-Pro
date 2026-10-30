@@ -18,6 +18,7 @@ export const batchZhTW: Record<keyof typeof batch, string> = {
   'batch.summary.complete': '已完成 {done} / {total}',
   'batch.summary.bullish': '看多：{n}',
   'batch.summary.bearish': '看空：{n}',
+  'batch.summary.review': '需人工檢視：{n}',
   'batch.summary.neutral': '中立：{n}',
   'batch.summary.failed': '失敗：{n}',
   'batch.summary.cost': '成本：{cost}',

@@ -47,6 +47,10 @@ export const settingsAZhTW: Record<keyof typeof settingsA, string> = {
   'settings.pill.secret': '密鑰',
   'settings.pill.analysts': '分析師',
   'settings.pill.storedInert': '已儲存 · 未啟用',
+  'settings.pill.stored': '已儲存 ✓',
+  'settings.pill.storedUnverified': '已儲存 · 尚未驗證',
+  'settings.pill.verified': '已驗證 ✓',
+  'settings.pill.testFailed': '測試失敗',
   'settings.pill.connected': '已連線 ✓',
   'settings.row.alpacaKeyId.name': 'Alpaca Markets：金鑰 ID',
   'settings.row.alpacaKeyId.note':

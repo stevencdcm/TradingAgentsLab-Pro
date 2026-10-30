@@ -15,3 +15,8 @@ export function apiBase(port: number): string {
 export function wsBase(port: number): string {
   return apiBase(port).replace(/^http/, 'ws');
 }
+
+/** `Authorization` header for the engine API; empty behind the trusted proxy, where the session cookie authenticates and no token exists. */
+export function authHeader(token: string | undefined): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}

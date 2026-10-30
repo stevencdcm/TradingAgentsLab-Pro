@@ -1,0 +1,8 @@
+{
+  "income": {"status": 200, "data": [{"date": "2025-03-31", "stock_id": "2330", "type": "EPS", "value": 13.95, "origin_name": "基本每股盈餘"}]},
+  "balance": {"status": 200, "data": [{"date": "2025-03-31", "stock_id": "6488", "type": "CashAndCashEquivalents", "value": 28845567000.0, "origin_name": "現金及約當現金"}]},
+  "cash_flow": {"status": 200, "data": [{"date": "2025-03-31", "stock_id": "2330", "type": "CashFlowsFromOperatingActivities", "value": 436300000000.0, "origin_name": "營業活動之淨現金流入"}]},
+  "news": {"status": 200, "data": [{"date": "2026-10-29 01:50:49", "stock_id": "6488", "link": "https://example.org/article", "source": "example", "title": "晶圓材料新聞標題"}]},
+  "twse": [{"出表日期": "1151030", "發言日期": "1151029", "發言時間": "140538", "公司代號": "2330", "公司名稱": "台積電", "主旨 ": "公告本公司取得廠房及附屬設施", "符合條款": "第20款", "事實發生日": "1151029", "說明": "公告說明"}],
+  "tpex": [{"Date": "1151030", "發言日期": "1151029", "發言時間": "133424", "SecuritiesCompanyCode": "6488", "CompanyName": "測試公司", "主旨": "重大訊息", "符合條款": "第20款", "事實發生日": "1151029", "說明": "公告說明"}]
+}

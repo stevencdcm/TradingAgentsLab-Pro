@@ -116,6 +116,13 @@ def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
     app = build_isolated_app(port=args.port, static_dir=args.static)
+    # Same nonce re-issue hook as the real server (SIGUSR1) so browser tests can log in without a printed nonce.
+    import signal
+
+    data_dir = Path(os.environ["TAL_SESSIONS_DB"]).parent
+    signal.signal(signal.SIGUSR1, lambda *_: app.state.launch.rotate())
+    (data_dir / "web.pid").write_text(str(os.getpid()))
+    os.chmod(data_dir / "web.pid", 0o600)
     print(f"isolated LabPro on 127.0.0.1:{args.port} (in-memory secrets, providers disabled)", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
 

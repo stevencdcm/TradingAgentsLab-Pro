@@ -139,3 +139,38 @@ def test_evidence_endpoint_builds_saves_and_reports_gaps(tmp_db, tmp_path, monke
         saved = json.loads(Path(r["path"]).read_text(encoding="utf-8"))
         assert saved["snapshot_id"] == r["snapshot_id"] and saved["security_id"] == "TW:2330"
         assert c.post("/tw/evidence", json={"code": "TSM"}).json() == {"ok": False, "error": "not a Taiwan stock code"}
+
+
+def test_evidence_endpoint_finmind_token_is_bound_to_its_own_secret(tmp_db, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from engine import secret_refs as sr, server as srv, tw_evidence
+
+    monkeypatch.setenv("TAL_EVIDENCE_DIR", str(tmp_path / "ev"))
+    seen = {}
+
+    def fake(code, as_of, **kw):
+        seen["token"] = kw.get("token")
+        return tw_evidence.build_tw_evidence.__wrapped__(code, as_of, client=_client(), **{k: v for k, v in kw.items() if k != "client"}) if hasattr(tw_evidence.build_tw_evidence, "__wrapped__") else real(code, as_of, client=_client(), **{k: v for k, v in kw.items() if k != "client"})
+
+    real = tw_evidence.build_tw_evidence
+    monkeypatch.setattr(tw_evidence, "build_tw_evidence", fake)
+
+    class KR:
+        d = {("TradingAgentsLab-Web", "data:finmind"): "FM-TOKEN-000000001", ("TradingAgentsLab-Web", "llm:openai"): "sk-OTHER-00000000002"}
+        def get_password(self, s, n): return self.d.get((s, n))
+        def set_password(self, s, n, v): self.d[(s, n)] = v
+        def delete_password(self, s, n): self.d.pop((s, n), None)
+
+    from engine.secret_store import SecretStore
+    sr.configure(SecretStore(KR()))
+    try:
+        with TestClient(srv.build_app(token="t")) as c:
+            c.headers["Authorization"] = "Bearer t"
+            ok = c.post("/tw/evidence", json={"code": "2330", "as_of": "2026-10-29", "finmind_token": "@@secret:data:finmind@@"}).json()
+            assert ok["ok"] is True and seen["token"] == "FM-TOKEN-000000001"
+            seen.clear()
+            bad = c.post("/tw/evidence", json={"code": "2330", "finmind_token": "@@secret:llm:openai@@"}).json()
+            assert bad["ok"] is False and "sk-OTHER" not in json.dumps(bad) and "token" not in seen
+    finally:
+        sr.configure(None)

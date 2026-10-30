@@ -15,4 +15,12 @@ export const evidenceZhTW: Record<keyof typeof evidence, string> = {
   'dexter.unverified': '未通過驗證',
   'dexter.pitUnknown': '公布時點未知',
   'dexter.noFindings': '沒有產生任何發現。',
+  'evidence.engineSimplified': '台股研究使用簡化辯論引擎，不是 Pro 完整圖。',
+  'evidence.notNumberChecked': '只有標示 ✓ 的 Dexter 發現已對照證據包核驗；辯論文字本身未做數字核驗。',
+  'evidence.usage': '用量 — 辯論 {debate} tokens · Dexter {dexter} tokens',
+  'evidence.usageIncomplete': 'Dexter 的 token 用量未能量測：合計不完整（不是零）。',
+  'evidence.costIncomplete': '成本不完整（模型價格或 Dexter 用量未知），不可當作全部花費。',
+  'evidence.summaryDropped': 'Dexter 摘要已隱藏：其中含有不在已驗證引用中的數字。',
+  'evidence.findingsHeading': 'Dexter 發現',
+  'evidence.unknownsHeading': '已知缺口',
 };

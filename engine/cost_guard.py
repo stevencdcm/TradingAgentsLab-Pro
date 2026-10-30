@@ -405,6 +405,27 @@ def check(
     )
 
 
+def check_extra_usd(*, est_cost_usd: float, auth_kind: str) -> Optional[str]:
+    """USD-cap-only preview for an extra step of an already-reserved run (e.g. the Taiwan
+    Dexter job). Returns the exceeded dimension or None; ignores the per-day session count
+    because the run itself is already counted."""
+    if auth_kind in ("oauth", "local") or est_cost_usd <= 0:
+        return None
+    initialize()
+    config = get_config()
+    if not config.enabled:
+        return None
+    with _connect() as conn:
+        _sweep_expired_reservations(conn)
+        spend = _compute_spend(conn)
+        conn.commit()
+    for name, used, cap in (("daily", spend.daily_usd, config.cap_daily_usd), ("weekly", spend.weekly_usd, config.cap_weekly_usd),
+                            ("monthly", spend.monthly_usd, config.cap_monthly_usd)):
+        if cap > 0 and used + est_cost_usd > cap:
+            return name
+    return None
+
+
 def reserve(
     *,
     model: str,

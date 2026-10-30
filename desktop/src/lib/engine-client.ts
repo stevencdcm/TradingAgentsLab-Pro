@@ -377,6 +377,14 @@ export interface SessionCompleteEvent {
   deep_model?: string;
   quick_model?: string;
   auth_kind?: string;
+  /** Taiwan research (S3/S4): market tag, the engine actually used, and the usage split. */
+  market?: 'TW';
+  usage_breakdown?: {
+    debate?: { input_tokens?: number | null; output_tokens?: number | null; est_cost_usd?: number | null };
+    dexter?: { input_tokens?: number; output_tokens?: number; measured?: boolean; est_cost_usd?: number | null; ran?: boolean };
+  };
+  usage_complete?: boolean;
+  cost_complete?: boolean;
 }
 
 export type AssetClass = 'equity' | 'crypto';
@@ -510,9 +518,11 @@ export interface DexterResultEvent {
     verification: 'verified' | 'unverified';
     reason?: string;
     point_in_time: 'ok' | 'unknown';
-    citations: Array<{ kind: string; period: string }>;
+    citations: Array<{ kind: string; period: string; field?: string; entity?: string }>;
   }>;
   unknowns: string[];
+  answer_markdown?: string;
+  summary_dropped?: string;
   usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; measured?: boolean };
   elapsed_ms?: number;
 }

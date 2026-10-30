@@ -375,6 +375,7 @@ def _format_context(
     state: _DebateState,
     sentiment: Optional[SentimentBlock] = None,
     include_full_sentiment: bool = False,
+    extra_context: str = "",
 ) -> str:
     """Build the user message for a given agent.
 
@@ -421,6 +422,9 @@ def _format_context(
         lines.append("Prior turns in this debate (most recent last):")
         for turn in state.transcript:
             lines.append(f"[{turn['agent']}] {turn['content']}")
+    if extra_context:
+        lines.append("")
+        lines.append(extra_context)
     return "\n".join(lines)
 
 
@@ -524,6 +528,7 @@ async def live_debate(
     reservation_id: Optional[str] = None,
     sentiment: Optional[SentimentBlock] = None,
     report_language: str = "en",
+    extra_context: str = "",
 ) -> AsyncIterator[dict]:
     """Real-LLM debate. Yields the same event shapes as `canned_debate`.
 
@@ -612,6 +617,7 @@ async def live_debate(
                 state=state,
                 sentiment=sentiment,
                 include_full_sentiment=(agent.name == "sentiment_analyst"),
+                extra_context=extra_context,
             )
             try:
                 content, in_tok, out_tok = await _complete_with_retry(

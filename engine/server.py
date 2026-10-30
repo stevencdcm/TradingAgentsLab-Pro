@@ -558,10 +558,17 @@ def build_app(*, token: str) -> FastAPI:
             # malformed symbols. Never run on a silently wrong or empty data source.
             guard_error: str | None = None
             tw = taiwan_code(ticker)
+            tw_mode = False
             if tw:
-                guard_error = taiwan_unsupported_message(
-                    tw, normalize_report_language(start.get("report_language"))
-                )
+                # Taiwan research needs a live model (the evidence-based flow); the stub
+                # path has nothing to ground on, so it is refused with an explanation.
+                if ProviderConfig.from_dict(start.get("provider_config")) is not None:
+                    tw_mode = True
+                    ticker = tw
+                else:
+                    guard_error = taiwan_unsupported_message(
+                        tw, normalize_report_language(start.get("report_language"))
+                    )
             else:
                 try:
                     normalize_ticker(ticker)
@@ -624,7 +631,7 @@ def build_app(*, token: str) -> FastAPI:
             )
 
             # Best-effort data fetch; debate degrades gracefully if it fails.
-            summary = await _fetch_summary_safe(
+            summary = None if tw_mode else await _fetch_summary_safe(
                 ticker=ticker, trade_date=trade_date, provider=data_provider
             )
             if summary is not None:
@@ -632,7 +639,7 @@ def build_app(*, token: str) -> FastAPI:
                 await ws.send_json(evt)
                 captured_events.append(evt)
 
-            headlines = await _fetch_news_safe(
+            headlines = [] if tw_mode else await _fetch_news_safe(
                 ticker=ticker, limit=4, provider=data_provider
             )
             if headlines:
@@ -655,7 +662,7 @@ def build_app(*, token: str) -> FastAPI:
             # tools, so this pre-fetch is skipped on the Pro path (wasted
             # latency + cost otherwise). The free live_debate still needs it.
             sentiment: Optional[SentimentBlock] = None
-            if config is not None and not is_pro:
+            if config is not None and not is_pro and not tw_mode:
                 try:
                     spec = normalize_ticker(ticker)
                     twits_text, reddit_text = await asyncio.gather(
@@ -686,7 +693,7 @@ def build_app(*, token: str) -> FastAPI:
                 # `local` is supported: it maps onto the upstream library's generic
                 # `openai_compatible` provider (base_url + optional key), see
                 # `_build_pro_library_config`.
-                if is_pro and config.auth_kind not in ("api_key", "oauth", "local"):
+                if is_pro and not tw_mode and config.auth_kind not in ("api_key", "oauth", "local"):
                     evt = {
                         "type": "run.error",
                         "error": (
@@ -728,7 +735,7 @@ def build_app(*, token: str) -> FastAPI:
                 # run starts, instead of failing every node with a 400. See
                 # engine/codex_models.py. Cached per account, so this is one
                 # catalog fetch per 15 minutes, not one per model.
-                if config.provider == "openai" and config.auth_kind == "oauth":
+                if config.provider == "openai" and config.auth_kind == "oauth" and not tw_mode:
                     from . import codex_models
 
                     oauth_acct = str(config.auth.get("account_id") or "")
@@ -815,7 +822,17 @@ def build_app(*, token: str) -> FastAPI:
                 # Both engines are async generators yielding the same event
                 # shapes, so the send/capture loop is uniform. Pro routes to the
                 # real LangGraph graph; free routes to the simplified reimpl.
-                if is_pro:
+                if tw_mode:
+                    from .tw_research import tw_research
+
+                    debate_events = tw_research(
+                        code=ticker,
+                        trade_date=trade_date,
+                        config=config,
+                        report_language=report_language,
+                        reservation_id=reservation_id,
+                    )
+                elif is_pro:
                     # Imported lazily: the full graph pulls in langchain +
                     # the tradingagents library, which the free engine (and
                     # its test venv) does not carry. Keeping this off the

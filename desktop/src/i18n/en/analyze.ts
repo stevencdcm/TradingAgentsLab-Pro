@@ -19,7 +19,7 @@ export const analyze = {
   'analyze.codex.fallback': 'Models: built-in list. OpenAI catalog unavailable{detail}.',
   'analyze.codex.fallbackDetail': ' ({error})',
   'analyze.codex.refresh': 'Refresh',
-  'analyze.taiwanHint': 'This looks like a Taiwan stock code. No Taiwan data source (FinMind) is connected yet, so the run will be refused rather than use US data. For the US ADR enter TSM (a different instrument from 2330).',
+  'analyze.taiwanHint': 'This looks like a Taiwan stock code. It runs the Taiwan evidence flow (FinMind + TWSE/TPEx cross-check; Dexter reads only that evidence) — never US data — and needs a configured model (stub mode is refused). For the US ADR enter TSM (a different instrument from 2330).',
   'analyze.ticker': 'Ticker',
   'analyze.asOfDate': 'As-of date',
   'analyze.stop': 'Stop',

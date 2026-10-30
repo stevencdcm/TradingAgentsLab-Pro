@@ -29,6 +29,7 @@ import { loadLocalConfig } from './local-llm';
 import { getOpenAICredentialsForRequest } from './oauth';
 import { loadWebhooks, type WebhookConfig } from './webhooks';
 import { assembleProConfig } from './pro-config';
+import type { Locale } from '../i18n/core';
 
 export interface RunAnalysisOptions {
   ticker: string;
@@ -45,6 +46,9 @@ export interface RunAnalysisOptions {
   model: string;
   /** Default 400 — same as Analyze.tsx. */
   maxTokens?: number;
+  /** Language the generated report is written in. Follows the UI language so the
+   * research itself (summary, analysts, risk, conclusion) comes back in it. */
+  reportLanguage?: Locale;
 }
 
 export interface RunAnalysisCallbacks {
@@ -155,6 +159,7 @@ export async function runAnalysis(
       engine: 'pro',
       pro_config: proConfig,
       alpha_vantage_key: alphaVantageKey,
+      report_language: opts.reportLanguage,
     },
     wrappedOnEvent,
     callbacks.onError,

@@ -598,6 +598,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           provider,
           openaiAuthKind: authKind,
           model,
+          reportLanguage: locale,
         },
         {
           onEvent: (event) => setEvents((prev) => [...prev, event]),
@@ -901,6 +902,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                     ? t('analyze.option.oauth', { provider: providerLabel(activeProvider, t) })
                     : providerLabel(activeProvider, t),
                 model: activeModel,
+                language: locale === 'zh-TW' ? '繁體中文' : 'English',
               })}
             {engineStatus === 'running' && !isStreaming && !activeProvider &&
               t('analyze.helper.stub')}

@@ -57,7 +57,7 @@ interface PerTickerState {
 
 function BatchRunner({ tickers }: BatchRunnerProps) {
   const i18n = useI18n();
-  const { t, tp } = i18n;
+  const { t, tp, locale } = i18n;
   const [phase, setPhase] = useState<BatchPhase>('idle');
   const [rows, setRows] = useState<PerTickerState[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
@@ -159,6 +159,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
             provider: active.provider,
             openaiAuthKind: active.openaiAuthKind ?? 'api_key',
             model: active.model,
+            reportLanguage: locale,
           },
           {
             onEvent,
@@ -234,7 +235,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
 
     setCurrentIndex(-1);
     setPhase('complete');
-  }, [tickers, t]);
+  }, [tickers, t, locale]);
 
   const summary = useSummary(rows);
 

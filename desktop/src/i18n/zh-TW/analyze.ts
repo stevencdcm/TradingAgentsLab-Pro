@@ -25,7 +25,7 @@ export const analyzeZhTW: Record<keyof typeof analyze, string> = {
   'analyze.stop': '停止',
   'analyze.run': '開始分析',
   'analyze.helper.pending': '引擎啟動中，請稍候。Python 側載程序正在上線。',
-  'analyze.helper.live': '即時辯論：{provider} · {model}，每位代理皆設有用量上限。',
+  'analyze.helper.live': '即時辯論：{provider} · {model}，每位代理皆設有用量上限。報告語言：{language}。',
   'analyze.helper.stub': '目前為示範辯論。請至設定頁貼上 LLM 金鑰，即可切換為即時代理。',
   'analyze.helper.streaming': '正在串流側載程序的代理辯論。按「停止」可中止。',
   'analyze.helper.engineError':

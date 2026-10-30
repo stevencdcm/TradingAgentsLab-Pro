@@ -24,7 +24,7 @@ export const analyze = {
   'analyze.stop': 'Stop',
   'analyze.run': 'Analyze',
   'analyze.helper.pending': 'Engine starting, please wait. Python sidecar is coming online.',
-  'analyze.helper.live': 'Live debate: {provider} · {model}, capped per agent.',
+  'analyze.helper.live': 'Live debate: {provider} · {model}, capped per agent. Report language: {language}.',
   'analyze.helper.stub': 'Stub debate. Paste an LLM key in Settings to switch to live agents.',
   'analyze.helper.streaming': 'Streaming agent debate from sidecar. Stop to abort.',
   'analyze.helper.engineError':

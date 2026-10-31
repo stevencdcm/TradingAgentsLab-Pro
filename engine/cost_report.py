@@ -423,7 +423,7 @@ def recompute_for_session(complete: dict[str, Any]) -> Optional[dict[str, Any]]:
     in_t, out_t = _int(complete.get("input_tokens")), _int(complete.get("output_tokens"))
     if in_t is None or out_t is None or not prov:
         return None
-    billing = auth if auth in ("api_key", "oauth", "local") else ("local" if prov == "local" else "api_key")
+    billing = auth if auth in ("api_key", "oauth", "local") else ("local" if prov == "local" else "unknown")   # unknown auth: no figure, never a guess
     led = UsageLedger(provider=prov)
     br = complete.get("usage_breakdown") or {}
     dex = br.get("dexter") if isinstance(br, dict) else None

@@ -50,4 +50,5 @@ export const historyZhTW: Record<keyof typeof history, string> = {
   'history.stat.apiCost': 'API 估算（API 金鑰分析）',
   'history.stat.apiCostIncomplete': 'API 估算（API 金鑰分析，不完整）',
   'history.stat.refCost': 'API 等值參考（訂閱，非帳單）',
+  'history.stat.refCostIncomplete': 'API 等值參考（訂閱，非帳單；不完整，僅為下限）',
 };

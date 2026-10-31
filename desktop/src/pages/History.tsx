@@ -169,13 +169,14 @@ function History() {
     let apiIncomplete = false;
     let apiRows = 0;
     let refTotal = 0;
+    let refIncomplete = false;      // a subscription reference total is only a lower bound if any row is unknown / incomplete / a range
     for (const s of sessions) {
       const c = historyCost(s, t);
       if (c.kind === 'api') { apiRows++; apiTotal += c.usd ?? 0; apiIncomplete = apiIncomplete || c.incomplete; }
       else if (c.kind === 'unknown') { apiRows++; apiIncomplete = true; }
-      else if (c.kind === 'reference') refTotal += c.usd ?? 0;
+      else if (c.kind === 'reference') { refTotal += c.usd ?? 0; refIncomplete = refIncomplete || c.incomplete || c.usd === null; }
     }
-    return { total, live, apiTotal, apiIncomplete, apiRows, refTotal };
+    return { total, live, apiTotal, apiIncomplete, apiRows, refTotal, refIncomplete };
   }, [sessions, t]);
 
   // Sorted view of the engine's list. Engine returns created_at DESC by
@@ -321,7 +322,7 @@ function History() {
           ) : null}
           {stats.refTotal > 0 ? (
             <div className={styles.statItem} data-testid="history-stat-reference">
-              <span className={styles.statLabel}>{t('history.stat.refCost')}</span>
+              <span className={styles.statLabel}>{t(stats.refIncomplete ? 'history.stat.refCostIncomplete' : 'history.stat.refCost')}</span>
               <span className={styles.statValue}>${stats.refTotal.toFixed(4)}</span>
             </div>
           ) : null}

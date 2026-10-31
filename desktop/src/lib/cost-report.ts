@@ -277,7 +277,7 @@ export function historyCost(s: HistoryCostInput, t: T): HistoryCost {
     if (cs === null || v === null) return { text: t('history.cost.refUnknown' as MessageKey), kind: 'reference', usd: null, incomplete: true };
     const hi = cs.api_equivalent_reference_usd_max;
     const key = hi != null && hi !== v ? 'history.cost.refRange' : 'history.cost.ref';
-    return { text: t(key as MessageKey, { cost: formatUsd(v), max: hi != null ? formatUsd(hi) : '' }) + tail(notes(cs)), kind: 'reference', usd: v, incomplete: !cs.complete };
+    return { text: t(key as MessageKey, { cost: formatUsd(v), max: hi != null ? formatUsd(hi) : '' }) + tail(notes(cs)), kind: 'reference', usd: v, incomplete: !cs.complete || (hi != null && hi !== v) };
   }
   if (billing === 'local') {
     return { text: t('history.cost.local' as MessageKey) + tail(cs && !cs.complete ? [t('history.cost.incomplete' as MessageKey)] : []), kind: 'local', usd: 0, incomplete: !!cs && !cs.complete };

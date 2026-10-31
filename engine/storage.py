@@ -147,6 +147,7 @@ def _do_initialize() -> None:
             conn.execute("ALTER TABLE sessions ADD COLUMN elapsed_s REAL")
         if "cost_summary" not in scols:               # D23: digest of the official-price report, so the History list needs no events
             conn.execute("ALTER TABLE sessions ADD COLUMN cost_summary TEXT")
+        _backfill_cost_summary(conn)
         if "market" not in wcols:
             conn.execute("ALTER TABLE watchlist ADD COLUMN market TEXT")
         if "name" not in wcols:
@@ -380,6 +381,30 @@ def write_session_from_events(
     )
 
 
+def _backfill_cost_summary(conn: Any) -> None:
+    """Sessions saved by an engine that had `cost_report` but no `cost_summary` column (PR21) or by an older engine after a rollback:
+    copy the digest of the report they already carry, so the list shows the MEASURED figure and not a today's-price recomputation.
+    Writes only the new digest column; never touches the accounting columns. Best-effort."""
+    try:
+        rows = conn.execute("SELECT id, events_json FROM sessions WHERE cost_summary IS NULL AND live = 1 "
+                            "AND events_json LIKE '%\"cost_report\"%'").fetchall()
+        for r in rows:
+            try:
+                digest = _summary_of(_complete_of(json.loads(r["events_json"])) or {})
+            except Exception:  # noqa: BLE001 - one unreadable blob must not stop the others
+                continue
+            if digest:
+                conn.execute("UPDATE sessions SET cost_summary = ? WHERE id = ?", (json.dumps(digest, separators=(",", ":")), r["id"]))
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[storage] cost_summary backfill skipped: {type(exc).__name__}: {exc}\n")
+
+
+def _complete_of(events: Any) -> Optional[dict]:
+    if not isinstance(events, list):
+        return None
+    return next((e for e in reversed(events) if isinstance(e, dict) and e.get("type") == "session.complete"), None)
+
+
 def _summary_of(complete: dict) -> Optional[dict]:
     try:
         from .cost_report import summary
@@ -507,7 +532,8 @@ def get_session(session_id: str) -> Optional[SessionDetail]:
             created_at=row["created_at"],
             elapsed_s=row["elapsed_s"],
             auth_kind=row["auth_kind"],
-            cost_summary=_row_summary(row),
+            # The saved report (if any) wins over a recomputation, so the header agrees with the report panel below it.
+            cost_summary=_row_summary(row) if row["cost_summary"] else (_summary_of(_complete_of(events) or {}) or _row_summary(row)),
             events=events,
         )
     except Exception as exc:  # noqa: BLE001

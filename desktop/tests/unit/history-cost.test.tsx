@@ -76,4 +76,24 @@ describe('History page', () => {
     await waitFor(() => expect(screen.getByTestId('history-stat-reference')).toBeTruthy());
     expect(screen.queryByTestId('history-stat-api')).toBeNull();
   });
+
+  it('the subscription reference total says it is incomplete (lower bound) when any row is unknown, recomputed-incomplete or a range', async () => {
+    sessions = [
+      { ...base, id: 'a', ticker: 'A', provider: 'openai', model: 'gpt-6.1-sol', auth_kind: 'oauth', estimated_cost_usd: 0,
+        cost_summary: cs({ billing: 'oauth', basis: 'recomputed_current_list_price', complete: false, api_equivalent_reference_usd: 0.5014 }) },
+      { ...base, id: 'b', ticker: 'B', provider: 'openai', model: 'gpt-x', auth_kind: 'oauth', estimated_cost_usd: 0, cost_summary: cs({ billing: 'oauth', complete: false }) },
+      { ...base, id: 'c', ticker: 'C', provider: 'openai', model: 'gpt-6.1-sol', auth_kind: 'oauth', estimated_cost_usd: 0,
+        cost_summary: cs({ billing: 'oauth', complete: false, api_equivalent_reference_usd: 0.03, api_equivalent_reference_usd_max: 0.05 }) },
+    ];
+    mount();
+    await waitFor(() => expect(screen.getByTestId('history-stat-reference')).toBeTruthy());
+    expect(screen.getByTestId('history-stat-reference').textContent).toMatch(/不完整.*下限.*\$0\.5314/);
+  });
+  it('a fully measured subscription list keeps the plain reference label', async () => {
+    sessions = [{ ...base, id: 'a', ticker: 'A', provider: 'openai', model: 'gpt-6.1-sol', auth_kind: 'oauth', estimated_cost_usd: 0,
+      cost_summary: cs({ billing: 'oauth', complete: true, api_equivalent_reference_usd: 0.2734 }) }];
+    mount();
+    await waitFor(() => expect(screen.getByTestId('history-stat-reference')).toBeTruthy());
+    expect(screen.getByTestId('history-stat-reference').textContent).not.toMatch(/不完整/);
+  });
 });

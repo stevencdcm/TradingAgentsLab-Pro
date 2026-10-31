@@ -49,4 +49,5 @@ export const history = {
   'history.stat.apiCost': 'API est. (API-key runs)',
   'history.stat.apiCostIncomplete': 'API est. (API-key runs, incomplete)',
   'history.stat.refCost': 'API-equivalent ref. (subscription, not billed)',
+  'history.stat.refCostIncomplete': 'API-equivalent ref. (subscription, not billed; incomplete — a lower bound)',
 } as const;

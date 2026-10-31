@@ -371,8 +371,6 @@ a.newsTitle:hover {
 }
 
 .decisionUsage {
-  grid-column: 2;
-  grid-row: 4;
   font-family: var(--tal-font-mono);
   font-size: var(--tal-text-xs);
   color: var(--tal-text-muted);
@@ -382,11 +380,24 @@ a.newsTitle:hover {
   margin-top: var(--tal-space-2);
 }
 
+/* Everything below the assessment body (usage, cost report, ownership notice,
+   standing disclaimer) lives in ONE normal-flow block that spans the card and
+   sits in its own grid row, below the reasoning on every viewport. Earlier each
+   piece had its own hard-coded grid-row, and a later generic rule overrode the
+   mobile row, so the ownership warning landed on the reasoning's row. */
+.decisionFooter {
+  grid-column: 1 / -1;
+  grid-row: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tal-space-2);
+  margin-top: var(--tal-space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 720px) {
-  .decisionUsage {
-    grid-column: 1;
-    grid-row: 6;
-  }
+  .decisionFooter { grid-row: 6; }
 }
 
 /* SEC: disclaimers must be prominent AND close to the relevant content.
@@ -394,8 +405,6 @@ a.newsTitle:hover {
    analytical stance can be misread as a recommendation. Inline disclaimer
    directly below it keeps the regulatory positioning explicit. */
 .decisionDisclaimer {
-  grid-column: 1 / -1;
-  grid-row: 6;
   font-family: var(--tal-font-mono);
   font-size: 11px;
   color: var(--tal-text-muted);
@@ -405,15 +414,6 @@ a.newsTitle:hover {
   border-top: 1px dashed var(--tal-border-subtle);
   text-align: center;
   font-style: italic;
-}
-
-@media (max-width: 720px) {
-  .decisionOwnership {
-    grid-row: 7;
-  }
-  .decisionDisclaimer {
-    grid-row: 8;
-  }
 }
 
 .decisionAction {
@@ -496,8 +496,6 @@ a.newsTitle:hover {
 /* The user, not the app, owns any investment decision — say so on the
    card itself, above the standing disclaimer line. */
 .decisionOwnership {
-  grid-column: 1 / -1;
-  grid-row: 5;
   font-size: var(--tal-text-xs);
   color: var(--tal-text-muted);
   line-height: 1.5;

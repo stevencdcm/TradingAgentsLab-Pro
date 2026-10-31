@@ -803,30 +803,32 @@ function DebateStream({ events, isStreaming, costReport }: DebateStreamProps) {
             )}
             <Markdown>{decision.reasoning}</Markdown>
           </div>
-          <div className={styles.decisionOwnership}>
-            {t('debate.decision.ownership')}
-          </div>
-          {meta.live && (meta.estimatedCostUsd !== undefined || meta.inputTokens !== undefined) && (
-            <div className={styles.decisionUsage}>
-              {meta.inputTokens !== undefined && meta.outputTokens !== undefined && (
-                <span>
-                  {t('debate.decision.tokens', {
-                    input: i18n.formatNumber(meta.inputTokens),
-                    output: i18n.formatNumber(meta.outputTokens),
-                  })}
-                </span>
-              )}
-              {meta.estimatedCostUsd === null && <span>{t('debate.decision.costUnknown')}</span>}
-              {typeof meta.estimatedCostUsd === 'number' && (
-                <span>
-                  {t('debate.decision.cost', { cost: `$${meta.estimatedCostUsd.toFixed(4)}` })}
-                </span>
-              )}
+          <div className={styles.decisionFooter} data-testid="decision-footer">
+            <div className={styles.decisionOwnership}>
+              {t('debate.decision.ownership')}
             </div>
-          )}
-          {(costReport ?? meta.costReport) ? <CostReportPanel report={(costReport ?? meta.costReport) as CostReport} /> : null}
-          <div className={styles.decisionDisclaimer}>
-            {t('debate.decision.disclaimer')}
+            {meta.live && (meta.estimatedCostUsd !== undefined || meta.inputTokens !== undefined) && (
+              <div className={styles.decisionUsage}>
+                {meta.inputTokens !== undefined && meta.outputTokens !== undefined && (
+                  <span>
+                    {t('debate.decision.tokens', {
+                      input: i18n.formatNumber(meta.inputTokens),
+                      output: i18n.formatNumber(meta.outputTokens),
+                    })}
+                  </span>
+                )}
+                {meta.estimatedCostUsd === null && <span>{t('debate.decision.costUnknown')}</span>}
+                {typeof meta.estimatedCostUsd === 'number' && (
+                  <span>
+                    {t('debate.decision.cost', { cost: `$${meta.estimatedCostUsd.toFixed(4)}` })}
+                  </span>
+                )}
+              </div>
+            )}
+            {(costReport ?? meta.costReport) ? <CostReportPanel report={(costReport ?? meta.costReport) as CostReport} /> : null}
+            <div className={styles.decisionDisclaimer}>
+              {t('debate.decision.disclaimer')}
+            </div>
           </div>
         </div>
       )}

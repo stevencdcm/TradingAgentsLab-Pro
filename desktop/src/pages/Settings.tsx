@@ -1,3 +1,4 @@
+import ModelCatalogPanel from '../components/ModelCatalogPanel';
 import TwSourcesPanel from '../components/TwSourcesPanel';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Settings.module.css';
@@ -359,6 +360,10 @@ function Settings() {
                 listingByKey={listingByKey}
                 disabled={!availability?.available}
                 onChange={refresh}
+              />
+              <ModelCatalogPanel
+                savedSecretKeys={new Set(listingByKey.keys())}
+                disabled={!availability?.available}
               />
               <LocalLLMRow
                 disabled={!availability?.available}

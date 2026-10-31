@@ -40,7 +40,9 @@ export const ANALYSTS_NEEDING_DATA_KEY: AnalystId[] = ['social', 'news', 'fundam
  * accepts the param; haiku-4-5 and sonnet-4-5 return HTTP 400. So effort is
  * valid only when the provider is Anthropic AND both models are the one
  * effort-capable model. */
-export const EFFORT_CAPABLE_MODELS = new Set(['claude-sonnet-4-6']);
+// 5.5 family: Opus 5.5 and Sonnet 5.5 accept all five effort levels (platform migration guides, 2026-10-31); Fable 5.1 is
+// listed with a default effort. Haiku 5.5 is deliberately left out: its effort support was not documented where we checked.
+export const EFFORT_CAPABLE_MODELS = new Set(['claude-sonnet-4-6', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1']);
 export const EFFORT_LEVELS = ['low', 'medium', 'high'] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 

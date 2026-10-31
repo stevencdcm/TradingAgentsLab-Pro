@@ -1,6 +1,11 @@
 import type { modelNotes } from '../en/modelNotes';
 
 export const modelNotesZhTW: Record<keyof typeof modelNotes, string> = {
+  'modelNote.agentic': '長時間代理與知識工作',
+  'modelNote.latestMostCapable': '最新、能力最強',
+  'modelNote.lowestCost': '成本最低',
+  'modelNote.previousRelease': '上一版',
+  'modelNote.speedIntelligence': '速度與智慧兼顧',
   'modelNote.balanced': '均衡',
   'modelNote.balancedCost': '均衡、划算',
   'modelNote.cheapest': '最便宜',

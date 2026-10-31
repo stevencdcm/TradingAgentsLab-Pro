@@ -82,6 +82,12 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6":   {"input": 3.00,  "output": 15.00},
     # Verified 2026-10-30 against https://platform.claude.com/docs/en/about-claude/pricing (Input $2 / Output $10 per MTok).
     "claude-sonnet-5-5":   {"input": 2.00,  "output": 10.00},
+    # Verified 2026-10-31 against the same page. Haiku 5.5 is tiered ($0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above):
+    # the HIGHER tier is used so the reservation stays a ceiling. Cache writes (1.25x / 2x input) and reads are not modelled
+    # here; CostGuard's worst case already takes the dearer of the two rates per token.
+    "claude-opus-5-5":     {"input": 4.00,  "output": 20.00},
+    "claude-haiku-5-5":    {"input": 0.50,  "output": 2.50},
+    "claude-fable-5-1":    {"input": 10.00, "output": 50.00},
     "claude-opus-4-7":     {"input": 15.00, "output": 75.00},  # kept for backward compat
     "claude-opus-4-8":     {"input": 15.00, "output": 75.00},  # conservative ceiling; verify vs billing
     "claude-fable-5":      {"input": 15.00, "output": 75.00},  # new model; conservative ceiling

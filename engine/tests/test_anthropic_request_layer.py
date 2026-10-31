@@ -90,3 +90,44 @@ def test_langchain_path_used_by_the_full_graph_builds_valid_requests(srv):
         assert "temperature" not in b or b["temperature"] is not None
         assert {"model", "max_tokens", "messages"} <= set(b)
 
+
+
+# ---- Claude 5.5 family: the fake server answers 400 for every request setting the real API rejects ----------------
+
+M55 = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-5-5")
+
+
+@pytest.mark.parametrize("model", M55)
+def test_adapter_builds_requests_claude_55_accepts(srv, model):
+    cfg = ProviderConfig.from_dict({"provider": "anthropic", "auth": {"type": "api_key", "api_key": KEY}, "model": model})
+    adapter = adapter_for(cfg)
+
+    async def go():
+        await adapter.open(api_key=cfg.bearer_token)
+        try:
+            return await adapter.complete(system="s", user="u", model=model, max_tokens=32)
+        finally:
+            await adapter.close()
+
+    text, _, _ = asyncio.run(go())          # a 400 from the strict fake would raise here
+    assert text and all(set(b) <= ALLOWED for b in srv.bodies)
+
+
+@pytest.mark.parametrize("model", M55)
+def test_langchain_layer_builds_requests_claude_55_accepts(srv, model):
+    from pydantic import BaseModel
+
+    from tradingagents.llm_clients.factory import create_llm_client
+
+    llm = create_llm_client("anthropic", model, base_url=srv.url, max_tokens=64, effort="high").get_llm()
+    assert "好的" in str(llm.invoke("hi").content)
+
+    class Out(BaseModel):
+        x: int
+
+    try:
+        llm.with_structured_output(Out).invoke("give x")
+    except Exception as exc:  # noqa: BLE001 - parsing the fake's reply may fail; an HTTP 400 on the request must not
+        assert "not supported for this model" not in str(exc), exc
+    assert not any("tool_choice" in b and b["tool_choice"].get("type") in ("any", "tool") for b in srv.bodies if model != "claude-haiku-5-5")
+    assert all("temperature" not in b and b.get("thinking", {}).get("type") not in ("disabled", "enabled") for b in srv.bodies)

@@ -14,6 +14,7 @@ import { settingsB } from './en/settingsB';
 import { settingsC } from './en/settingsC';
 import { exportMsgs } from './en/export';
 import { modelNotes } from './en/modelNotes';
+import { modelCatalog } from './en/modelCatalog';
 import { evidence } from './en/evidence';
 import { runStatus } from './en/runStatus';
 import { costReport } from './en/costReport';
@@ -21,6 +22,7 @@ import { costReportZhTW } from './zh-TW/costReport';
 import { runStatusZhTW } from './zh-TW/runStatus';
 import { evidenceZhTW } from './zh-TW/evidence';
 import { modelNotesZhTW } from './zh-TW/modelNotes';
+import { modelCatalogZhTW } from './zh-TW/modelCatalog';
 import { exportZhTW } from './zh-TW/export';
 import { settingsCZhTW } from './zh-TW/settingsC';
 import { settingsBZhTW } from './zh-TW/settingsB';
@@ -54,6 +56,7 @@ export const en = {
   ...settingsC,
   ...exportMsgs,
   ...modelNotes,
+  ...modelCatalog,
   ...evidence,
   ...runStatus,
   ...costReport,
@@ -76,6 +79,7 @@ export const zhTW: Record<MessageKey, string> = {
   ...settingsCZhTW,
   ...exportZhTW,
   ...modelNotesZhTW,
+  ...modelCatalogZhTW,
   ...evidenceZhTW,
   ...runStatusZhTW,
   ...costReportZhTW,

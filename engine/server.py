@@ -409,6 +409,32 @@ def build_app(*, token: str) -> FastAPI:
             "models": [m.to_choice() for m in models],
         }
 
+    @app.post("/llm/catalog", dependencies=bearer)
+    async def llm_catalog(req: LLMModelsRequest) -> dict[str, Any]:
+        """Provider model list from the provider's official list endpoint (discovery only: no inference, no billing).
+
+        The renderer sends the same provider_config it uses for live runs (secret references are resolved HERE, so the
+        key never reaches the browser or a log). `refresh` bypasses the 15-minute cache; a failed refresh keeps the last
+        successful list (`source: "stale"`). Listing a model is not proof that this app's requests are accepted for it.
+        """
+        from . import model_catalog
+
+        try:
+            config = ProviderConfig.from_dict(secret_refs.resolve_provider_config(req.provider_config))
+        except secret_refs.SecretRefError as exc:
+            return {"ok": False, "source": "unavailable", "models": [], "error": {"code": "secret_ref", "message": str(exc)}}
+        if config is None:
+            return {"ok": False, "source": "unavailable", "models": [], "error": {"code": "bad_request", "message": "invalid provider config"}}
+        if config.auth_kind != "api_key":
+            return {"ok": False, "provider": config.provider, "source": "unsupported", "models": [],
+                    "error": {"code": "unsupported", "message": "model listing needs an API key for this provider"}}
+        # The blocking HTTP call runs in a worker thread so it cannot stall the event loop (a run may be streaming).
+        out = await asyncio.to_thread(model_catalog.list_models, config.provider, config.bearer_token, force_refresh=req.refresh)
+        # Pricing is a separate question from "does the provider list it": flag models the cost table has no exact row for,
+        # so the UI can say "cost unknown" instead of implying $0 (CostGuard treats them as unpriced the same way).
+        out["models"] = [{**m, "priced": llm_providers.is_priced(m["id"])} for m in out.get("models", [])]
+        return out
+
     @app.get("/telegram/status", dependencies=bearer)
     async def telegram_status() -> dict[str, Any]:
         return telegram_bot.status().to_dict()

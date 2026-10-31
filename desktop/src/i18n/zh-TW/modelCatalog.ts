@@ -1,0 +1,25 @@
+import type { modelCatalog } from '../en/modelCatalog';
+
+export const modelCatalogZhTW: Record<keyof typeof modelCatalog, string> = {
+  'modelCatalog.title': '模型清單',
+  'modelCatalog.intro': '向各供應商查詢目前列出的模型，讓新版模型不必等 App 更新就能選用。這只會讀取清單：不會執行分析、不會消耗 token。你已儲存的模型選擇不會被更動。',
+  'modelCatalog.refresh': '更新模型清單',
+  'modelCatalog.refreshing': '更新中…',
+  'modelCatalog.retry': '重試',
+  'modelCatalog.never': '尚未更新，目前顯示內建清單',
+  'modelCatalog.updated': '{time} 更新 · 供應商列出 {count} 個',
+  'modelCatalog.stale': '更新失敗；仍顯示 {time} 取得的清單',
+  'modelCatalog.error.auth': '供應商拒絕了已儲存的金鑰（請檢查金鑰與其權限）。',
+  'modelCatalog.error.rate_limited': '供應商正在限流，請稍後再試。',
+  'modelCatalog.error.network': '無法連到供應商或本機引擎。',
+  'modelCatalog.error.timeout': '供應商沒有及時回應。',
+  'modelCatalog.error.no_credential': '這個供應商沒有已儲存的金鑰。',
+  'modelCatalog.error.generic': '無法更新模型清單（{code}）。',
+  'modelCatalog.unsupported': 'MiniMax 沒有本 App 使用的官方模型清單端點，沿用內建清單；本機 LLM 則列出其執行環境回報的模型。',
+  'modelCatalog.noKey': '請先在上方儲存金鑰，才能更新這份清單。',
+  'modelCatalog.caveat': '模型出現在清單中，不代表本 App 送出的每種請求都被該模型接受；沒有已驗證價格的模型，成本會顯示為未知。',
+  'modelCatalog.marker.api': ' · 供應商清單',
+  'modelCatalog.marker.saved': ' · 已儲存的選擇，不在目前清單',
+  'modelCatalog.marker.deprecated': ' · 已棄用',
+  'modelCatalog.marker.unpriced': ' · 價格未知',
+};

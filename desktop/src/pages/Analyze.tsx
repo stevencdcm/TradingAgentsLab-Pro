@@ -34,10 +34,11 @@ import ProviderSetupCallout from '../components/ProviderSetupCallout';
 import { getLocalRuntimes, listLocalModels } from '../lib/engine-client';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
 import { useCodexModels } from '../lib/codex-models';
+import { mergeModelChoices, useModelCatalog } from '../lib/model-catalog';
 import { useI18n } from '../i18n';
 import { describeEngineError } from '../lib/engine-errors';
 import { providerLabel } from '../lib/provider-label';
-import { modelNoteLabel } from '../lib/model-notes';
+import { modelMarkerSuffix, modelNoteLabel } from '../lib/model-notes';
 
 /** Persists the dropdown choice across app sessions (per founder, 2026-05-09). */
 const SELECTED_PROVIDER_STORAGE_KEY = 'tal:analyze:selected-provider';
@@ -138,6 +139,8 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       PROVIDER_PRIORITY.find((p) => configuredProviders.has(p)) ?? null
     );
   }, [manualProvider, configuredProviders]);
+  // Provider-reported models (cached from the last Settings refresh; this page never fetches by itself).
+  const catalog = useModelCatalog(activeProvider === 'local' ? null : activeProvider);
 
   // Ref mirrors of the resolution state. `onAnalyze` is async (multiple
   // awaits between mousedown and the WS open frame) — reading via refs
@@ -207,8 +210,17 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     if (activeProvider === 'openai' && openaiAuthKind === 'oauth') {
       return codexModels.models;
     }
-    return getAvailableModels(activeProvider, openaiAuthKind);
-  }, [activeProvider, openaiAuthKind, localModels, localSavedModel, codexModels.models, t]);
+    // API-key providers: the built-in table plus whatever the provider's refreshed model list added (Settings → 更新模型清單).
+    // The user's saved choice stays in the list even when neither source has it, so a refresh or a retired id never
+    // silently swaps their model.
+    let savedChoice: string | null = null;
+    try {
+      savedChoice = localStorage.getItem(getModelStorageKey(activeProvider, openaiAuthKind));
+    } catch {
+      // storage unavailable: no saved choice to protect
+    }
+    return mergeModelChoices(getAvailableModels(activeProvider, openaiAuthKind), catalog.models, savedChoice);
+  }, [activeProvider, openaiAuthKind, localModels, localSavedModel, codexModels.models, catalog.models, t]);
 
   /**
    * The model that will run the next debate. Pulls from per-(provider,auth)
@@ -964,6 +976,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                   {m.label}
                   {m.recommended ? t('analyze.model.recommended') : ''}
                   {m.note ? t('analyze.model.note', { note: modelNoteLabel(m.note, t) }) : ''}
+                  {modelMarkerSuffix(m, t)}
                 </option>
               ))}
             </select>

@@ -46,7 +46,7 @@ export const historyZhTW: Record<keyof typeof history, string> = {
   'history.cost.refUnknown': '訂閱 · API 等值參考未知',
   'history.cost.local': '本機模型 · 外部 API 費 $0',
   'history.cost.incomplete': '不完整',
-  'history.cost.recomputed': '以今日牌價重算',
+  'history.cost.recomputed': '歷史用量補算（今日官方牌價）',
   'history.stat.apiCost': 'API 估算（API 金鑰分析）',
   'history.stat.apiCostIncomplete': 'API 估算（API 金鑰分析，不完整）',
   'history.stat.refCost': 'API 等值參考（訂閱，非帳單）',

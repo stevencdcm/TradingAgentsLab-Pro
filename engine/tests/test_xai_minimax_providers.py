@@ -18,6 +18,8 @@ import pytest
 
 from engine.cost_guard import worst_case_reservation
 from engine.llm_providers import (
+    has_cost_ceiling,
+    is_priced,
     MiniMaxAdapter,
     OpenAIAdapter,
     ProviderConfig,
@@ -190,6 +192,8 @@ def test_new_provider_models_are_priced():
         "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
     ):
-        assert estimate_cost(model, 1000, 400) > 0.0
+        # These ids have a CostGuard ceiling row but no exact official price (aliases / unlisted / tiered): the reservation is
+        # positive and bounded, while the displayed cost is "unknown" (estimate_cost is the no-figure 0.0 path, gated by is_priced).
+        assert has_cost_ceiling(model) and not is_priced(model)
         est = worst_case_reservation(model=model, auth_kind="api_key", max_tokens=800)
         assert 0.0 < est < 1.0, f"{model} worst-case ${est:.4f} out of range"

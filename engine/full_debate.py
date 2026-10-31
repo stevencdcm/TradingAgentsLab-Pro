@@ -492,14 +492,29 @@ def _apply_report_language(merged: Dict[str, Any], report_language: str) -> Dict
     return merged
 
 
-def _run_cost_known(auth_kind: str, merged: Dict[str, Any]) -> bool:
+def _exact_cost(auth_kind: str, meter: Optional["_TokenMeter"]) -> Optional[float]:
+    """The run's exact API cost from its usage ledger (complete per-call usage, official price incl. tier and cache), else None.
+    An unmetered call still in flight makes the totals a lower bound, so it is never exact."""
+    if auth_kind in ("oauth", "local") or meter is None or getattr(meter, "ledger", None) is None or getattr(meter, "inflight", 0) > 0:
+        return None
+    try:
+        from .cost_report import build_report, exact_run_cost
+
+        return exact_run_cost(build_report(meter.ledger, billing=auth_kind or "api_key", run_state="completed"))
+    except Exception:  # noqa: BLE001 - pricing is best-effort, never fatal
+        return None
+
+
+def _run_cost_known(auth_kind: str, merged: Dict[str, Any], meter: Optional["_TokenMeter"] = None) -> bool:
     """False when a per-token run used a model (deep or quick) with no verified price: its cost is
-    unknown and must be stored as null, not as 0.0."""
+    unknown and must be stored as null, not as 0.0. A complete usage report's exact figure makes it known."""
     if auth_kind in ("oauth", "local"):
         return True
     try:
         from .llm_providers import is_priced
 
+        if _exact_cost(auth_kind, meter) is not None:
+            return True
         return all(is_priced(m) for m in (merged.get("deep_think_llm"), merged.get("quick_think_llm")) if m)
     except Exception:  # noqa: BLE001
         return False
@@ -508,14 +523,16 @@ def _run_cost_known(auth_kind: str, merged: Dict[str, Any]) -> bool:
 def _run_cost(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") -> float:
     """Best-effort USD estimate for the metered run.
 
-    OAuth (subscription) and local runs are $0 from the engine's perspective.
-    Otherwise priced against the deep model (the pricier of the two) as a
-    conservative figure. ``estimate_cost`` is imported lazily so the headless
-    tests, which load this module standalone (no package context), never trip
-    the relative import — they simply get 0.0, which they do not assert on.
+    OAuth (subscription) and local runs are $0 from the engine's perspective. An exact figure from the usage report wins; otherwise
+    priced against the deep model (the pricier of the two) as a conservative figure. ``estimate_cost`` is imported lazily so the
+    headless tests, which load this module standalone (no package context), never trip the relative import - they simply get 0.0,
+    which they do not assert on.
     """
     if auth_kind in ("oauth", "local"):
         return 0.0
+    exact = _exact_cost(auth_kind, meter)
+    if exact is not None:
+        return exact
     try:
         from .llm_providers import estimate_cost
 
@@ -573,7 +590,7 @@ def _finalize_reservation(
         from . import cost_guard as _cost_guard
 
         # A per-token run on a model (deep OR quick) with no verified price has an UNKNOWN cost: settle as NULL, not 0.
-        known = _run_cost_known(auth_kind, merged) and not unknown
+        known = _run_cost_known(auth_kind, merged, meter) and not unknown
         hold, ceiling = _ceiling_hold(auth_kind, merged, meter) if not known else (False, None)
         _cost_guard.finalize_reservation(
             reservation_id,
@@ -653,7 +670,7 @@ async def full_debate(
             "output_tokens": meter.output_tokens,
             # Cost is finalized against the provider on session.complete; during
             # the run we report tokens and let the UI's cost-guard poll fill USD.
-            "est_cost_usd": 0.0 if _run_cost_known(auth_kind, merged) else None,   # unknown price -> null, not a $0.0000 tick
+            "est_cost_usd": 0.0 if _run_cost_known(auth_kind, merged, meter) else None,   # unknown price -> null, not a $0.0000 tick
             "free": merged.get("llm_provider") in ("local", "openai_compatible"),
         }
         try:
@@ -928,9 +945,9 @@ async def full_debate(
             "input_tokens": meter.input_tokens,
             "output_tokens": meter.output_tokens,
             "estimated_cost_usd": (
-                round(_run_cost(auth_kind, merged, meter), 4) if _run_cost_known(auth_kind, merged) else None
+                round(_run_cost(auth_kind, merged, meter), 4) if _run_cost_known(auth_kind, merged, meter) else None
             ),
-            "cost_known": _run_cost_known(auth_kind, merged),
+            "cost_known": _run_cost_known(auth_kind, merged, meter),
             # Official-API price estimate from measured usage (separate from the ceiling-based figures above).
             "cost_report": _cost_report("completed"),
         }

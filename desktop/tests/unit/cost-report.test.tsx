@@ -7,7 +7,7 @@ import DebateStream from '../../src/components/DebateStream';
 import { I18nProvider, makeTranslator } from '../../src/i18n';
 import { buildTranscriptMarkdown } from '../../src/lib/transcript';
 import { buildTranscriptHtml } from '../../src/lib/transcript-html';
-import { costReportMarkdown, formatCostReport, type CostReport, type CostReportLine } from '../../src/lib/cost-report';
+import { costReportMarkdown, formatCostReport, historyCost, type CostReport, type CostReportLine } from '../../src/lib/cost-report';
 import type { DebateEvent } from '../../src/lib/engine-client';
 
 afterEach(cleanup);
@@ -71,7 +71,7 @@ describe('CostReportPanel', () => {
   });
   it('legacy session: labelled as a recomputation at today\'s list price', () => {
     wrap(<CostReportPanel report={report({ basis: 'recomputed_current_list_price' }, { complete: false, incomplete_reasons: ['model_split_and_cache_split_unknown_in_saved_session'] })} />);
-    expect(screen.getByTestId('cost-report').textContent).toMatch(/以今天的牌價重算.*不是當時實際收費.*沒有被更動/);
+    expect(screen.getByTestId('cost-report').textContent).toMatch(/歷史用量補算.*不是實際帳單.*沒有被更動/);
   });
   it('english copy', () => {
     wrap(<CostReportPanel report={report()} />, 'en');
@@ -159,7 +159,7 @@ describe('where the report appears', () => {
     expect(screen.getByTestId('cost-report')).toBeTruthy();
     cleanup();
     wrap(<DebateStream events={events(null)} isStreaming={false} costReport={report({ basis: 'recomputed_current_list_price' }, { complete: false, incomplete_reasons: [] })} />);
-    expect(screen.getByTestId('cost-report').textContent).toMatch(/以今天的牌價重算/);
+    expect(screen.getByTestId('cost-report').textContent).toMatch(/歷史用量補算/);
     cleanup();
     wrap(<DebateStream events={events(null)} isStreaming={false} />);
     expect(screen.queryByTestId('cost-report')).toBeNull();
@@ -171,7 +171,7 @@ describe('where the report appears', () => {
     expect(md).toMatch(/\| market_analyst \| gpt-6\.1-sol \|/); expect(md).toMatch(/\| Dexter \| gpt-6-luna \|/);
     expect(md).toMatch(/openai-api-2026-10-31/);
     expect(buildTranscriptMarkdown(events(null), 'zh-TW')).not.toMatch(/API 價格估算/);
-    expect(buildTranscriptMarkdown(events(null), 'zh-TW', report({ basis: 'recomputed_current_list_price' }))).toMatch(/以今天的牌價重算/);
+    expect(buildTranscriptMarkdown(events(null), 'zh-TW', report({ basis: 'recomputed_current_list_price' }))).toMatch(/歷史用量補算/);
   });
   it('HTML export contains the same block, escaped', () => {
     const r = report({ lines: [line({ model: '<script>x</script>' })] });
@@ -184,5 +184,31 @@ describe('where the report appears', () => {
     const t = makeTranslator('en'); const fmt = (n: number) => String(n);
     const f = formatCostReport(report(), t, fmt);
     expect(costReportMarkdown(report(), t, fmt).join('\n')).toContain(f.totalLines[0]);
+  });
+});
+
+describe('historical (recomputed) Anthropic report: card, detail panel, Markdown and HTML agree', () => {
+  const rec = report(
+    { basis: 'recomputed_current_list_price', price: { version: 'anthropic-api-2026-10-31', verified_at: '2026-10-31', sources: ['https://platform.claude.com/docs/en/about-claude/pricing'] },
+      lines: [line({ provider: 'anthropic', model: 'claude-haiku-5-5', usd: 0.0123, usd_max: 0.0615, context: 'unknown', missing: ['price_tier'],
+        notes: ['price_tier_unknown_for_saved_usage_priced_as_range'] } as Partial<CostReportLine>)] },
+    { api_estimate_usd: 0.0123, api_estimate_usd_max: 0.0615, complete: false, incomplete_reasons: ['debate:price_tier'] },
+  );
+  const t = ((k: string, v?: Record<string, string | number>) => `${k}${v ? JSON.stringify(v) : ''}`) as never;
+
+  it('the History card shows the same range and the 歷史用量補算 label; the panel, Markdown and HTML show the same figures', () => {
+    const card = historyCost({ live: true, auth_kind: 'api_key', estimated_cost_usd: null, cost_summary: { billing: 'api_key', basis: 'recomputed_current_list_price', run_state: 'completed', complete: false,
+      api_estimate_usd: 0.0123, api_estimate_usd_max: 0.0615, api_equivalent_reference_usd: null, api_equivalent_reference_usd_max: null, external_api_usd: null,
+      price_version: 'anthropic-api-2026-10-31', verified_at: '2026-10-31' } } as never, t);
+    expect(card.kind).toBe('api');
+    expect(card.text).toContain('"cost":"$0.0123"'); expect(card.text).toContain('"max":"$0.0615"'); expect(card.text).toContain('history.cost.recomputed');
+    wrap(<CostReportPanel report={rec} />);
+    const panel = screen.getByTestId('cost-report').textContent ?? '';
+    expect(panel).toMatch(/\$0\.0123/); expect(panel).toMatch(/\$0\.0615/); expect(panel).toMatch(/歷史用量補算/); expect(panel).toMatch(/anthropic-api-2026-10-31/);
+    expect(panel).toMatch(/短級到長級的區間/);
+    const events = [{ type: 'session.complete', ticker: 'NVDA', trade_date: '2026-10-30', decision: { stance: 'neutral', conviction: 0.5, reasoning: 'x' } }] as never;
+    for (const out of [buildTranscriptMarkdown(events, "zh-TW", rec), buildTranscriptHtml(events, "zh-TW", rec)].map((o) => (typeof o === "string" ? o : JSON.stringify(o)))) {
+      expect(out).toMatch(/\$0\.0123/); expect(out).toMatch(/\$0\.0615/); expect(out).toMatch(/歷史用量補算/);
+    }
   });
 });

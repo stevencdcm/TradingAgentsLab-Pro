@@ -28,7 +28,9 @@ export const costReport = {
   'costReport.reason.model_split_and_cache_split_unknown_in_saved_session':
     'saved before reports existed: the cache split and the per-model split are unknown',
   'costReport.reason.quick_model_tokens_priced_at_deep_model': 'the second model’s tokens were priced at the first model’s rate',
-  'costReport.basis.recomputed': 'Recomputed today at current list prices from the saved totals — an estimate, not what was charged at the time. The saved accounting is unchanged.',
+  'costReport.basis.recomputed': 'Recomputed from saved usage at today’s official list prices (price version and date below) — an estimate, not an invoice and not the price at the time. The saved report and accounting are unchanged.',
+  'costReport.reason.price_tier': 'the model is priced by prompt length and the saved usage is only totals, so the price is a range between the short and long tier',
+  'costReport.note.price_tier_unknown_for_saved_usage_priced_as_range': 'Priced as a range: the saved usage does not say which prompt-length tier each call fell in.',
   'costReport.detail': 'Per-agent detail',
   'costReport.col.agent': 'Agent',
   'costReport.col.model': 'Model',

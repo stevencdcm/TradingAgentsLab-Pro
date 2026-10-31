@@ -89,7 +89,7 @@ class UsageLedger:
     ) -> None:
         """One finished model call. None for cached/cache-write/reasoning means the provider did not report it."""
         i_in, i_out = _int(input_tokens) or 0, _int(output_tokens) or 0
-        ctx = op.context_bucket(i_in)
+        ctx = op.context_bucket(i_in, model_billed or model_requested, (provider or self.provider or '').lower())
         key = (stage, agent, provider or self.provider, model_requested, model_billed, service_tier, ctx)
         ln = self._lines.get(key)
         if ln is None:
@@ -191,6 +191,11 @@ def usage_from_langchain(response: Any) -> tuple[int, int, dict[str, Any]]:
                         v = _int(_prefixed(itd, name))
                         if v is not None:
                             detail[key] = (detail[key] or 0) + v
+                    # Anthropic's cache-write TTL split (5m / 1h), when LangChain carries it in the detail dict.
+                    for key, name in (("cache_write_30m", "ephemeral_5m_input_tokens"), ("cache_write_12h", "ephemeral_1h_input_tokens")):
+                        v = _int(itd.get(name))
+                        if v is not None:
+                            detail[key] = (detail[key] or 0) + v
                 if isinstance(otd, dict):
                     v = _int(_prefixed(otd, "reasoning"))
                     if v is not None:
@@ -213,6 +218,8 @@ def usage_from_langchain(response: Any) -> tuple[int, int, dict[str, Any]]:
         detail["service_tier"] = detail["service_tier"] or lo.get("service_tier")
         if not seen:
             in_tok = _int(raw.get("input_tokens") or raw.get("prompt_tokens")) or 0
+            if "cache_read_input_tokens" in raw or "cache_creation_input_tokens" in raw:   # Anthropic: cache is NOT inside input_tokens
+                in_tok += (_int(raw.get("cache_read_input_tokens")) or 0) + (_int(raw.get("cache_creation_input_tokens")) or 0)
             out_tok = _int(raw.get("output_tokens") or raw.get("completion_tokens")) or 0
     return in_tok, out_tok, detail
 
@@ -225,7 +232,8 @@ def _line_report(ln: _Line, billing: str) -> dict[str, Any]:
         missing.append("usage_not_reported")
     if ln.cached_unreported_calls:
         missing.append("cached_input_tokens")
-    if ln.reasoning_unreported_calls:
+    if ln.reasoning_unreported_calls and (ln.provider or "").lower() != "anthropic":
+        # Anthropic has no separate reasoning-token field (thinking is inside output_tokens): its absence is not a data gap.
         missing.append("reasoning_tokens")
     if ln.cache_write_unsplit_tokens:
         missing.append("cache_write_ttl")
@@ -259,11 +267,11 @@ def _line_report(ln: _Line, billing: str) -> dict[str, Any]:
     if billing == "local":
         out.update(usd=0.0, usd_basis="local_no_external_api_fee")
         return out
-    if ln.provider != "openai":
+    if not op.has_official_table(ln.provider):
         out["unpriced_reason"] = "official_price_not_imported_for_provider"
         return out
     priced = op.price_usage(
-        model=price_model, service_tier=ln.service_tier, context=ln.context, input_tokens=ln.input_tokens,
+        provider=(ln.provider or "").lower(), model=price_model, service_tier=ln.service_tier, context=ln.context, input_tokens=ln.input_tokens,
         output_tokens=ln.output_tokens, cached_input_tokens=ln.cached_input_tokens,
         cache_write_30m_tokens=ln.cache_write_30m_tokens, cache_write_12h_tokens=ln.cache_write_12h_tokens,
         cache_write_unsplit_tokens=ln.cache_write_unsplit_tokens,
@@ -311,6 +319,19 @@ def build_report(
         return None
     lines = [_line_report(ln, billing) for ln in ledger.lines()]
     return _assemble(lines, billing=billing, run_state=run_state, basis=basis, extra=list(extra_incomplete))
+
+
+def _price_block(lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """Which official tables the figures came from: one entry per provider that has a line, joined for the legacy single fields."""
+    provs = sorted({(ln.get("provider") or "").lower() for ln in lines if op.has_official_table(ln.get("provider"))}) or ["openai"]
+    infos = {p: op.price_info(p) for p in provs}
+    return {
+        "version": "+".join(i["version"] for i in infos.values()),
+        "verified_at": max(i["verified_at"] for i in infos.values()),
+        "sources": sorted({u for i in infos.values() for u in i["sources"]}),
+        "providers": infos,
+        "unit": "USD_per_1M_tokens", "service_tier_assumed": "standard", "context_short_max_input_tokens": op.CONTEXT_SHORT_MAX,
+    }
 
 
 def _assemble(lines: list[dict[str, Any]], *, billing: str, run_state: str, basis: str, extra: list[str]) -> dict[str, Any]:
@@ -365,8 +386,7 @@ def _assemble(lines: list[dict[str, Any]], *, billing: str, run_state: str, basi
     notes.extend(sorted({n for ln in lines for n in ln.get("notes", [])}))
     return {
         "schema": SCHEMA, "basis": basis, "billing": billing, "run_state": run_state, "extra_incomplete": list(extra),
-        "price": {"version": op.PRICE_VERSION, "verified_at": op.VERIFIED_AT, "sources": list(op.SOURCES),
-                  "unit": "USD_per_1M_tokens", "service_tier_assumed": "standard", "context_short_max_input_tokens": op.CONTEXT_SHORT_MAX},
+        "price": _price_block(lines),
         "lines": lines, "totals": totals, "notes": notes,
     }
 
@@ -443,4 +463,97 @@ def recompute_for_session(complete: dict[str, Any]) -> Optional[dict[str, Any]]:
     if dex and (d_in or d_out) and (dex.get("ran") is not False):
         led.record(stage="dexter", agent="dexter", provider=prov, model_requested=model, model_billed=model,
                    input_tokens=d_in, output_tokens=d_out)
-    return build_report(led, billing=billing, run_state="completed", basis="recomputed_current_list_price", extra_incomplete=extra)
+    rep = build_report(led, billing=billing, run_state="completed", basis="recomputed_current_list_price", extra_incomplete=extra)
+    if rep and billing in ("api_key", "oauth"):
+        # Totals alone cannot say which prompt-length tier each call fell in: a tiered model is priced as a short..long range.
+        fixed = [(_reprice_line(d, billing) if op.is_tiered(d.get("model"), (d.get("provider") or "").lower()) else d) for d in rep["lines"]]
+        rep = _assemble(fixed, billing=billing, run_state="completed", basis="recomputed_current_list_price", extra=extra)
+    return rep
+
+
+def exact_run_cost(report: Optional[dict[str, Any]]) -> Optional[float]:
+    """The run's exact API cost from a COMPLETED report, else None. Exact = every call reported its usage (so each call's price tier -
+    e.g. Haiku 5.5's 100K prompt threshold, cache reads and writes included - is known), every line has an official price, and no
+    cache-TTL range remains. A partial / gapped / unpriced report returns None: the caller then keeps the model's unknown-or-legacy
+    path rather than presenting a lower bound or a ceiling as the cost."""
+    if not report or report.get("billing") != "api_key" or report.get("run_state") != "completed":
+        return None
+    t = report.get("totals") or {}
+    if not t.get("complete") or t.get("api_estimate_usd") is None or t.get("api_estimate_usd_max") is not None:
+        return None
+    return float(t["api_estimate_usd"])
+
+
+# ---- Historical (read-time) price enrichment --------------------------------------------------------------------------------
+# Saved reports are immutable. Reports saved while a provider's official table was not imported carry unpriced lines; at READ time
+# those lines are priced from their own stored usage at TODAY's official table (version/date in the report's price block) and the
+# report is labelled a recomputation. Nothing is written back, nothing is an invoice.
+
+
+def _line_from_dict(d: dict[str, Any]) -> _Line:
+    calls = _int(d.get("calls")) or 0
+    ln = _Line(d.get("stage") or "debate", d.get("agent"), d.get("provider"), d.get("model_requested") or d.get("model"),
+               d.get("model") or d.get("model_requested"), None, d.get("context") or "short")
+    ln.calls = calls
+    ln.input_tokens = _int(d.get("input_tokens")) or 0
+    ln.output_tokens = _int(d.get("output_tokens")) or 0
+    cached = _int(d.get("cached_input_tokens"))
+    ln.cached_input_tokens = cached or 0
+    ln.cached_unreported_calls = calls if cached is None else 0
+    ln.cache_write_30m_tokens = _int(d.get("cache_write_30m_tokens")) or 0
+    ln.cache_write_12h_tokens = _int(d.get("cache_write_12h_tokens")) or 0
+    ln.cache_write_unsplit_tokens = _int(d.get("cache_write_unsplit_tokens")) or 0
+    ln.nousage_calls = _int(d.get("usage_unreported_calls")) or 0
+    reasoning = _int(d.get("reasoning_tokens"))
+    ln.reasoning_tokens = reasoning or 0
+    ln.reasoning_unreported_calls = calls if reasoning is None else 0
+    ln.tier_unreported_calls = calls
+    ln.unmeasured = "usage_not_measured" in (d.get("missing") or [])
+    return ln
+
+
+def _reprice_line(d: dict[str, Any], billing: str) -> dict[str, Any]:
+    """Price one saved line from its own usage. A model priced by prompt length cannot be priced exactly from totals: it gets the
+    range between the short and the long tier, flagged, never a single exact figure."""
+    ln = _line_from_dict(d)
+    prov = (d.get("provider") or "").lower()
+    model = d.get("model") or d.get("model_requested")
+    if not op.is_tiered(model, prov):
+        return _line_report(ln, billing)
+    ln.context = "short"
+    lo = _line_report(ln, billing)
+    ln.context = "long"
+    hi = _line_report(ln, billing)
+    if lo["usd"] is None or hi["usd"] is None:
+        return lo
+    out = dict(lo)
+    out["usd"], out["usd_max"] = min(lo["usd"], hi["usd"]), max(lo["usd"], hi["usd"], lo["usd_max"] or 0, hi["usd_max"] or 0)
+    out["context"] = "unknown"
+    out["missing"] = sorted(set(lo["missing"]) | {"price_tier"})
+    out.setdefault("notes", []).append("price_tier_unknown_for_saved_usage_priced_as_range")
+    return out
+
+
+def enrich_report(report: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The saved report, with lines that were left unpriced only for want of an imported official table priced from their stored usage.
+    Returns the SAME object when there is nothing to add (stored figures, incl. earlier exact ones, are never replaced)."""
+    if not isinstance(report, dict) or not isinstance(report.get("lines"), list):
+        return report
+    billing = report.get("billing")
+    if billing not in ("api_key", "oauth"):
+        return report
+    changed = False
+    lines: list[dict[str, Any]] = []
+    for d in report["lines"]:
+        if d.get("unpriced_reason") == "official_price_not_imported_for_provider" and op.has_official_table(d.get("provider")):
+            new = _reprice_line(d, billing)
+            if new.get("usd") is not None:
+                new["historical_recompute"] = True
+                lines.append(new)
+                changed = True
+                continue
+        lines.append(d)
+    if not changed:
+        return report
+    return _assemble(lines, billing=billing, run_state=report.get("run_state", "completed"),
+                     basis="recomputed_current_list_price", extra=report.get("extra_incomplete", []))

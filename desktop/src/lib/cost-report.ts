@@ -226,3 +226,72 @@ export function costReportHtml(r: CostReport, t: T, fmt: Fmt, esc: (s: string) =
   out.push(`<p class="meta">${esc(f.sourceLine)}</p>`, ...f.notes.map((n) => `<p class="meta">${esc(n)}</p>`), '</section>');
   return out.join('');
 }
+
+/** List-view digest of a report (engine `cost_report.summary`). */
+export interface CostSummary {
+  billing: string;
+  basis: 'metered' | 'recomputed_current_list_price';
+  run_state?: string;
+  complete: boolean;
+  api_estimate_usd: number | null;
+  api_estimate_usd_max?: number | null;
+  api_equivalent_reference_usd: number | null;
+  api_equivalent_reference_usd_max?: number | null;
+  external_api_usd: number | null;
+  price_version: string;
+  verified_at: string;
+}
+
+export interface HistoryCostInput {
+  live: boolean;
+  auth_kind?: string | null;
+  estimated_cost_usd: number | null;
+  cost_summary?: CostSummary | null;
+}
+
+export interface HistoryCost {
+  /** Text for the card / detail; null for a demo (non-live) session. */
+  text: string | null;
+  /** 'api' = official-price estimate of an API-key run, 'reference' = subscription API-equivalent (not billed), else no number. */
+  kind: 'api' | 'reference' | 'local' | 'unknown' | 'none';
+  /** The number behind `text` (for sorting / totals); null when unknown. */
+  usd: number | null;
+  incomplete: boolean;
+}
+
+/**
+ * What a History row says about cost. `estimated_cost_usd` is the budget guard's accounting and is 0 for a subscription, so it is
+ * NEVER shown for an OAuth run: a subscription shows the API-equivalent reference (labelled not-billed) or "unknown", not $0.
+ */
+export function historyCost(s: HistoryCostInput, t: T): HistoryCost {
+  if (!s.live) return { text: null, kind: 'none', usd: null, incomplete: false };
+  const cs = s.cost_summary ?? null;
+  const tail = (extra: string[]) => (extra.length ? ` · ${extra.join(' · ')}` : '');
+  const notes = (c: CostSummary) => [
+    ...(c.complete ? [] : [t('history.cost.incomplete' as MessageKey)]),
+    ...(c.basis === 'recomputed_current_list_price' ? [t('history.cost.recomputed' as MessageKey)] : []),
+  ];
+  const billing = cs?.billing ?? (s.auth_kind === 'oauth' ? 'oauth' : s.auth_kind === 'local' ? 'local' : null);
+  if (billing === 'oauth') {
+    const v = cs?.api_equivalent_reference_usd ?? null;
+    if (cs === null || v === null) return { text: t('history.cost.refUnknown' as MessageKey), kind: 'reference', usd: null, incomplete: true };
+    const hi = cs.api_equivalent_reference_usd_max;
+    const key = hi != null && hi !== v ? 'history.cost.refRange' : 'history.cost.ref';
+    return { text: t(key as MessageKey, { cost: formatUsd(v), max: hi != null ? formatUsd(hi) : '' }) + tail(notes(cs)), kind: 'reference', usd: v, incomplete: !cs.complete };
+  }
+  if (billing === 'local') {
+    return { text: t('history.cost.local' as MessageKey) + tail(cs && !cs.complete ? [t('history.cost.incomplete' as MessageKey)] : []), kind: 'local', usd: 0, incomplete: !!cs && !cs.complete };
+  }
+  if (cs) {
+    const v = cs.api_estimate_usd;
+    if (v === null) return { text: t('history.costUnknown' as MessageKey) + tail(notes(cs)), kind: 'unknown', usd: null, incomplete: true };
+    const hi = cs.api_estimate_usd_max;
+    const key = hi != null && hi !== v ? 'history.cost.apiRange' : 'history.cost.api';
+    return { text: t(key as MessageKey, { cost: formatUsd(v), max: hi != null ? formatUsd(hi) : '' }) + tail(notes(cs)), kind: 'api', usd: v, incomplete: !cs.complete };
+  }
+  // No digest at all (older engine): the budget figure is all there is for an API-key run; never for a subscription (handled above).
+  if (s.estimated_cost_usd !== null) {
+    return { text: t('history.estCost' as MessageKey, { cost: formatUsd(s.estimated_cost_usd) }), kind: 'api', usd: s.estimated_cost_usd, incomplete: false };
+  }
+  return { text: t('history.costUnknown' as MessageKey), kind: 'unknown', usd: null, incomplete: true };
+}

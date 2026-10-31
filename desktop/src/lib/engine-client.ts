@@ -1,4 +1,4 @@
-import type { CostReport } from './cost-report';
+import type { CostReport, CostSummary } from './cost-report';
 import { apiBase, authHeader, wsBase } from './endpoints';
 export interface EngineHandshake {
   port: number;
@@ -661,6 +661,9 @@ export interface SessionSummary {
   created_at: string;
   /** Whole-run wall seconds recorded by the engine; null for sessions saved before it was recorded. */
   elapsed_s?: number | null;
+  auth_kind?: string | null;
+  /** Official-price digest for the list/detail header. `estimated_cost_usd` is BUDGET accounting (0 for a subscription) - do not show it as a cost. */
+  cost_summary?: CostSummary | null;
   /** Detail view only: the saved report, or a clearly labelled recomputation at today's list prices for older sessions. */
   cost_report?: CostReport | null;
 }

@@ -50,3 +50,10 @@ USD unknown. Totals are `complete` only if every line was priced from reported u
 `session.complete.cost_report` (per agent, Dexter as its own line); `cost.usage.official_cost` (totals only, running = incomplete);
 `GET /sessions/{id}` -> `cost_report` (saved one, or for older sessions a recomputation at today's list price labelled
 `recomputed_current_list_price`, never written back); the analysis result, the History detail and the Markdown/HTML exports.
+
+## History list (D23)
+`sessions.estimated_cost_usd` is the budget accounting (0 for a subscription) and must not be shown as a cost. The History list, detail header,
+totals and cost sort use `cost_summary` instead: a small digest stored with each session (`sessions.cost_summary`, additive column) so the
+list never parses events; older sessions get a labelled recomputation from their own columns (provider, auth, model, tokens) at today's list price.
+Subscription rows show "API-equivalent reference (not billed)" or "unknown"; API-key rows show the official estimate (range / incomplete
+when applicable); local rows show external API fee $0. API-key estimates and subscription references are never added together.

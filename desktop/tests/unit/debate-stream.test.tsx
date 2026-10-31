@@ -76,3 +76,16 @@ describe('DebateStream elapsed clock', () => {
     expect(container.firstChild).toBeNull();
   });
 });
+
+describe('DebateStream decision footer', () => {
+  it('keeps the ownership notice and disclaimer in their own block after the reasoning, not inside it', () => {
+    const { getByTestId } = render(<DebateStream events={[START, COMPLETE]} isStreaming={false} />);
+    const card = getByTestId('decision-card');
+    const footer = getByTestId('decision-footer');
+    expect(footer.parentElement).toBe(card);
+    expect(footer.children.length).toBeGreaterThanOrEqual(2);
+    const reasoning = Array.from(card.children).find((c) => c.className.includes('decisionReasoning'))!;
+    expect(reasoning.contains(footer)).toBe(false);
+    expect(reasoning.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});

@@ -6,7 +6,7 @@ import styles from './ModelCatalogPanel.module.css';
 /** Providers listed in this order; Anthropic first (the one whose hardcoded list went stale). */
 const ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'xai', 'openrouter'];
 
-const KNOWN_ERRORS = new Set(['auth', 'rate_limited', 'network', 'timeout', 'no_credential']);
+const KNOWN_ERRORS = new Set(['auth', 'rate_limited', 'network', 'timeout', 'no_credential', 'all_retired']);
 
 interface Props {
   /** Secret names that currently hold a saved key (Settings' listing). */

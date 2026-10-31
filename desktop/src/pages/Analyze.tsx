@@ -219,8 +219,8 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     } catch {
       // storage unavailable: no saved choice to protect
     }
-    return mergeModelChoices(getAvailableModels(activeProvider, openaiAuthKind), catalog.models, savedChoice);
-  }, [activeProvider, openaiAuthKind, localModels, localSavedModel, codexModels.models, catalog.models, t]);
+    return mergeModelChoices(getAvailableModels(activeProvider, openaiAuthKind), catalog.models, savedChoice, catalog.retired);
+  }, [activeProvider, openaiAuthKind, localModels, localSavedModel, codexModels.models, catalog.models, catalog.retired, t]);
 
   /**
    * The model that will run the next debate. Pulls from per-(provider,auth)

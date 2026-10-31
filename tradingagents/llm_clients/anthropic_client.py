@@ -39,8 +39,9 @@ def _supports_effort(model: str) -> bool:
 
 
 # langchain-anthropic skips the forced ``tool_choice`` (types any/tool) for the models whose docs say it returns HTTP 400 (Fable 5.1,
-# Opus 5.5, Sonnet 5.5). Haiku 5.5's restrictions were not documented where we checked, and a missing forced tool call only
-# degrades structured output to the existing free-text fallback, so we treat it like the others: never force a tool call.
+# Opus 5.5, Sonnet 5.5). Claude Haiku 5.5 per the official docs: forced tool_choice IS accepted, effort has all five levels, and
+# sampling parameters (temperature/top_p/top_k) are rejected. We still never force a tool call on it: a missing tool call only
+# degrades structured output to the existing free-text fallback, and the behaviour stays identical across the 5.5 family.
 _NO_FORCED_TOOL_CHOICE_EXTRA = ("claude-haiku-5-5",)
 
 

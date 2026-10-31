@@ -129,6 +129,18 @@ describe('Analyze model picker uses the shared catalog', () => {
     expect(ids.filter((i) => i === 'claude-opus-5-5')).toHaveLength(1);
   });
 
+  it('a saved choice the provider has retired is kept but labelled retired, and the retired built-in id is not offered otherwise', async () => {
+    stubStorage({
+      'tal:model-catalog:v1:anthropic': JSON.stringify({ fetchedAt: 1, credStamp: '2026-10-31|…1234', retired: ['claude-haiku-4-5'], models: liveModels('claude-opus-5-5') }),
+      'tal:analyze:selected-model:anthropic': 'claude-haiku-4-5',
+    });
+    mount();
+    const { sel, ids, texts } = await options();
+    expect(sel.value).toBe('claude-haiku-4-5');
+    expect(texts[ids.indexOf('claude-haiku-4-5')]).toMatch(/已退役，無法使用/);
+    expect(ids.filter((i) => i === 'claude-haiku-4-5')).toHaveLength(1);
+  });
+
   it('a Settings refresh updates the open picker (shared store) without touching the saved choice', async () => {
     stubStorage({ 'tal:analyze:selected-model:anthropic': 'claude-haiku-4-5' });
     mount();

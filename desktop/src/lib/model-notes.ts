@@ -35,12 +35,12 @@ export function modelNoteLabel(note: string, t: I18n['t']): string {
 
 /** Picker suffix for the provenance/caveat markers a refreshed catalog adds (empty for plain built-in entries). */
 export function modelMarkerSuffix(
-  m: { origin?: 'builtin' | 'api' | 'saved'; deprecated?: boolean; priced?: boolean },
+  m: { origin?: 'builtin' | 'api' | 'saved'; deprecated?: boolean; priced?: boolean; retired?: boolean },
   t: I18n['t'],
 ): string {
   return (
     (m.origin === 'api' ? t('modelCatalog.marker.api') : '') +
-    (m.origin === 'saved' ? t('modelCatalog.marker.saved') : '') +
+    (m.retired ? t('modelCatalog.marker.retired') : m.origin === 'saved' ? t('modelCatalog.marker.saved') : '') +
     (m.deprecated ? t('modelCatalog.marker.deprecated') : '') +
     (m.priced === false ? t('modelCatalog.marker.unpriced') : '')
   );

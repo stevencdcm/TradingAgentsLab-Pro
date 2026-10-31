@@ -53,7 +53,9 @@ class CatalogError(Exception):
 @dataclass(frozen=True)
 class _Spec:
     base_url: Callable[[], str]
-    fetch: Callable[[httpx.Client, str, str], list[dict]]   # (client, base_url, credential) -> normalised models
+    # (client, base_url, credential) -> normalised models. Entries the provider marks lifecycle "retired" are KEPT here
+    # (flagged) so list_models can both exclude them and tell callers which ids are known-dead.
+    fetch: Callable[[httpx.Client, str, str], list[dict]]
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -99,8 +101,6 @@ def parse_anthropic_page(body: Any) -> tuple[list[dict], bool, Optional[str]]:
         if not mid or item.get("type", "model") != "model":
             continue
         lifecycle = _s(item.get("lifecycle")) or "active"
-        if lifecycle == "retired":          # inference naming it fails; never offer it
-            continue
         caps = item.get("capabilities") if isinstance(item.get("capabilities"), dict) else {}
         thinking = ((caps.get("thinking") or {}).get("types") or {}) if isinstance(caps.get("thinking"), dict) else {}
         disabled = thinking.get("disabled") if isinstance(thinking.get("disabled"), dict) else {}
@@ -251,21 +251,28 @@ def supported_providers() -> list[str]:
 
 # ---- cache + public entry point --------------------------------------------
 
-# (provider, credential fingerprint) -> (fetched_at_epoch, models). The fingerprint is a one-way hash so the cache never
-# holds the key, and two different accounts never see each other's list.
-_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+# (provider, credential fingerprint) -> (fetched_at_epoch, usable models, retired ids). The fingerprint is a one-way hash so the
+# cache never holds the key, and two different accounts never see each other's list.
+_cache: dict[tuple[str, str], tuple[float, list[dict], list[str]]] = {}
 
 
 def _fingerprint(credential: str) -> str:
     return hashlib.sha256(credential.encode("utf-8")).hexdigest()[:16]
 
 
-def _result(provider: str, source: str, fetched_at: Optional[float], models: list[dict], error: Optional[CatalogError] = None) -> dict:
+def _result(provider: str, source: str, fetched_at: Optional[float], models: list[dict], retired: list[str],
+            error: Optional[CatalogError] = None) -> dict:
     out: dict[str, Any] = {"ok": error is None or bool(models), "provider": provider, "source": source,
-                           "fetched_at": fetched_at, "ttl_s": CACHE_TTL_S, "models": models}
+                           "fetched_at": fetched_at, "ttl_s": CACHE_TTL_S, "models": models, "retired": retired}
     if error is not None:
         out["error"] = {"code": error.code, "message": error.message}
     return out
+
+
+def _split(models: list[dict]) -> tuple[list[dict], list[str]]:
+    """(usable models, retired ids). A model the provider explicitly marks retired is never usable."""
+    usable = [m for m in models if m.get("lifecycle") != "retired"]
+    return usable, [m["id"] for m in models if m.get("lifecycle") == "retired"]
 
 
 def list_models(provider: str, credential: str, *, force_refresh: bool = False, now: Optional[float] = None) -> dict:
@@ -273,39 +280,41 @@ def list_models(provider: str, credential: str, *, force_refresh: bool = False, 
 
     source: 'live' (just fetched), 'cache' (within the TTL, no network), 'stale' (refresh failed, last successful list
     kept), 'unavailable' (refresh failed and there is nothing earlier), 'unsupported' (no official list endpoint).
-    A failed refresh NEVER discards the last successful catalog.
+    A failed refresh NEVER discards the last successful catalog, but a successful one is authoritative: ids the provider
+    now marks retired are removed (also from what a later failure falls back to) and reported in `retired`, even when that
+    leaves nothing usable.
     """
     provider = (provider or "").lower()
     spec = SPECS.get(provider)
     if spec is None:
         return {"ok": False, "provider": provider, "source": "unsupported", "fetched_at": None, "ttl_s": CACHE_TTL_S, "models": [],
-                "error": {"code": "unsupported", "message": "this provider has no official model-listing endpoint the app uses"}}
+                "retired": [], "error": {"code": "unsupported", "message": "this provider has no official model-listing endpoint the app uses"}}
     if not credential:
-        return _result(provider, "unavailable", None, [], CatalogError("no_credential", "no saved credential for this provider"))
+        return _result(provider, "unavailable", None, [], [], CatalogError("no_credential", "no saved credential for this provider"))
     clock = time.time() if now is None else now
     key = (provider, _fingerprint(credential))
     cached = _cache.get(key)
     if cached and not force_refresh and clock - cached[0] < CACHE_TTL_S:
-        return _result(provider, "cache", cached[0], cached[1])
+        return _result(provider, "cache", cached[0], cached[1], cached[2])
+
+    def fall_back(err: CatalogError) -> dict:
+        if cached and cached[1]:
+            return _result(provider, "stale", cached[0], cached[1], cached[2], err)
+        return _result(provider, "unavailable", None, [], cached[2] if cached else [], err)
+
     try:
         with httpx.Client(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-            models = spec.fetch(client, spec.base_url(), credential)
+            fetched = spec.fetch(client, spec.base_url(), credential)
     except CatalogError as exc:
-        if cached:
-            return _result(provider, "stale", cached[0], cached[1], exc)
-        return _result(provider, "unavailable", None, [], exc)
+        return fall_back(exc)
     except Exception as exc:  # noqa: BLE001 - a parser bug must not surface a stack trace or a credential
-        err = CatalogError("internal", f"unexpected error while listing models ({type(exc).__name__})")
-        if cached:
-            return _result(provider, "stale", cached[0], cached[1], err)
-        return _result(provider, "unavailable", None, [], err)
-    if not models:   # an empty list is more likely a filter/format problem than "the account has no models": keep the old one
-        err = CatalogError("empty", "the provider returned no selectable models")
-        if cached:
-            return _result(provider, "stale", cached[0], cached[1], err)
-        return _result(provider, "unavailable", None, [], err)
-    _cache[key] = (clock, models)
-    return _result(provider, "live", clock, models)
+        return fall_back(CatalogError("internal", f"unexpected error while listing models ({type(exc).__name__})"))
+    models, retired = _split(fetched)
+    if not models and not retired:   # nothing at all is more likely a filter/format problem than "no models": keep the old one
+        return fall_back(CatalogError("empty", "the provider returned no selectable models"))
+    # Authoritative answer (possibly "everything you had is retired"): replace the cache, never resurrect retired ids.
+    _cache[key] = (clock, models, retired)
+    return _result(provider, "live", clock, models, retired, None if models else CatalogError("all_retired", "the provider lists every model as retired"))
 
 
 def _reset_cache_for_tests() -> None:

@@ -121,6 +121,8 @@ export interface ModelChoice {
   origin?: 'builtin' | 'api' | 'saved';
   /** Provider lifecycle (Anthropic): a deprecated model still works but is scheduled for retirement. */
   deprecated?: boolean;
+  /** The provider marks this model retired: calling it fails. Only ever shown for the user's own saved choice, never offered as usable. */
+  retired?: boolean;
   /** False = no exact price row in the engine's cost table: cost shows as unknown, never as $0. Absent = not checked. */
   priced?: boolean;
 }
@@ -486,7 +488,8 @@ export interface CostUsageEvent {
   type: 'cost.usage';
   input_tokens: number;
   output_tokens: number;
-  est_cost_usd: number;
+  /** null = the price is unknown (no exact price row): show nothing, never $0.0000. */
+  est_cost_usd: number | null;
   free: boolean;
 }
 
@@ -1029,6 +1032,8 @@ export interface ModelCatalogResult {
   /** Epoch seconds of the successful fetch the list came from. */
   fetched_at?: number | null;
   models?: CatalogModel[];
+  /** Ids the provider explicitly marks retired (authoritative: never usable, even from an older cached list). */
+  retired?: string[];
   error?: { code: string; message: string };
 }
 

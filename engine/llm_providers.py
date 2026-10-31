@@ -188,6 +188,20 @@ def is_priced(model: str) -> bool:
     return model in _COST_PER_M_TOKENS and model not in _CEILING_ONLY
 
 
+def ceiling_cost(model: str, in_tokens: int, out_tokens: int) -> float | None:
+    """Upper bound (USD) CostGuard may hold for measured usage of a model that only has a CEILING row (see _CEILING_ONLY): the
+    high-tier rates applied to the measured tokens. Never shown or stored as a price. None = the table has no row at all.
+    (The app sends no cache_control, so cache-write surcharges do not apply; revisit if prompt caching is ever enabled.)"""
+    rates = _COST_PER_M_TOKENS.get(model)
+    if rates is None:
+        return None
+    return (max(0, in_tokens) * rates["input"] + max(0, out_tokens) * rates["output"]) / 1_000_000
+
+
+def is_ceiling_only(model: str) -> bool:
+    return model in _CEILING_ONLY
+
+
 def estimate_cost_or_none(model: str, in_tokens: int, out_tokens: int) -> float | None:
     """Like estimate_cost, but None (unknown) instead of 0.0 for a model with no exact price."""
     return estimate_cost(model, in_tokens, out_tokens) if is_priced(model) else None

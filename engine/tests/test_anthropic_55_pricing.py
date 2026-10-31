@@ -43,3 +43,30 @@ def test_haiku_55_cost_guard_still_treats_it_as_bounded_not_unpriced():
 def test_exact_models_stay_priced():
     for m in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-sonnet-4-6", "gpt-5.5"):
         assert lp.is_priced(m) and lp.has_cost_ceiling(m)
+
+
+def test_running_usage_ticks_are_null_for_unpriced_models_and_numbers_for_priced_ones(monkeypatch):
+    """P2: the in-run cost.usage event must not show $0.0000 for a model whose price is unknown."""
+    import asyncio
+
+    from engine.live_debate import live_debate
+    from engine.llm_providers import ProviderConfig
+    from engine.tests.fake_anthropic import FakeAnthropic
+
+    key = "sk-ant-test-key-1234567890"
+    srv = FakeAnthropic(key)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", srv.url)
+    try:
+        def ticks(model):
+            cfg = ProviderConfig.from_dict({"provider": "anthropic", "auth": {"type": "api_key", "api_key": key}, "model": model})
+
+            async def go():
+                return [e async for e in live_debate(ticker="AAPL", trade_date="2026-10-30", summary=None, headlines=None, config=cfg)]
+
+            return [e["est_cost_usd"] for e in asyncio.run(go()) if e["type"] == "cost.usage"]
+
+        assert ticks("claude-opus-9-9") and all(t is None for t in ticks("claude-opus-9-9"))      # no price row at all
+        assert ticks("claude-haiku-5-5") and all(t is None for t in ticks("claude-haiku-5-5"))    # ceiling-only
+        assert all(isinstance(t, float) and t > 0 for t in ticks("claude-sonnet-5-5"))            # exact price: a real number
+    finally:
+        srv.close()

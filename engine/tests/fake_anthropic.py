@@ -8,8 +8,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-# Haiku 5.5 is included although its restrictions are not documented where we checked: a request that is safe under the
-# strict rules is safe either way.
+# Haiku 5.5 is included as the SAFE superset: officially it rejects sampling parameters but accepts forced tool_choice, so a
+# request that passes the strict rules for every model is valid for it too.
 STRICT_55 = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 
 

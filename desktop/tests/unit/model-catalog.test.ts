@@ -210,11 +210,34 @@ describe('replacing or removing the saved key', () => {
 });
 
 describe('a model retired by the provider', () => {
-  it('disappears from the refreshed list but a saved choice of it stays selectable, marked as saved', async () => {
-    fetchModelCatalog.mockResolvedValueOnce({ ok: true, source: 'live', fetched_at: 1, models: live('claude-opus-5-5') });   // haiku-4-5 no longer listed
+  it('is dropped from the built-in fallback too; a saved choice of it stays, labelled retired, never offered as usable', async () => {
+    fetchModelCatalog.mockResolvedValueOnce({ ok: true, source: 'live', fetched_at: 1, models: live('claude-opus-5-5'), retired: ['claude-haiku-4-5'] });
     await refreshCatalog('anthropic');
-    const out = mergeModelChoices(PROVIDER_MODELS.anthropic, getCatalogState('anthropic').models, 'claude-retired-1');
-    expect(out[0]).toMatchObject({ id: 'claude-retired-1', origin: 'saved' });
+    const st = getCatalogState('anthropic');
+    expect(st.retired).toEqual(['claude-haiku-4-5']);
+    const none = mergeModelChoices(PROVIDER_MODELS.anthropic, st.models, null, st.retired);
+    expect(none.map((m) => m.id)).not.toContain('claude-haiku-4-5');                     // static fallback excludes it
+    const saved = mergeModelChoices(PROVIDER_MODELS.anthropic, st.models, 'claude-haiku-4-5', st.retired);
+    expect(saved[0]).toMatchObject({ id: 'claude-haiku-4-5', origin: 'saved', retired: true });
+    expect(saved.filter((m) => m.id === 'claude-haiku-4-5')).toHaveLength(1);
+  });
+
+  it('when the provider retires everything, the old list is replaced (not kept), persisted, and a later failure cannot bring it back', async () => {
+    fetchModelCatalog.mockResolvedValueOnce({ ok: true, source: 'live', fetched_at: 1, models: live('claude-a', 'claude-b') });
+    await refreshCatalog('anthropic');
+    fetchModelCatalog.mockResolvedValueOnce({ ok: false, source: 'live', fetched_at: 2, models: [], retired: ['claude-a', 'claude-b'], error: { code: 'all_retired', message: 'x' } });
+    await refreshCatalog('anthropic');
+    expect(getCatalogState('anthropic')).toMatchObject({ models: [], retired: ['claude-a', 'claude-b'], stale: false, error: { code: 'all_retired' } });
+    fetchModelCatalog.mockResolvedValueOnce({ ok: false, source: 'unavailable', models: [], retired: ['claude-a', 'claude-b'], error: { code: 'network', message: 'x' } });
+    await refreshCatalog('anthropic');
+    expect(getCatalogState('anthropic').models).toEqual([]);
+    _resetModelCatalogForTests();                                                       // persisted across a restart
+    expect(getCatalogState('anthropic').retired).toEqual(['claude-a', 'claude-b']);
+  });
+
+  it('a model the provider answers as retired is never added as a usable entry', () => {
+    const out = mergeModelChoices(PROVIDER_MODELS.anthropic, [{ id: 'claude-zzz', label: 'Z', lifecycle: 'retired' }], null, ['claude-zzz']);
+    expect(out.map((m) => m.id)).not.toContain('claude-zzz');
   });
 });
 

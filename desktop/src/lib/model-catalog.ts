@@ -36,6 +36,8 @@ export type CatalogStatus = 'idle' | 'loading';
 
 export interface CatalogState {
   models: CatalogModel[];
+  /** Ids the provider reports as retired in its latest successful answer. */
+  retired: string[];
   /** Epoch seconds the list was fetched from the provider; null = never refreshed. */
   fetchedAt: number | null;
   status: CatalogStatus;
@@ -48,7 +50,7 @@ export interface CatalogState {
   credStamp: string | null;
 }
 
-const EMPTY: CatalogState = { models: [], fetchedAt: null, status: 'idle', error: null, stale: false, credStamp: null };
+const EMPTY: CatalogState = { models: [], retired: [], fetchedAt: null, status: 'idle', error: null, stale: false, credStamp: null };
 
 const states = new Map<LLMProvider, CatalogState>();
 const listeners = new Set<() => void>();
@@ -61,13 +63,14 @@ function readCache(provider: LLMProvider): CatalogState {
   try {
     const raw = localStorage.getItem(CACHE_PREFIX + provider);
     if (!raw) return EMPTY;
-    const parsed = JSON.parse(raw) as { models?: unknown; fetchedAt?: unknown; credStamp?: unknown };
+    const parsed = JSON.parse(raw) as { models?: unknown; retired?: unknown; fetchedAt?: unknown; credStamp?: unknown };
     if (!Array.isArray(parsed.models)) return EMPTY;
     const models = parsed.models.filter(
       (m): m is CatalogModel => !!m && typeof m === 'object' && typeof (m as CatalogModel).id === 'string',
     );
     const fetchedAt = typeof parsed.fetchedAt === 'number' ? parsed.fetchedAt : null;
-    return { ...EMPTY, models, fetchedAt, credStamp: typeof parsed.credStamp === 'string' ? parsed.credStamp : null };
+    const retired = Array.isArray(parsed.retired) ? parsed.retired.filter((x): x is string => typeof x === 'string') : [];
+    return { ...EMPTY, models, retired, fetchedAt, credStamp: typeof parsed.credStamp === 'string' ? parsed.credStamp : null };
   } catch {
     return EMPTY;
   }
@@ -75,7 +78,7 @@ function readCache(provider: LLMProvider): CatalogState {
 
 function writeCache(provider: LLMProvider, s: CatalogState): void {
   try {
-    localStorage.setItem(CACHE_PREFIX + provider, JSON.stringify({ models: s.models, fetchedAt: s.fetchedAt, credStamp: s.credStamp }));
+    localStorage.setItem(CACHE_PREFIX + provider, JSON.stringify({ models: s.models, retired: s.retired, fetchedAt: s.fetchedAt, credStamp: s.credStamp }));
   } catch {
     /* storage unavailable: the in-memory list still works for this session */
   }
@@ -123,7 +126,7 @@ function forget(provider: LLMProvider): void {
  */
 export async function validateCatalogCredential(provider: LLMProvider): Promise<void> {
   const cur = getCatalogState(provider);
-  if (cur.models.length === 0 && cur.credStamp === null) return;
+  if (cur.models.length === 0 && cur.retired.length === 0 && cur.credStamp === null) return;
   let stamp: string | null;
   try {
     stamp = await credentialStamp(provider);
@@ -150,15 +153,23 @@ export async function refreshCatalog(provider: LLMProvider): Promise<void> {
     }
     const res = await fetchModelCatalog(cfg, true);
     const models = res.models ?? [];
-    if (res.ok && models.length > 0 && (res.source === 'live' || res.source === 'cache')) {
-      const next: CatalogState = { models, fetchedAt: res.fetched_at ?? Date.now() / 1000, status: 'idle', error: null, stale: false, credStamp: stamp };
+    const retired = res.retired ?? [];
+    const answered = res.source === 'live' || res.source === 'cache';
+    // An authoritative answer replaces the list, even when it leaves nothing usable (everything retired): the old list must
+    // not stay selectable once the provider has declared its models dead.
+    if (answered && (models.length > 0 || retired.length > 0)) {
+      const next: CatalogState = {
+        models, retired, fetchedAt: res.fetched_at ?? Date.now() / 1000, status: 'idle',
+        error: models.length > 0 ? null : (res.error ?? { code: 'all_retired', message: 'every listed model is retired' }),
+        stale: false, credStamp: stamp,
+      };
       writeCache(provider, next);
       setState(provider, next);
       return;
     }
     // Failure (or the engine's own stale copy): keep the best list we have, say why it is not fresh.
-    const keep = before.models.length > 0 ? before : models.length > 0
-      ? { ...before, models, fetchedAt: res.fetched_at ?? before.fetchedAt, credStamp: stamp }
+    const keep: CatalogState = res.source === 'stale' && models.length > 0
+      ? { ...before, models, retired, fetchedAt: res.fetched_at ?? before.fetchedAt, credStamp: stamp }
       : before;
     setState(provider, {
       ...keep,
@@ -185,10 +196,14 @@ export function mergeModelChoices(
   builtin: ModelChoice[],
   live: CatalogModel[],
   savedId?: string | null,
+  retired: readonly string[] = [],
 ): ModelChoice[] {
+  const dead = new Set(retired);
   const liveById = new Map(live.map((m) => [m.id, m]));
-  const known = new Set(builtin.map((m) => m.id));
-  const out: ModelChoice[] = builtin.map((m) => {
+  // The built-in table is only a fallback: an id the provider says is retired is not offered from it either.
+  const base = builtin.filter((m) => !dead.has(m.id));
+  const known = new Set(base.map((m) => m.id));
+  const out: ModelChoice[] = base.map((m) => {
     const l = liveById.get(m.id);
     return {
       ...m,
@@ -198,7 +213,7 @@ export function mergeModelChoices(
     };
   });
   const added: ModelChoice[] = live
-    .filter((m) => !known.has(m.id))
+    .filter((m) => !known.has(m.id) && !dead.has(m.id) && m.lifecycle !== 'retired')
     .map((m) => ({
       id: m.id,
       label: m.label || m.id,
@@ -209,7 +224,8 @@ export function mergeModelChoices(
   // Models the provider reports first (newest), so a new release is visible without scrolling past old ones.
   const merged = [...added, ...out];
   if (savedId && !merged.some((m) => m.id === savedId)) {
-    merged.unshift({ id: savedId, label: savedId, origin: 'saved' });
+    // The user's own choice stays (never auto-switched) but a retired one is labelled as such, not offered as usable.
+    merged.unshift({ id: savedId, label: savedId, origin: 'saved', ...(dead.has(savedId) ? { retired: true } : {}) });
   }
   return merged;
 }
@@ -243,7 +259,8 @@ export function useModelCatalog(provider: LLMProvider | null): ModelCatalogHook 
 
 /** Choices for a provider from the built-in table plus its cached/refreshed list (no network). */
 export function catalogChoices(provider: LLMProvider, savedId?: string | null): ModelChoice[] {
-  return mergeModelChoices(PROVIDER_MODELS[provider], getCatalogState(provider).models, savedId);
+  const st = getCatalogState(provider);
+  return mergeModelChoices(PROVIDER_MODELS[provider], st.models, savedId, st.retired);
 }
 
 export function _resetModelCatalogForTests(): void {
@@ -267,7 +284,7 @@ export function resolveSelectedModel(provider: LLMProvider, authKind: 'oauth' | 
   }
   const list = provider === 'openai' && authKind === 'oauth'
     ? cachedCodexModels()                       // retired ChatGPT-sign-in models self-heal to the account default
-    : mergeModelChoices(getAvailableModels(provider, authKind), getCatalogState(provider).models, saved);
+    : mergeModelChoices(getAvailableModels(provider, authKind), getCatalogState(provider).models, saved, getCatalogState(provider).retired);
   if (saved && list.some((m) => m.id === saved)) return saved;
   return (list.find((m) => m.recommended) ?? list[0]).id;
 }

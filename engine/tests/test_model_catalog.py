@@ -276,8 +276,28 @@ def test_a_model_retired_between_refreshes_disappears_from_the_next_list(srv):
     assert third["source"] == "stale" and "claude-haiku-4-5" not in [m["id"] for m in third["models"]]
 
 
-def test_only_retired_models_returned_is_an_error_that_keeps_the_last_list(srv):
+def test_a_provider_that_retires_every_model_never_leaves_the_old_list_usable(srv):
+    """Review D37R B3: an explicit 'retired' answer is authoritative. The old list must not come back as stale/usable."""
+    first = model_catalog.list_models("anthropic", KEY, now=1.0)
+    assert first["models"] and first["retired"] == []
+    srv.models = [_model("claude-haiku-5-5", lifecycle="retired"), _model("claude-opus-5-5", lifecycle="retired")]
+    out = model_catalog.list_models("anthropic", KEY, now=2.0, force_refresh=True)
+    assert out["ok"] is False and out["models"] == [] and sorted(out["retired"]) == ["claude-haiku-5-5", "claude-opus-5-5"]
+    assert out["error"]["code"] == "all_retired"
+    srv.fail = 503                                          # a later outage must not resurrect the dead list either
+    later = model_catalog.list_models("anthropic", KEY, now=3.0, force_refresh=True)
+    assert later["models"] == [] and later["source"] == "unavailable" and later["ok"] is False
+    assert "claude-opus-5-5" in later["retired"]
+
+
+def test_retired_ids_are_reported_alongside_the_usable_list(srv):
+    srv.models.append(_model("claude-old-1", lifecycle="retired"))
+    out = model_catalog.list_models("anthropic", KEY)
+    assert out["retired"] == ["claude-old-1"] and "claude-old-1" not in [m["id"] for m in out["models"]]
+
+
+def test_a_truly_empty_answer_still_keeps_the_previous_list(srv):
     model_catalog.list_models("anthropic", KEY, now=1.0)
-    srv.models = [_model("claude-old-1", lifecycle="retired")]
+    srv.models = []
     out = model_catalog.list_models("anthropic", KEY, now=2.0, force_refresh=True)
     assert out["source"] == "stale" and out["error"]["code"] == "empty" and out["models"]

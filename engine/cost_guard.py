@@ -504,9 +504,20 @@ def reservation_override(reservation_id: str) -> Optional[bool]:
     return None if row is None else bool(row[0])
 
 
-def finalize_reservation(reservation_id: str, *, actual_cost_usd: Optional[float]) -> bool:
+def finalize_reservation(
+    reservation_id: str,
+    *,
+    actual_cost_usd: Optional[float],
+    hold_ceiling: bool = False,
+    ceiling_cost_usd: Optional[float] = None,
+) -> bool:
     """Mark a reservation as finalized with the real cost. `None` = the cost is UNKNOWN (a model with no verified
     price, run after an explicit override): it is stored as NULL, never as 0.
+
+    `hold_ceiling=True` is for a model whose exact price cannot be reported but whose spend CostGuard can bound (a
+    ceiling-only row, e.g. Haiku 5.5's tiered price). The reported cost stays unknown, but the budget is NOT released: the
+    reservation is settled as 'ceiling' and counted at `ceiling_cost_usd` (the measured-usage upper bound), or at the
+    reserved estimate when no bound could be computed. A measured bound of exactly 0 means nothing billable ran: released at 0.
 
     Idempotent — calling twice is fine. Returns True if a row was updated,
     False if the reservation_id was unknown (which is logged but not raised
@@ -517,6 +528,19 @@ def finalize_reservation(reservation_id: str, *, actual_cost_usd: Optional[float
     try:
         initialize()
         with _connect() as conn:
+            if actual_cost_usd is None and hold_ceiling:
+                bound = None if ceiling_cost_usd is None else max(0.0, float(ceiling_cost_usd))
+                if bound == 0.0:                       # measured nothing billable: release, like any zero-cost run
+                    cur = conn.execute("UPDATE cost_reservations SET finalized = 1, finalized_cost_usd = 0 WHERE id = ? AND finalized = 0",
+                                       (reservation_id,))
+                else:                                  # bound None -> counted at the reserved estimate (COALESCE in _compute_spend)
+                    cur = conn.execute(
+                        "UPDATE cost_reservations SET finalized = 1, finalized_cost_usd = ?, settled_as = 'ceiling' "
+                        "WHERE id = ? AND finalized = 0 AND auth_kind = 'api_key'",
+                        (bound, reservation_id),
+                    )
+                conn.commit()
+                return cur.rowcount > 0
             cur = conn.execute(
                 """
                 UPDATE cost_reservations
@@ -635,11 +659,12 @@ def _compute_spend(conn: sqlite3.Connection) -> SpendState:
     def incomplete_cost(since: str) -> float:
         # Runs that ended without a session row (failed / cancelled / interrupted) still spent money. Counted at the measured
         # finalized cost, or at the reserved ESTIMATE when the cost is unknown (a conservative budget hold, not an actual cost).
+        # 'ceiling' = a completed/partial run on a ceiling-only model (Haiku 5.5): cost reported as unknown but held at its bound.
         row = conn.execute(
             """
             SELECT COALESCE(SUM(COALESCE(finalized_cost_usd, est_cost_usd)), 0)
             FROM cost_reservations
-            WHERE settled_as = 'incomplete' AND auth_kind = 'api_key' AND created_at >= ?
+            WHERE settled_as IN ('incomplete', 'ceiling') AND auth_kind = 'api_key' AND created_at >= ?
             """,
             (since,),
         ).fetchone()

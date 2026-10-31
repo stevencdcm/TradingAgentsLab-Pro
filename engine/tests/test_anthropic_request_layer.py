@@ -145,5 +145,6 @@ def test_haiku_55_live_debate_reports_cost_unknown_not_the_ceiling(srv):
     events = asyncio.run(go())
     done = next(e for e in events if e["type"] == "session.complete")
     assert done["estimated_cost_usd"] is None and done["cost_known"] is False
-    assert all(e.get("est_cost_usd") == 0.0 for e in events if e["type"] == "cost.usage")   # never the 0.50/2.50 ceiling
+    usage = [e for e in events if e["type"] == "cost.usage"]
+    assert usage and all(e["est_cost_usd"] is None for e in usage)   # unknown: neither the 0.50/2.50 ceiling nor a $0.0000 tick
     assert srv.bodies and all(set(b) <= ALLOWED for b in srv.bodies)

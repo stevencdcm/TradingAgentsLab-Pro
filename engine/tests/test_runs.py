@@ -1149,6 +1149,43 @@ def test_completed_run_status_does_not_duplicate_the_report_it_already_carries_o
         assert c.get(f"/runs/{run_id}", headers=H).json()["cost_report"] is None
 
 
+def test_completed_run_persists_the_final_session_complete_report_not_a_running_snapshot(world):
+    """Review D41 B1: runs.cost_report of a COMPLETED run is the report that rode on session.complete (run_state completed), never the
+    last "running" snapshot (which carries run_running_usage_is_partial)."""
+    world.free = 10_000
+    with TestClient(srv.build_app(token=TOKEN)) as c:
+        with c.websocket_connect(f"/stream?token={TOKEN}") as ws:
+            ws.send_json(frame())
+            evs = read_until(ws, lambda e: e["type"] == "run.finished")
+        comp = next(e for e in evs if e["type"] == "session.complete")
+        run_id = evs[0]["run_id"]
+    with sqlite3.connect(storage.db_path()) as conn:
+        blob = conn.execute("SELECT cost_report FROM runs WHERE run_id = ?", (run_id,)).fetchone()[0]
+    stored = json.loads(blob)
+    assert stored == comp["cost_report"] and stored["run_state"] == "completed"
+    assert "run_running_usage_is_partial" not in stored["totals"]["incomplete_reasons"]
+
+
+def test_final_report_wins_over_a_later_running_snapshot_and_a_usage_gap_stays_incomplete():
+    from engine.run_manager import Run
+
+    class _Mgr:
+        saved = []
+
+        def _save_report(self, run):
+            self.saved.append(run.cost_report)
+
+    r = Run(_Mgr(), "run_x", "owner", "key", {})
+    gap_final = {"run_state": "completed", "totals": {"complete": False, "incomplete_reasons": ["debate:usage_not_reported"]}, "lines": []}
+    r._track({"type": "session.complete", "cost_report": gap_final})
+    assert r.cost_report is gap_final and r.cost_report["totals"]["complete"] is False              # a missing-usage unknown stays unknown
+    r.set_cost_report({"run_state": "running", "totals": {"complete": False, "incomplete_reasons": ["run_running_usage_is_partial"]}, "lines": []})
+    assert r.cost_report is gap_final                                                              # the finally-block snapshot is ignored
+    partial = Run(_Mgr(), "run_y", "owner", "key", {})
+    partial._track({"type": "session.complete", "cost_report": {"run_state": "running"}})          # not a final report: not adopted
+    assert partial.final_cost_report is None
+
+
 def test_runs_table_gets_the_report_column_on_an_existing_database(tmp_db):
     with storage._connect() as conn:
         storage._ensure_initialized()

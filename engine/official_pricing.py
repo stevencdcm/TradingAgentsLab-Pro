@@ -18,9 +18,12 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from . import anthropic_price_data as _anthropic
+from . import gemini_price_data as _gemini
 from . import openai_price_data as _data
+from . import xai_price_data as _xai
 
-PRICE_VERSION = _data.PRICE_VERSION
+PRICE_VERSION = _data.PRICE_VERSION          # OpenAI's (kept for the existing callers); see price_info() for every provider
 VERIFIED_AT = _data.VERIFIED_AT
 SOURCES = _data.SOURCES
 CONTEXT_SHORT_MAX = 272_000
@@ -30,37 +33,83 @@ _TIER_BY_SERVICE_TIER = {
     None: "standard", "default": "standard", "auto": "standard", "standard": "standard",
     "flex": "flex", "batch": "batch", "priority": "fast", "fast": "fast", "ultrafast": "ultrafast",
 }
+# Providers other than OpenAI: only the Standard column is imported. A usage record that names any other tier (Anthropic
+# priority / batch, ...) is left unpriced - never priced at the Standard rate.
+_STANDARD_ONLY = {None: "standard", "default": "standard", "auto": "standard", "standard": "standard"}
+
 _SNAPSHOT_RE = re.compile(r"^(?P<base>.+)-\d{4}-\d{2}-\d{2}$")
+_ANTHROPIC_SNAPSHOT_RE = re.compile(r"^(?P<base>.+)-\d{8}$")
 
 
-def resolve_model(model_id: Optional[str]) -> Optional[tuple[str, str]]:
-    """Map a model id from the provider/response to a row of the official table.
+class _Source:
+    """One provider's official table plus the few rules that differ per provider."""
+
+    def __init__(self, data: Any, tiers: dict, snapshot_re: Optional[re.Pattern], default_long_from: Optional[int] = None) -> None:
+        self.data, self.tiers, self.snapshot_re, self.default_long_from = data, tiers, snapshot_re, default_long_from
+        self.long_from: dict[str, int] = getattr(data, "LONG_FROM", {})
+
+
+_SOURCES: dict[str, _Source] = {
+    "openai": _Source(_data, _TIER_BY_SERVICE_TIER, _SNAPSHOT_RE, CONTEXT_SHORT_MAX + 1),
+    "anthropic": _Source(_anthropic, _STANDARD_ONLY, _ANTHROPIC_SNAPSHOT_RE),
+    "xai": _Source(_xai, _STANDARD_ONLY, None),           # bare aliases the page does not list are NOT resolved to a dated model
+    "gemini": _Source(_gemini, _STANDARD_ONLY, None),
+}
+
+
+def has_official_table(provider: Optional[str]) -> bool:
+    return (provider or "").lower() in _SOURCES
+
+
+def price_info(provider: str) -> dict[str, Any]:
+    d = _SOURCES[provider.lower()].data
+    return {"version": d.PRICE_VERSION, "verified_at": d.VERIFIED_AT, "sources": list(d.SOURCES)}
+
+
+def resolve_model(model_id: Optional[str], provider: str = "openai") -> Optional[tuple[str, str]]:
+    """Map a model id from the provider/response to a row of that provider's official table.
 
     Returns (price_row_id, how) with how = "exact" | "snapshot_of_alias", or None when the table has no such model.
     A dated snapshot id that is itself listed matches exactly; an unlisted dated snapshot falls back to its undated
-    alias and is labelled so. Anything else (OAuth-only aliases, other vendors, typos) is unknown, never guessed.
+    alias and is labelled so. Anything else (OAuth-only aliases, other vendors, aliases the page does not list, typos)
+    is unknown, never guessed.
     """
-    if not model_id:
+    src = _SOURCES.get((provider or "").lower())
+    if src is None or not model_id:
         return None
     mid = str(model_id).strip()
-    if mid in _data.PRICES:
+    if mid in src.data.PRICES:
         return mid, "exact"
-    m = _SNAPSHOT_RE.match(mid)
-    if m and m.group("base") in _data.PRICES:
+    m = src.snapshot_re.match(mid) if src.snapshot_re else None
+    if m and m.group("base") in src.data.PRICES:
         return m.group("base"), "snapshot_of_alias"
     return None
 
 
-def tier_for_service_tier(service_tier: Optional[str]) -> Optional[str]:
-    return _TIER_BY_SERVICE_TIER.get(service_tier.lower() if isinstance(service_tier, str) else service_tier)
+def tier_for_service_tier(service_tier: Optional[str], provider: str = "openai") -> Optional[str]:
+    tiers = _SOURCES[provider.lower()].tiers
+    return tiers.get(service_tier.lower() if isinstance(service_tier, str) else service_tier)
 
 
-def context_bucket(input_tokens: int) -> str:
-    return "short" if input_tokens <= CONTEXT_SHORT_MAX else "long"
+def is_tiered(model: Optional[str], provider: str) -> bool:
+    """True when this model's price depends on the request's prompt length (so aggregated usage cannot be priced exactly)."""
+    src = _SOURCES.get((provider or "").lower())
+    return bool(src and (model or "") in src.long_from)
+
+
+def context_bucket(input_tokens: int, model: Optional[str] = None, provider: str = "openai") -> str:
+    """'long' once the request's PROMPT length (all input tokens, cache reads/writes included) reaches the provider's long-context
+    threshold for this model. A model with no threshold has one price at any length (always 'short')."""
+    src = _SOURCES.get((provider or "").lower())
+    if src is None:
+        return "short"
+    start = src.long_from.get(model or "", src.default_long_from if provider == "openai" or (model or "") in src.long_from else None)
+    return "long" if start is not None and input_tokens >= start else "short"
 
 
 def price_usage(
     *,
+    provider: str = "openai",
     model: Optional[str],
     service_tier: Optional[str],
     context: str,
@@ -80,16 +129,16 @@ def price_usage(
     Returns {"usd": float|None, "usd_max": float|None (only when it differs), "price_model_id", "resolved_via", "tier", "rates",
     "reason", "notes": [...]}. `usd` is None (unknown) whenever no official price applies - never 0.
     """
-    res = resolve_model(model)
+    res = resolve_model(model, provider)
     if res is None:
         return {"usd": None, "usd_max": None, "price_model_id": None, "resolved_via": None, "tier": None, "rates": None,
                 "reason": "no_official_price", "notes": []}
     row_id, how = res
-    tier = tier_for_service_tier(service_tier)
+    tier = tier_for_service_tier(service_tier, provider)
     base = {"usd": None, "usd_max": None, "price_model_id": row_id, "resolved_via": how, "tier": tier, "rates": None, "notes": []}
     if tier is None:
         return {**base, "reason": "unsupported_service_tier"}
-    by_ctx = _data.PRICES[row_id].get(tier)
+    by_ctx = _SOURCES[provider.lower()].data.PRICES[row_id].get(tier)
     if by_ctx is None:
         return {**base, "reason": "tier_not_listed"}
     rates = by_ctx.get(context)

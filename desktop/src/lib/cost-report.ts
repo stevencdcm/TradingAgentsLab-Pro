@@ -64,7 +64,7 @@ const SHOWN_NOTES = [
   'dexter_input_tokens_assumed_to_include_cached_tokens', 'cache_write_ttl_unsplit_priced_as_range_30m_to_12h',
   'service_tier_not_reported_assumed_standard', 'no_cached_input_price_billed_at_input_rate',
   'no_cache_write_price_billed_at_input_rate', 'priced_via_undated_alias_of_snapshot', 'reasoning_exceeds_output_not_added',
-  'usage_gap_subtotal_is_a_lower_bound',
+  'usage_gap_subtotal_is_a_lower_bound', 'price_tier_unknown_for_saved_usage_priced_as_range',
 ];
 
 const KNOWN_REASONS = new Set([
@@ -73,7 +73,7 @@ const KNOWN_REASONS = new Set([
   'no_official_price', 'official_price_not_imported_for_provider', 'long_context_price_not_listed',
   'unsupported_service_tier', 'tier_not_listed', 'model_split_and_cache_split_unknown_in_saved_session',
   'cache_write_ttl', 'cache_write_tokens', 'usage_not_reported',
-  'quick_model_tokens_priced_at_deep_model',
+  'quick_model_tokens_priced_at_deep_model', 'price_tier',
 ]);
 
 export function formatUsd(v: number): string {

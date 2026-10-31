@@ -362,6 +362,9 @@ _AGENTS: list[_Agent] = [
 assert len(_AGENTS) == MAX_AGENTS_PER_SESSION, "agent count must match the cap"
 
 
+from .cost_report import exact_run_cost
+
+
 def _record_usage(ledger: Any, agent: str, config: Any, adapter: Any, in_tok: int, out_tok: int) -> None:
     """One finished call into the official-price ledger (best-effort: the report must never fail a run)."""
     try:
@@ -627,6 +630,7 @@ async def live_debate(
     # into this generator). Without this, the adapter's pooled httpx client
     # leaks for the lifetime of the engine process.
     yielded_complete = False
+    run_exact: Optional[float] = None       # exact cost from the completed usage report (set only on a complete run)
     try:
         yield {
             "type": "session.start",
@@ -738,6 +742,8 @@ async def live_debate(
             yield usage_evt
 
         cost = estimate_cost(config.model, state.input_tokens, state.output_tokens)
+        completed_report = _report(ledger, config, "completed")
+        run_exact = exact_run_cost(completed_report) if config.auth_kind == "api_key" else None
         duration = time.time() - started_at
         sys.stderr.write(
             f"[live_debate] provider={config.provider} auth={config.auth_kind} "
@@ -776,14 +782,16 @@ async def live_debate(
             # recorded above for telemetry.
             # Known-free (OAuth / local) is 0.0; a per-token model with no verified price is UNKNOWN (null),
             # never 0.0, so the ledger and History cannot present it as free.
+            # An exact figure from the usage report (complete per-call usage, official price incl. tier/cache) wins over the legacy
+            # table estimate, so History, the report and CostGuard agree; a ceiling-only model without one stays unknown.
             "estimated_cost_usd": (
                 0.0
                 if config.auth_kind in ("oauth", "local")
-                else (round(cost, 4) if is_priced(config.model) else None)
+                else (round(run_exact, 4) if run_exact is not None else (round(cost, 4) if is_priced(config.model) else None))
             ),
-            "cost_known": config.auth_kind in ("oauth", "local") or is_priced(config.model),
+            "cost_known": config.auth_kind in ("oauth", "local") or run_exact is not None or is_priced(config.model),
             # Official-API price estimate from measured usage (separate from the ceiling-based figures above).
-            "cost_report": _report(ledger, config, "completed"),
+            "cost_report": completed_report,
         }
         yielded_complete = True
     finally:
@@ -812,6 +820,8 @@ async def live_debate(
                 final_cost = (
                     0.0
                     if config.auth_kind in ("oauth", "local")
+                    else run_exact
+                    if run_exact is not None
                     else estimate_cost(
                         config.model, state.input_tokens, state.output_tokens
                     )
@@ -820,7 +830,7 @@ async def live_debate(
                 )
                 # A ceiling-only model (Haiku 5.5) reports unknown cost but its budget is HELD at the measured upper bound, so the
                 # daily/weekly/monthly caps keep counting it (releasing it at NULL would let caps never fill).
-                hold = config.auth_kind == "api_key" and is_ceiling_only(config.model)
+                hold = config.auth_kind == "api_key" and is_ceiling_only(config.model) and run_exact is None
                 # Measured totals are only a bound when every finished call reported usage. A call WITHOUT usage numbers
                 # (missing) must not look like a true zero: no bound -> the reserved estimate stays held. A genuine zero
                 # (no call ever finished) releases at 0.

@@ -415,12 +415,49 @@ def _summary_of(complete: dict) -> Optional[dict]:
         return None
 
 
+def _digest_needs_enrichment(d: Any) -> bool:
+    """A stored digest whose report had nothing priced (its provider had no official table then) may be priced at read time."""
+    return (isinstance(d, dict) and d.get("billing") in ("api_key", "oauth") and d.get("basis") == "metered"
+            and d.get("api_estimate_usd") is None and d.get("api_equivalent_reference_usd") is None)
+
+
+def _enriched_digest(row: Any, digest: dict) -> dict:
+    """Read-time enrichment of a list card's digest (never written back). Loads that one row's events only when the digest says
+    nothing was priced and the provider now has an official table; otherwise the stored digest is returned untouched."""
+    try:
+        from .cost_report import enrich_report, summary
+        from .official_pricing import has_official_table
+
+        if not (_digest_needs_enrichment(digest) and has_official_table(row["provider"])):
+            return digest
+        with _connect() as conn:
+            r = conn.execute("SELECT events_json FROM sessions WHERE id = ?", (row["id"],)).fetchone()
+        complete = _complete_of(json.loads(r["events_json"])) if r else None
+        rep = enrich_report(complete.get("cost_report")) if complete else None
+        return summary(rep) if rep and rep is not complete.get("cost_report") else digest
+    except Exception:  # noqa: BLE001 - the card must still render with the stored digest
+        return digest
+
+
+def _detail_summary(row: Any, events: list) -> Optional[dict]:
+    """The detail header digest agrees with the report panel below it: both come from the same (possibly enriched) report."""
+    try:
+        from .cost_report import summary
+
+        rep = session_cost_report(events)
+        if rep is not None and (rep.get("basis") == "recomputed_current_list_price" or not row["cost_summary"]):
+            return summary(rep)
+    except Exception:  # noqa: BLE001
+        pass
+    return _row_summary(row) if row["cost_summary"] else (_summary_of(_complete_of(events) or {}) or _row_summary(row))
+
+
 def _row_summary(row: Any) -> Optional[dict]:
     """Stored digest, else (older live sessions) a labelled recomputation from the row's own columns - no events parsed."""
     try:
         raw = row["cost_summary"]
         if raw:
-            return json.loads(raw)
+            return _enriched_digest(row, json.loads(raw))
         if not row["live"]:
             return None
         from .cost_report import recompute_for_session, summary
@@ -533,7 +570,7 @@ def get_session(session_id: str) -> Optional[SessionDetail]:
             elapsed_s=row["elapsed_s"],
             auth_kind=row["auth_kind"],
             # The saved report (if any) wins over a recomputation, so the header agrees with the report panel below it.
-            cost_summary=_row_summary(row) if row["cost_summary"] else (_summary_of(_complete_of(events) or {}) or _row_summary(row)),
+            cost_summary=_detail_summary(row, events),
             events=events,
         )
     except Exception as exc:  # noqa: BLE001
@@ -572,7 +609,12 @@ def session_cost_report(events: list[dict]) -> Optional[dict[str, Any]]:
         return None
     stored = complete.get("cost_report")
     if isinstance(stored, dict):
-        return stored
+        try:
+            from .cost_report import enrich_report
+
+            return enrich_report(stored)          # read-time only: lines left unpriced for want of a table, priced from their own usage
+        except Exception:  # noqa: BLE001
+            return stored
     try:
         from .cost_report import recompute_for_session
 

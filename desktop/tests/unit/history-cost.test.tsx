@@ -27,7 +27,7 @@ describe('historyCost()', () => {
   it('QCOM-shaped legacy OAuth row: reference at today\'s list price, labelled not-billed + recomputed + incomplete; never $0', () => {
     const c = historyCost({ ...base, auth_kind: 'oauth', estimated_cost_usd: 0, cost_summary: cs({ billing: 'oauth', basis: 'recomputed_current_list_price', complete: false, api_equivalent_reference_usd: 0.501366 }) }, t);
     expect(c.kind).toBe('reference'); expect(c.usd).toBe(0.501366);
-    expect(c.text).toMatch(/訂閱 · API 等值參考 \$0\.5014（非帳單）/); expect(c.text).toMatch(/不完整/); expect(c.text).toMatch(/以今日牌價重算/);
+    expect(c.text).toMatch(/訂閱 · API 等值參考 \$0\.5014（非帳單）/); expect(c.text).toMatch(/不完整/); expect(c.text).toMatch(/歷史用量補算/);
     expect(c.text).not.toMatch(/預估|\$0\.0000/);
   });
   it('OAuth without an exact official price (or no digest at all) is unknown, not $0', () => {

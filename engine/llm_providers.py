@@ -76,42 +76,33 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "gpt-5-mini":          {"input": 1.00, "output": 4.00},
     "gpt-5":               {"input": 8.00, "output": 30.00},
     "gpt-5.5":             {"input": 10.00, "output": 40.00},
-    # Anthropic (refreshed 2026-07-30)
-    "claude-haiku-4-5":    {"input": 1.00,  "output": 5.00},
-    "claude-sonnet-4-5":   {"input": 3.00,  "output": 15.00},
-    "claude-sonnet-4-6":   {"input": 3.00,  "output": 15.00},
-    # Verified 2026-10-30 against https://platform.claude.com/docs/en/about-claude/pricing (Input $2 / Output $10 per MTok).
-    "claude-sonnet-5-5":   {"input": 2.00,  "output": 10.00},
-    # Verified 2026-10-31 against the same page. Haiku 5.5 is tiered ($0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above):
-    # the HIGHER tier is stored as a CEILING for CostGuard only (see _CEILING_ONLY: it is never reported as the price). Cache
-    # writes (1.25x / 2x input) and reads are not modelled here; CostGuard's worst case already takes the dearer rate.
-    "claude-opus-5-5":     {"input": 4.00,  "output": 20.00},
-    "claude-haiku-5-5":    {"input": 0.50,  "output": 2.50},
+    # Anthropic. Official standard-tier input/output (platform.claude.com/docs/en/about-claude/pricing, snapshot 2026-10-31); where the
+    # page prices by prompt length (Haiku 5.5) the HIGHER tier is stored, as a CEILING (see _CEILING_ONLY). The 2026-07-30 rows for
+    # claude-opus-4-8 / claude-opus-4-7 / claude-fable-5 held a stale 15/75 ceiling: the page prices them 5/25, 5/25 and 10/50.
     "claude-fable-5-1":    {"input": 10.00, "output": 50.00},
-    "claude-opus-4-7":     {"input": 15.00, "output": 75.00},  # kept for backward compat
-    "claude-opus-4-8":     {"input": 15.00, "output": 75.00},  # conservative ceiling; verify vs billing
-    "claude-fable-5":      {"input": 15.00, "output": 75.00},  # new model; conservative ceiling
+    "claude-fable-5":      {"input": 10.00, "output": 50.00},
+    "claude-opus-5-5":     {"input": 4.00,  "output": 20.00},
+    "claude-opus-4-8":     {"input": 5.00,  "output": 25.00},
+    "claude-opus-4-7":     {"input": 5.00,  "output": 25.00},
+    "claude-sonnet-5-5":   {"input": 2.00,  "output": 10.00},
+    "claude-sonnet-4-6":   {"input": 3.00,  "output": 15.00},
+    "claude-sonnet-4-5":   {"input": 3.00,  "output": 15.00},
+    "claude-haiku-5-5":    {"input": 0.50,  "output": 2.50},    # ceiling: $0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above
+    "claude-haiku-4-5":    {"input": 1.00,  "output": 5.00},
     # Google Gemini
     "gemini-2.0-flash":    {"input": 0.10, "output": 0.40},
     "gemini-2.5-flash":    {"input": 0.30, "output": 2.50},
-    "gemini-2.5-pro":      {"input": 1.25, "output": 10.00},
-    # Flash-Lite is cheaper than Flash, so pricing it AT the Flash rate is a
-    # guaranteed ceiling (over-estimate, never under) — a real anchor, not a
-    # guess.
-    "gemini-3.1-flash-lite": {"input": 0.30, "output": 2.50},
-    # xAI Grok. Verified 2026-05-28 against docs.x.ai and cross-checked vs
-    # upstream's docs-aligned catalog: grok-4.3 and the grok-4.20 family bill
-    # $1.25/$2.50 per 1M, so $2/$4 is a safe ceiling with headroom. We use the
-    # bare grok-4.20-reasoning / grok-4.20-non-reasoning aliases (durable: they
-    # track the latest dated snapshot, e.g. -0309, instead of pinning to one
-    # that xAI will eventually retire). The older grok-4-fast-* / grok-4-0709
-    # IDs were deprecated 2026-05-15 (redirected to grok-4.3), so they're dropped.
-    "grok-4.3":                {"input": 2.00, "output": 4.00},
-    "grok-4.20-reasoning":     {"input": 2.00, "output": 4.00},
-    "grok-4.20-non-reasoning": {"input": 2.00, "output": 4.00},
-    # MiniMax M2.x (Global region). One conservative ceiling across the line —
-    # the M2.x models are cheap and close in price; $1/$3 over-estimates each.
-    # Verify against platform.minimax.io pricing before billing relies on it.
+    "gemini-2.5-pro":      {"input": 2.50, "output": 15.00},   # ceiling: $1.25/$10 up to 200k prompt tokens, $2.50/$15 above
+    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},     # official page 2026-10-31 (ai.google.dev/gemini-api/docs/pricing)
+    # xAI Grok (docs.x.ai/docs/models, snapshot 2026-10-31). The page prices grok-4.3 and the dated grok-4.20-0309-* models $1.25/$2.50
+    # below 200k prompt tokens and $2.50/$5.00 from 200k up (all tokens of the request). The HIGHER tier is stored as a CEILING:
+    # the previous $2/$4 sat BELOW it and could under-reserve. The bare grok-4.20-reasoning / -non-reasoning aliases are NOT on the
+    # page (only the dated 0309 ids are): no price is inferred for them, they stay ceiling-only.
+    "grok-4.3":                {"input": 2.50, "output": 5.00},
+    "grok-4.20-reasoning":     {"input": 2.50, "output": 5.00},
+    "grok-4.20-non-reasoning": {"input": 2.50, "output": 5.00},
+    # MiniMax M2.x: the current official pricing page (platform.minimax.io/docs/guides/pricing-paygo, 2026-10-31) lists only M3 /
+    # M3.1 models, so NO official price exists here for these ids. The rows are unverified CEILINGS for CostGuard only.
     "MiniMax-M2.7":            {"input": 1.00, "output": 3.00},
     "MiniMax-M2.7-highspeed":  {"input": 1.00, "output": 3.00},
     "MiniMax-M2.5":            {"input": 1.00, "output": 3.00},
@@ -154,12 +145,21 @@ def usage_detail(usage: Any, *, model: Any = None, service_tier: Any = None) -> 
     in_d = _field(usage, "prompt_tokens_details") or _field(usage, "input_tokens_details")
     out_d = _field(usage, "completion_tokens_details") or _field(usage, "output_tokens_details")
     cached = _field(in_d, "cached_tokens")
+    if cached is None:
+        cached = _field(usage, "cache_read_input_tokens")          # Anthropic naming (raw Messages usage)
     write = _field(in_d, "cache_write_tokens")
     if write is None:
         write = _field(in_d, "cache_creation_tokens")
+    if write is None:
+        write = _field(usage, "cache_creation_input_tokens")       # Anthropic naming
     # OpenAI reports a cache write's TTL split here; the two rates differ (30m = 1.25x input, 12h = 2.5x), so it must be read.
     ttl = _field(in_d, "cache_write_tokens_details")
     t30, t12 = _field(ttl, "ttl_30m_tokens"), _field(ttl, "ttl_12h_tokens")
+    if t30 is None and t12 is None:                                 # Anthropic: cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens
+        cc = _field(usage, "cache_creation")
+        t30, t12 = _field(cc, "ephemeral_5m_input_tokens"), _field(cc, "ephemeral_1h_input_tokens")
+    if service_tier is None:
+        service_tier = _field(usage, "service_tier")
     return {
         "cached": cached if isinstance(cached, int) else None,
         "cache_write": write if isinstance(write, int) else None,
@@ -171,11 +171,16 @@ def usage_detail(usage: Any, *, model: Any = None, service_tier: Any = None) -> 
     }
 
 
-# Rows in the table that are a CEILING only, not the exact price: the provider's price depends on a per-request property the
-# aggregated token counts here cannot reveal (Haiku 5.5: $0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above). CostGuard
-# still reserves against the row (a bound), but nothing shown or stored as a cost may present it as the price: for these
-# models the displayed/settled cost is UNKNOWN (null), never the ceiling and never 0.
-_CEILING_ONLY: frozenset[str] = frozenset({"claude-haiku-5-5"})
+# Rows in the table that are a CEILING only, not an exact price. Two kinds:
+#   * TIERED: the provider's price depends on the request's prompt length (Haiku 5.5 100K, Gemini 2.5 Pro 200k, xAI grok-4.x 200k).
+#     The aggregated token counts here cannot reveal it, but the per-call usage ledger can (official_pricing.context_bucket per call).
+#   * UNRESOLVED: no official price was found for the id (xAI bare aliases, Gemini 2.0 Flash, MiniMax M2.x).
+# CostGuard still reserves against the row (a bound). Nothing shown or stored as a cost may present it as the price: the cost is the
+# usage report's exact figure when the per-call usage is complete (tiered models only), else UNKNOWN (null) - never the ceiling, never 0.
+_TIERED: frozenset[str] = frozenset({"claude-haiku-5-5", "gemini-2.5-pro", "grok-4.3"})
+_UNRESOLVED: frozenset[str] = frozenset({"grok-4.20-reasoning", "grok-4.20-non-reasoning", "gemini-2.0-flash",
+                                         "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"})
+_CEILING_ONLY: frozenset[str] = _TIERED | _UNRESOLVED
 
 
 def has_cost_ceiling(model: str) -> bool:
@@ -846,6 +851,7 @@ class AnthropicAdapter:
 
     def __init__(self) -> None:
         self._client = None  # type: ignore[assignment]
+        self.last_usage: Optional[dict] = None
 
     async def open(self, *, api_key: str) -> None:
         from anthropic import AsyncAnthropic
@@ -896,10 +902,15 @@ class AnthropicAdapter:
             if isinstance(text, str):
                 parts.append(text)
         content = "".join(parts).strip()
-        # `resp.usage.input_tokens` / `output_tokens` are the canonical fields.
+        # `resp.usage.input_tokens` / `output_tokens` are the canonical fields. Anthropic reports cache reads and writes SEPARATELY from
+        # `input_tokens`; this app counts the whole prompt (cache included) as input, like the other providers, so the price tiers
+        # (Haiku 5.5's 100K prompt threshold counts cache reads/writes) and the report's cached/uncached split come out right.
         usage = resp.usage
-        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+        base_in = int(getattr(usage, "input_tokens", 0) or 0)
         out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        d = usage_detail(usage, model=getattr(resp, "model", None))
+        in_tok = base_in + int(d["cached"] or 0) + int(d["cache_write"] or 0)
+        self.last_usage = d
         # Note on stop_reason: "max_tokens" indicates truncation. The content
         # is still valid text; we surface it as-is — the founder can see
         # truncation in the transcript and re-run with a higher cap if needed.
@@ -921,6 +932,7 @@ class GeminiAdapter:
 
     def __init__(self) -> None:
         self._client = None  # type: ignore[assignment]
+        self.last_usage: Optional[dict] = None
 
     async def open(self, *, api_key: str) -> None:
         from google import genai
@@ -981,7 +993,13 @@ class GeminiAdapter:
                 content = f"[gemini blocked: {exc}]"
             usage = getattr(resp, "usage_metadata", None)
             in_tok = int(getattr(usage, "prompt_token_count", 0) or 0) if usage else 0
-            out_tok = int(getattr(usage, "candidates_token_count", 0) or 0) if usage else 0
+            # Gemini reports thinking tokens SEPARATELY from candidates_token_count, but bills them as output ("Output price
+            # (including thinking tokens)"): count them, or every thinking model's cost is under-reported.
+            thoughts = int(getattr(usage, "thoughts_token_count", 0) or 0) if usage else 0
+            out_tok = (int(getattr(usage, "candidates_token_count", 0) or 0) if usage else 0) + thoughts
+            cached = getattr(usage, "cached_content_token_count", None) if usage else None
+            self.last_usage = {"cached": cached if isinstance(cached, int) else None, "cache_write": None, "cache_write_30m": None,
+                               "cache_write_12h": None, "reasoning": thoughts if usage else None, "model": None, "service_tier": None}
             return content, in_tok, out_tok
 
         return await asyncio.to_thread(_call)

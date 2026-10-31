@@ -151,8 +151,13 @@ class Run:
         self.last_extend = 0.0
         # Latest official-price usage report (per agent), handed over by the engine; marked partial when the run does not complete.
         self.cost_report: Optional[dict[str, Any]] = None
+        # The FINAL report carried by session.complete. Once seen it is the run's report: a later "running" snapshot (the engine's
+        # finally block publishes one after the complete event) must not replace it, and it is never re-stated by with_run_state.
+        self.final_cost_report: Optional[dict[str, Any]] = None
 
     def set_cost_report(self, report: Optional[dict[str, Any]]) -> None:
+        if self.final_cost_report is not None:
+            return
         if report is None and self.cost_report is not None:
             return
         self.cost_report = report
@@ -241,6 +246,9 @@ class Run:
                 self.cost, self.cost_known = None, False
             if t == "session.complete":
                 self.completed_seen = True
+                rep = ev.get("cost_report")
+                if isinstance(rep, dict) and rep.get("run_state") == "completed":
+                    self.final_cost_report = self.cost_report = rep
         elif t == "run.error":
             self.error = _scrub(str(ev.get("error") or ""))[:300]
 

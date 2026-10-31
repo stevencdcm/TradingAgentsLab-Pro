@@ -150,8 +150,8 @@ def test_local_model_external_fee_is_zero_and_power_is_not_claimed():
 
 
 def test_other_vendors_are_listed_but_unpriced():
-    led = UsageLedger(provider="anthropic")
-    led.record(stage="debate", agent="a", provider="anthropic", model_requested="claude-sonnet-5-5", model_billed="claude-sonnet-5-5", input_tokens=10, output_tokens=5)
+    led = UsageLedger(provider="minimax")    # no official price table imported for MiniMax (its pricing page lists other models)
+    led.record(stage="debate", agent="a", provider="minimax", model_requested="MiniMax-M2.7", model_billed="MiniMax-M2.7", input_tokens=10, output_tokens=5)
     r = build_report(led, billing="api_key")
     assert r["lines"][0]["unpriced_reason"] == "official_price_not_imported_for_provider" and r["totals"]["api_estimate_usd"] is None
 
@@ -285,7 +285,7 @@ async def _run(monkeypatch, auth_kind, detail, model="gpt-6.1-sol", provider="op
 
 
 @pytest.mark.asyncio
-async def test_live_debate_complete_carries_per_agent_official_report_and_keeps_ceiling_figures(monkeypatch):
+async def test_live_debate_complete_carries_per_agent_official_report_and_the_exact_figure_replaces_a_missing_ceiling(monkeypatch):
     from engine.live_debate import MAX_AGENTS_PER_SESSION
     from engine.llm_providers import estimate_cost_or_none
 
@@ -296,7 +296,9 @@ async def test_live_debate_complete_carries_per_agent_official_report_and_keeps_
     assert rep["totals"]["input_tokens"] == 1000 * MAX_AGENTS_PER_SESSION and rep["totals"]["complete"] is True
     per = 600 * 2.0 / 1e6 + 400 * 0.1 / 1e6 + 200 * 10.0 / 1e6
     assert rep["totals"]["api_estimate_usd"] == pytest.approx(per * MAX_AGENTS_PER_SESSION)
-    assert comp["estimated_cost_usd"] is None and comp["cost_known"] is False        # gpt-6.1-sol has no budget-ceiling row: untouched
+    # gpt-6.1-sol has no budget-ceiling row, but its usage is complete and the official table prices it: the SAME exact figure is the
+    # session's cost (History, report and the CostGuard settlement agree) instead of "unknown".
+    assert comp["estimated_cost_usd"] == pytest.approx(per * MAX_AGENTS_PER_SESSION, abs=1e-4) and comp["cost_known"] is True
     assert estimate_cost_or_none("gpt-6.1-sol", 1, 1) is None
     last_usage = [e for e in evs if e["type"] == "cost.usage"][-1]
     assert last_usage["official_cost"]["complete"] is False                            # running total is never called complete

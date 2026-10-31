@@ -34,7 +34,7 @@ def reject_55_request(body: dict) -> str | None:
 
 
 class FakeAnthropic:
-    def __init__(self, key: str = "sk-ant-test-key-1234567890"):
+    def __init__(self, key: str = "sk-ant-test-key-1234567890", *, cache_fields: bool = True, usage_extra: dict | None = None):
         self.bodies: list[dict] = []
         self.headers: list[dict] = []
         me = self
@@ -63,7 +63,10 @@ class FakeAnthropic:
                            else [{"type": "text", "text": "好的，這是回覆。"}])
                 resp = {"id": "msg_1", "type": "message", "role": "assistant", "model": body.get("model"), "content": content,
                         "stop_reason": "tool_use" if content[0]["type"] == "tool_use" else "end_turn", "stop_sequence": None,
-                        "usage": {"input_tokens": 12, "output_tokens": 7}}
+                        "usage": dict({"input_tokens": 12, "output_tokens": 7},
+                                      **({"cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                                          "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+                                          "service_tier": "standard"} if cache_fields else {}), **(usage_extra or {}))}
                 raw = json.dumps(resp if ok else {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}).encode()
                 self.send_response(200 if ok else 401)
                 self.send_header("content-type", "application/json")

@@ -133,8 +133,7 @@ def test_langchain_layer_builds_requests_claude_55_accepts(srv, model):
     assert all("temperature" not in b and b.get("thinking", {}).get("type") not in ("disabled", "enabled") for b in srv.bodies)
 
 
-def test_haiku_55_live_debate_reports_cost_unknown_not_the_ceiling(srv):
-    """Haiku 5.5 is tiered: the free engine runs on it, CostGuard can bound it, but the reported cost is UNKNOWN (null)."""
+def _haiku_complete_events(base_url):
     from engine.live_debate import live_debate
 
     cfg = ProviderConfig.from_dict({"provider": "anthropic", "auth": {"type": "api_key", "api_key": KEY}, "model": "claude-haiku-5-5"})
@@ -142,9 +141,37 @@ def test_haiku_55_live_debate_reports_cost_unknown_not_the_ceiling(srv):
     async def go():
         return [e async for e in live_debate(ticker="AAPL", trade_date="2026-10-30", summary=None, headlines=None, config=cfg, report_language="zh-TW")]
 
-    events = asyncio.run(go())
+    return asyncio.run(go())
+
+
+def test_haiku_55_with_complete_usage_gets_the_exact_tier_price_not_the_ceiling(srv):
+    """Per-call usage is complete (cache fields reported): every call is 12 prompt tokens, far below the 100K threshold, so the SHORT tier
+    ($0.10 in / $0.50 out) applies - not the $0.50/$2.50 ceiling - and the session cost equals the usage report's figure."""
+    events = _haiku_complete_events(srv.url)
     done = next(e for e in events if e["type"] == "session.complete")
-    assert done["estimated_cost_usd"] is None and done["cost_known"] is False
+    exact = 12 * (12 * 0.10 + 7 * 0.50) / 1e6
+    assert done["cost_report"]["totals"]["api_estimate_usd"] == pytest.approx(exact, abs=1e-5)
+    assert done["cost_report"]["totals"]["complete"] is True
+    assert done["estimated_cost_usd"] == pytest.approx(exact, abs=1e-4) and done["cost_known"] is True
+    assert done["cost_report"]["lines"][0]["price"]["rates"]["input"] == 0.10                  # the short tier, from the official table
+
+
+def test_haiku_55_with_missing_cache_fields_stays_unknown_never_the_ceiling():
+    s = FakeAnthropic(KEY, cache_fields=False)
+    import os
+
+    old = os.environ.get("ANTHROPIC_BASE_URL")
+    os.environ["ANTHROPIC_BASE_URL"] = s.url
+    try:
+        events = _haiku_complete_events(s.url)
+    finally:
+        s.close()
+        if old is None:
+            os.environ.pop("ANTHROPIC_BASE_URL", None)
+        else:
+            os.environ["ANTHROPIC_BASE_URL"] = old
+    done = next(e for e in events if e["type"] == "session.complete")
+    assert done["cost_report"]["totals"]["complete"] is False
+    assert done["estimated_cost_usd"] is None and done["cost_known"] is False                  # unknown: not the 0.50/2.50 ceiling, not 0
     usage = [e for e in events if e["type"] == "cost.usage"]
-    assert usage and all(e["est_cost_usd"] is None for e in usage)   # unknown: neither the 0.50/2.50 ceiling nor a $0.0000 tick
-    assert srv.bodies and all(set(b) <= ALLOWED for b in srv.bodies)
+    assert usage and all(e["est_cost_usd"] is None for e in usage)

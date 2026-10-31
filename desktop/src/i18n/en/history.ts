@@ -45,7 +45,7 @@ export const history = {
   'history.cost.refUnknown': 'Subscription · API-equivalent reference unknown',
   'history.cost.local': 'Local model · external API fee $0',
   'history.cost.incomplete': 'incomplete',
-  'history.cost.recomputed': 'at today’s list price',
+  'history.cost.recomputed': 'recomputed from saved usage at today’s official price',
   'history.stat.apiCost': 'API est. (API-key runs)',
   'history.stat.apiCostIncomplete': 'API est. (API-key runs, incomplete)',
   'history.stat.refCost': 'API-equivalent ref. (subscription, not billed)',

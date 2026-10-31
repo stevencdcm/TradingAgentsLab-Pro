@@ -79,7 +79,8 @@ def test_exact_priced_models_are_unchanged(tmp_db):
 
 @pytest.fixture
 def srv(monkeypatch):
-    s = FakeAnthropic(KEY)
+    # No cache fields in the usage: a usage GAP, so the price tier cannot be proven and the cost stays unknown (ceiling hold).
+    s = FakeAnthropic(KEY, cache_fields=False)
     monkeypatch.setenv("ANTHROPIC_BASE_URL", s.url)
     yield s
     s.close()
@@ -233,3 +234,21 @@ def test_pro_missing_usage_vs_true_zero(tmp_db):
     ok.record(stage="debate", agent="a", provider="anthropic", model_requested=M, model_billed=M, input_tokens=500, output_tokens=50)
     hold, bound = fd._ceiling_hold("api_key", merged, Meter(500, 50, calls=1, ledger=ok))
     assert hold and bound == pytest.approx(ceiling_cost(M, 500, 50))
+
+
+def test_complete_usage_settles_at_the_exact_cost_and_does_not_hold_the_ceiling(tmp_db, monkeypatch):
+    s = FakeAnthropic(KEY)                          # reports cache fields: usage is complete
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", s.url)
+    try:
+        initialize()
+        r = _res()
+        events = asyncio.run(_run(r.reservation_id))
+    finally:
+        s.close()
+    done = next(e for e in events if e["type"] == "session.complete")
+    exact = 12 * (12 * 0.10 + 7 * 0.50) / 1e6
+    assert done["estimated_cost_usd"] == pytest.approx(exact, abs=1e-4)
+    import sqlite3
+
+    row = sqlite3.connect(str(tmp_db)).execute("SELECT finalized, finalized_cost_usd, settled_as FROM cost_reservations WHERE id = ?", (r.reservation_id,)).fetchone()
+    assert row[0] == 1 and row[1] == pytest.approx(exact, abs=1e-5) and row[2] is None    # settled at the exact cost, not 'ceiling'

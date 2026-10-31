@@ -288,3 +288,9 @@ export function resolveSelectedModel(provider: LLMProvider, authKind: 'oauth' | 
   if (saved && list.some((m) => m.id === saved)) return saved;
   return (list.find((m) => m.recommended) ?? list[0]).id;
 }
+
+/** The provider has retired this model: runs naming it fail. A saved retired choice is kept and labelled, never silently
+ * replaced, but nothing may START a run with it (Analyze and Batch stop and ask the user to pick another). */
+export function isRetiredModel(provider: LLMProvider | null, modelId: string | null | undefined): boolean {
+  return !!provider && !!modelId && getCatalogState(provider).retired.includes(modelId);
+}

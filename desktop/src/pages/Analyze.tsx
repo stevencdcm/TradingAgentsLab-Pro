@@ -34,7 +34,7 @@ import ProviderSetupCallout from '../components/ProviderSetupCallout';
 import { getLocalRuntimes, listLocalModels } from '../lib/engine-client';
 import { getOpenAIOAuthStatus } from '../lib/oauth';
 import { useCodexModels } from '../lib/codex-models';
-import { mergeModelChoices, useModelCatalog } from '../lib/model-catalog';
+import { isRetiredModel, mergeModelChoices, useModelCatalog } from '../lib/model-catalog';
 import { useI18n } from '../i18n';
 import { describeEngineError } from '../lib/engine-errors';
 import { providerLabel } from '../lib/provider-label';
@@ -731,6 +731,12 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
 
   const onAnalyze = async () => {
     if (!engineReadyRef.current || isStreamingRef.current) return;
+    // A saved model the provider has retired is kept in the picker (labelled) but cannot start a run: say so, change nothing.
+    const guardModel = activeModelRef.current;
+    if (isRetiredModel(activeProviderRef.current, guardModel)) {
+      setStreamError(t('analyze.err.retiredModel', { model: guardModel ?? '' }));
+      return;
+    }
     setEvents([]);
     setStreamError(null);
     setCopied(false);

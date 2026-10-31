@@ -26,6 +26,8 @@ vi.mock('../../src/lib/secrets', async () => {
     onSecretsChanged: () => () => {},
   };
 });
+const runAnalysis = vi.fn(async () => ({ kind: 'cancelled', reason: 'cost_guard' }));
+vi.mock('../../src/lib/run-analysis', () => ({ runAnalysis: (...a: unknown[]) => runAnalysis(...(a as [])) }));
 vi.mock('../../src/lib/oauth', async () => {
   const actual = await vi.importActual<any>('../../src/lib/oauth');
   return { ...actual, getOpenAIOAuthStatus: vi.fn(async () => ({ connected: false })) };
@@ -48,6 +50,7 @@ const liveModels = (...ids: string[]) => ids.map((id) => ({ id, label: id, lifec
 
 beforeEach(() => {
   fetchModelCatalog.mockReset();
+  runAnalysis.mockClear();
   _resetModelCatalogForTests();
   sessionStorage.clear();
   (window as any).tradingAgentsLab = { platform: 'web', getEngineHandshake: async () => ({ port: 8765, proxy: true }), consent: { get: async () => ({}) } };
@@ -170,5 +173,45 @@ describe('Batch uses the same selected model as Analyze', () => {
     const { resolveActiveProvider } = await import('../../src/components/BatchRunner');
     expect(await resolveActiveProvider()).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-6' });
     expect(store.has('tal:analyze:selected-model:anthropic')).toBe(false);
+  });
+});
+
+
+describe('a saved model the provider has retired cannot start a run (B4)', () => {
+  const retiredSeed = () => stubStorage({
+    'tal:model-catalog:v1:anthropic': JSON.stringify({ fetchedAt: 1, credStamp: '2026-10-31|…1234', retired: ['claude-haiku-4-5'], models: liveModels('claude-opus-5-5') }),
+    'tal:analyze:selected-model:anthropic': 'claude-haiku-4-5',
+  });
+
+  it('Analyze: stops with a message, starts nothing, and leaves the saved selection alone', async () => {
+    const store = retiredSeed();
+    render(<I18nProvider initialLocale="zh-TW"><Analyze /></I18nProvider>);
+    const sel = (await screen.findByTestId('model-select')) as HTMLSelectElement;
+    expect(sel.value).toBe('claude-haiku-4-5');
+    fireEvent.change(screen.getByTestId('ticker-input'), { target: { value: 'NVDA' } });
+    await act(async () => { fireEvent.click(await screen.findByTestId('analyze-button')); });
+    await waitFor(() => expect(document.body.textContent).toMatch(/已被供應商退役/));
+    expect(runAnalysis).not.toHaveBeenCalled();
+    expect(store.get('tal:analyze:selected-model:anthropic')).toBe('claude-haiku-4-5');   // never auto-switched
+  });
+
+  it('Batch: resolves the saved id as retired so onRun refuses before any ticker starts', async () => {
+    retiredSeed();
+    const { resolveActiveProvider } = await import('../../src/components/BatchRunner');
+    const { isRetiredModel } = await import('../../src/lib/model-catalog');
+    const active = await resolveActiveProvider();
+    expect(active.model).toBe('claude-haiku-4-5');                    // kept, not swapped
+    expect(isRetiredModel(active.provider, active.model)).toBe(true); // and flagged, so the run is refused
+    expect(isRetiredModel('anthropic', 'claude-sonnet-4-6')).toBe(false);
+    expect(runAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('Batch UI: Run shows the retired-model message and runs no ticker', async () => {
+    retiredSeed();
+    const { default: BatchRunner } = await import('../../src/components/BatchRunner');
+    render(<I18nProvider initialLocale="zh-TW"><BatchRunner tickers={['NVDA', 'AAPL']} /></I18nProvider>);
+    await act(async () => { fireEvent.click(await screen.findByTestId('batch-run-button')); });
+    await waitFor(() => expect(document.body.textContent).toMatch(/未開始批次：已儲存的模型 claude-haiku-4-5 已被供應商退役/));
+    expect(runAnalysis).not.toHaveBeenCalled();
   });
 });

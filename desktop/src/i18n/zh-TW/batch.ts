@@ -24,6 +24,7 @@ export const batchZhTW: Record<keyof typeof batch, string> = {
   'batch.summary.failed': '失敗：{n}',
   'batch.summary.cost': '成本：{cost}',
   'batch.err.noProvider': '尚未設定 LLM 供應商。請開啟「設定 → LLM 供應商」。',
+  'batch.err.retiredModel': '未開始批次：已儲存的模型 {model} 已被供應商退役。請到「分析」頁改選其他模型後再試。',
   'batch.err.costCapShort': '已達成本守門上限',
   'batch.err.costBlocked': '成本守門攔下了 {ticker}，請至設定調整上限，或停止批次。',
   'batch.secondsShort': '{n} 秒',

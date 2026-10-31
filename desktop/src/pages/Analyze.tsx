@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Analyze.module.css';
+import ReportPdfButton from '../components/ReportPdfButton';
 import DebateStream from '../components/DebateStream';
 import RunStatus from '../components/RunStatus';
 import type { RunClock, HeartbeatEvent } from '../lib/run-status';
@@ -862,11 +863,16 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   // to main, which writes it under userData/transcripts and opens the default
   // browser. Imported lazily — react-dom/server + the generator stay out of
   // the initial bundle for what is a post-run affordance.
+  // The PDF button builds the identical document (events + current cost report) only when clicked.
+  const buildReportHtml = useCallback(async () => {
+    const { buildTranscriptHtml } = await import('../lib/transcript-html');
+    return buildTranscriptHtml(events, locale, runClock.costReport ?? null);
+  }, [events, locale, runClock.costReport]);
+
   const onOpenHtml = async () => {
     if (!events.length) return;
     try {
-      const { buildTranscriptHtml } = await import('../lib/transcript-html');
-      const { html, suggestedName } = buildTranscriptHtml(events, locale, runClock.costReport ?? null);
+      const { html, suggestedName } = await buildReportHtml();
       await window.tradingAgentsLab.transcript.openHtml(html, suggestedName);
     } catch (err) {
       setStreamError(
@@ -1141,6 +1147,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               >
                 {t('analyze.openHtml')}
               </button>
+              <ReportPdfButton className={styles.transcriptButton} build={buildReportHtml} testId="export-pdf" />
             </>
           )}
         </div>

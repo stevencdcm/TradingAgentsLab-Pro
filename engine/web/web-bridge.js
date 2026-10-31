@@ -45,6 +45,28 @@
         window.open(url, '_blank', 'noopener');
         return baseName;
       },
+      // On-demand PDF: the engine renders the same report HTML with the machine's headless Chrome; we download the bytes.
+      savePdf: async (html, baseName, signal) => {
+        const res = await fetch('web/report-pdf', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+          body: JSON.stringify({ html, name: baseName }),
+        });
+        if (!res.ok) {
+          let d = {};
+          try { d = await res.json(); } catch { /* non-JSON error page */ }
+          const err = new Error((d && d.error) || `HTTP ${res.status}`);
+          err.code = (d && d.code) || `http_${res.status}`;
+          throw err;
+        }
+        const blob = await res.blob();
+        const name = `${String(baseName || 'report').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 64) || 'report'}.pdf`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name; a.rel = 'noopener';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        return name;
+      },
     },
     oauth: (() => {
       const progress = new Set(); const prompt = new Set(); let timer = null;

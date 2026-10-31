@@ -30,11 +30,11 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import __version__, secret_refs
+from . import __version__, pdf_export, secret_refs
 from .secret_store import PLAIN_CONFIG, SecretStore, SecretStoreError, ref_for
 from .web_oauth import OpenAIOAuth
 from .server import build_app
@@ -354,6 +354,19 @@ def build_web_app(
             "email": d.get("email"),
             "accountId": d.get("accountId"),
         }
+
+    @app.post("/web/report-pdf")
+    async def report_pdf(body: dict[str, Any] = Body(...)):
+        # Behind the same cookie / verified-proxy gate as every /web/* route. Renders only when the user clicked "Export PDF";
+        # takes a document string (never a URL or path) and returns the PDF bytes. See pdf_export for the hardening.
+        try:
+            pdf = await run_in_threadpool(pdf_export.render_pdf, body.get("html"))
+        except pdf_export.PdfExportError as exc:
+            return JSONResponse({"ok": False, "code": exc.code, "error": exc.message}, status_code=exc.status)
+        name = pdf_export.safe_filename(body.get("name"))
+        return Response(pdf, media_type="application/pdf", headers={
+            "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        })
 
     @app.post("/web/shutdown")
     async def shutdown() -> dict[str, bool]:

@@ -1,0 +1,8 @@
+.status {
+  font-size: var(--tal-text-xs, 12px);
+  color: var(--tal-text-muted, #8a8f98);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.status[role='alert'] { color: var(--tal-danger, #e5484d); }
+.cancel { opacity: 0.85; }

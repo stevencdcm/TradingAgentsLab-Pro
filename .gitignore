@@ -225,7 +225,7 @@ __marimo__/
 **/data_cache/
 
 # TradingAgentsLab desktop (Electron + Vite + React)
-desktop/node_modules/
+desktop/node_modules
 desktop/dist/
 desktop/dist-electron/
 desktop/release/

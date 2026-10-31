@@ -571,3 +571,109 @@ async def test_live_debate_zero_token_calls_are_unknown_in_the_completed_report(
     evs = [e async for e in live_debate(ticker="NVDA", trade_date="2026-05-15", summary=None, headlines=None, config=cfg, sentiment=SentimentBlock())]
     t = next(e for e in evs if e["type"] == "session.complete")["cost_report"]["totals"]
     assert t["api_estimate_usd"] is None and t["complete"] is False
+
+
+# ---- D23: the History LIST knows the official-price digest (a subscription is not "$0.0000") --------------------------------
+
+def _save(tmp_db, **o):
+    d = dict(ticker="QCOM", trade_date="2026-10-30", events=[{"type": "session.complete"}], decision={"stance": "neutral", "conviction": 0.5, "reasoning": "r"},
+             live=True, provider="openai", model="gpt-6.1-sol", input_tokens=165248, output_tokens=17087, estimated_cost_usd=0.0, auth_kind="oauth")
+    d.update(o)
+    return storage.write_session(**d)
+
+
+def test_qcom_shaped_oauth_row_lists_an_api_equivalent_reference_not_zero(tmp_db):
+    _save(tmp_db)
+    row = storage.list_sessions()[0]
+    assert row.estimated_cost_usd == 0.0 and row.auth_kind == "oauth"                       # budget accounting untouched
+    cs = row.cost_summary
+    assert cs["billing"] == "oauth" and cs["basis"] == "recomputed_current_list_price" and cs["complete"] is False
+    assert cs["api_equivalent_reference_usd"] == pytest.approx((165248 * 2.0 + 17087 * 10.0) / 1e6) and cs["api_estimate_usd"] is None
+    assert cs["verified_at"] == "2026-10-31" and cs["price_version"] == "openai-api-2026-10-31"
+
+
+def test_oauth_row_without_an_exact_official_model_is_unknown_not_invented(tmp_db):
+    _save(tmp_db, model="gpt-6.1-sol-codex-preview")                                         # no such alias on the price page: no price is made up
+    cs = storage.list_sessions()[0].cost_summary
+    assert cs["api_equivalent_reference_usd"] is None and cs["api_estimate_usd"] is None and cs["complete"] is False
+
+
+def test_api_key_and_local_and_demo_rows(tmp_db):
+    _save(tmp_db, auth_kind="api_key", model="gpt-5.5", ticker="AAPL", estimated_cost_usd=0.9)
+    _save(tmp_db, auth_kind="local", provider="local", model="qwen", ticker="LOC", estimated_cost_usd=0.0)
+    _save(tmp_db, live=False, provider=None, model=None, input_tokens=None, output_tokens=None, ticker="DEMO", auth_kind=None)
+    by = {r.ticker: r for r in storage.list_sessions()}
+    assert by["AAPL"].cost_summary["api_estimate_usd"] == pytest.approx((165248 * 5.0 + 17087 * 30.0) / 1e6) and by["AAPL"].estimated_cost_usd == 0.9
+    assert by["LOC"].cost_summary["external_api_usd"] == 0.0 and by["LOC"].cost_summary["api_estimate_usd"] is None
+    assert by["DEMO"].cost_summary is None
+
+
+def test_a_stored_digest_wins_and_is_saved_from_session_complete(tmp_db):
+    rep = build_report(_one(), billing="oauth")
+    complete = {"type": "session.complete", "live": True, "provider": "openai", "model": "gpt-6.1-sol", "auth_kind": "oauth", "input_tokens": 100_000,
+                "output_tokens": 10_000, "estimated_cost_usd": 0.0, "cost_report": rep,
+                "decision": {"stance": "neutral", "conviction": 0.5, "reasoning": "r"}}
+    saved = storage.write_session_from_events(ticker="QCOM", trade_date="2026-10-30", events=[complete])
+    cs = next(r for r in storage.list_sessions() if r.id == saved).cost_summary
+    assert cs["basis"] == "metered" and cs["complete"] is True and cs["api_equivalent_reference_usd"] == pytest.approx(0.3)
+    assert storage.get_session(saved).cost_summary == cs
+
+
+def test_existing_database_gets_the_additive_column_and_old_rows_still_list(tmp_db):
+    import sqlite3
+
+    with storage._connect() as conn:
+        storage._ensure_initialized()
+    _save(tmp_db)
+    con = sqlite3.connect(storage.db_path())
+    con.execute("ALTER TABLE sessions DROP COLUMN cost_summary")                              # an engine from before D23
+    con.commit(); con.close()
+    storage._reset_for_tests() if hasattr(storage, "_reset_for_tests") else None
+    rows = storage.list_sessions()
+    assert rows and rows[0].cost_summary["api_equivalent_reference_usd"] > 0                  # recomputed from columns; the list still works
+
+
+# ---- D25 (Opus D24 B1): sessions saved by the PR21 engine (report, no digest column) show the MEASURED figure everywhere ---------
+
+def _pr21_era_session(tmp_db):
+    rep = build_report(_one(cached_input_tokens=60_000), billing="oauth")                    # measured, with a cache read: cheaper than all-uncached
+    complete = {"type": "session.complete", "live": True, "provider": "openai", "model": "gpt-6.1-sol", "auth_kind": "oauth", "input_tokens": 100_000,
+                "output_tokens": 10_000, "estimated_cost_usd": 0.0, "cost_report": rep, "decision": {"stance": "neutral", "conviction": 0.5, "reasoning": "r"}}
+    sid = storage.write_session(ticker="QCOM", trade_date="2026-10-30", events=[{"type": "session.start"}, complete], decision=complete["decision"], live=True,
+                                provider="openai", model="gpt-6.1-sol", input_tokens=100_000, output_tokens=10_000, estimated_cost_usd=0.0,
+                                auth_kind="oauth")                                          # no cost_summary: what the merged PR21 engine wrote
+    return sid, rep
+
+
+def test_pr21_era_session_detail_header_matches_its_report_panel_even_before_any_backfill(tmp_db):
+    sid, rep = _pr21_era_session(tmp_db)
+    d = storage.detail_to_dict(storage.get_session(sid))
+    assert d["cost_summary"]["basis"] == "metered" and d["cost_summary"]["complete"] is True
+    assert d["cost_summary"]["api_equivalent_reference_usd"] == d["cost_report"]["totals"]["api_equivalent_reference_usd"] == rep["totals"]["api_equivalent_reference_usd"]
+    assert d["cost_summary"]["api_equivalent_reference_usd"] < (100_000 * 2.0 + 10_000 * 10.0) / 1e6          # not the all-uncached recomputation
+
+
+def test_migration_backfills_the_digest_from_the_saved_report_and_never_touches_accounting(tmp_db):
+    import sqlite3
+
+    sid, rep = _pr21_era_session(tmp_db)
+    other = _save(tmp_db, ticker="OLD")                                                      # an older row with no report: stays NULL, recomputed on read
+    storage._reset_for_tests()                                                               # "restart" on the same database: init runs again
+    storage._ensure_initialized()
+    con = sqlite3.connect(storage.db_path())
+    stored = dict(con.execute("SELECT id, cost_summary FROM sessions").fetchall())
+    acct = con.execute("SELECT estimated_cost_usd, input_tokens, output_tokens FROM sessions WHERE id=?", (sid,)).fetchone()
+    con.close()
+    assert stored[sid] is not None and stored[other] is None
+    assert acct == (0.0, 100_000, 10_000)                                                    # accounting columns untouched
+    by = {r.id: r for r in storage.list_sessions()}
+    assert by[sid].cost_summary["basis"] == "metered" and by[sid].cost_summary["api_equivalent_reference_usd"] == pytest.approx(rep["totals"]["api_equivalent_reference_usd"])
+    assert by[other].cost_summary["basis"] == "recomputed_current_list_price"
+    storage._reset_for_tests()
+    storage.list_sessions()                                                                  # running the backfill twice changes nothing
+    assert {r.id: r.cost_summary for r in storage.list_sessions()}[sid]["basis"] == "metered"
+
+
+def test_session_with_unknown_auth_kind_gets_no_dollar_figure():
+    cs = cr.summary(cr.recompute_for_session({"type": "session.complete", "provider": "openai", "model": "gpt-5.5", "input_tokens": 1000, "output_tokens": 100}))
+    assert cs["billing"] == "unknown" and cs["api_estimate_usd"] is None and cs["api_equivalent_reference_usd"] is None

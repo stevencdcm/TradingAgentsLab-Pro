@@ -11,6 +11,7 @@ import {
 } from '../lib/engine-client';
 import { isReview, stanceLabel, stanceLean } from '../lib/stance';
 import { buildTranscriptMarkdown } from '../lib/transcript';
+import { historyCost } from '../lib/cost-report';
 import { useI18n } from '../i18n';
 import { formatRelativeTime } from '../lib/relative-time';
 import { describeEngineError } from '../lib/engine-errors';
@@ -162,12 +163,21 @@ function History() {
     if (!sessions) return null;
     const total = sessions.length;
     const live = sessions.filter((s) => s.live).length;
-    const totalCost = sessions.reduce(
-      (acc, s) => acc + (s.estimated_cost_usd ?? 0),
-      0,
-    );
-    return { total, live, totalCost };
-  }, [sessions]);
+    // API-key estimates and subscription API-equivalent references are different things: never added together, and a
+    // subscription's budget figure (0) is never summed as a cost.
+    let apiTotal = 0;
+    let apiIncomplete = false;
+    let apiRows = 0;
+    let refTotal = 0;
+    let refIncomplete = false;      // a subscription reference total is only a lower bound if any row is unknown / incomplete / a range
+    for (const s of sessions) {
+      const c = historyCost(s, t);
+      if (c.kind === 'api') { apiRows++; apiTotal += c.usd ?? 0; apiIncomplete = apiIncomplete || c.incomplete; }
+      else if (c.kind === 'unknown') { apiRows++; apiIncomplete = true; }
+      else if (c.kind === 'reference') { refTotal += c.usd ?? 0; refIncomplete = refIncomplete || c.incomplete || c.usd === null; }
+    }
+    return { total, live, apiTotal, apiIncomplete, apiRows, refTotal, refIncomplete };
+  }, [sessions, t]);
 
   // Sorted view of the engine's list. Engine returns created_at DESC by
   // default which matches 'recent'; the other two modes re-sort the array
@@ -179,8 +189,8 @@ function History() {
     const arr = [...sessions];
     if (sortMode === 'cost') {
       arr.sort((a, b) => {
-        const ac = a.estimated_cost_usd ?? 0;
-        const bc = b.estimated_cost_usd ?? 0;
+        const ac = historyCost(a, t).usd ?? -1;           // unknown cost sorts last, not as $0
+        const bc = historyCost(b, t).usd ?? -1;
         if (bc !== ac) return bc - ac;
         return b.created_at.localeCompare(a.created_at);
       });
@@ -192,7 +202,7 @@ function History() {
       });
     }
     return arr;
-  }, [sessions, sortMode]);
+  }, [sessions, sortMode, t]);
 
   const onSortChange = useCallback((mode: SortMode) => {
     setSortMode(mode);
@@ -270,11 +280,9 @@ function History() {
                 ) : (
                   <span className={styles.detailMetaPillNeutral}>{t('history.stub')}</span>
                 )}
-                {detail.estimated_cost_usd !== null && (
-                  <span className={styles.detailMetaItem}>
-                    {t('history.estCost', { cost: `$${detail.estimated_cost_usd.toFixed(4)}` })}
-                  </span>
-                )}
+                {historyCost(detail, t).text ? (
+                  <span className={styles.detailMetaItem} data-testid="history-detail-cost">{historyCost(detail, t).text}</span>
+                ) : null}
               </div>
             </section>
 
@@ -306,14 +314,18 @@ function History() {
             <span className={styles.statLabel}>{t('history.stat.stub')}</span>
             <span className={styles.statValue}>{stats.total - stats.live}</span>
           </div>
-          {stats.totalCost > 0 && (
-            <div className={styles.statItem}>
-              <span className={styles.statLabel}>{t('history.stat.cost')}</span>
-              <span className={styles.statValue}>
-                ${stats.totalCost.toFixed(4)}
-              </span>
+          {stats.apiRows > 0 && stats.apiTotal > 0 ? (
+            <div className={styles.statItem} data-testid="history-stat-api">
+              <span className={styles.statLabel}>{t(stats.apiIncomplete ? 'history.stat.apiCostIncomplete' : 'history.stat.apiCost')}</span>
+              <span className={styles.statValue}>${stats.apiTotal.toFixed(4)}</span>
             </div>
-          )}
+          ) : null}
+          {stats.refTotal > 0 ? (
+            <div className={styles.statItem} data-testid="history-stat-reference">
+              <span className={styles.statLabel}>{t(stats.refIncomplete ? 'history.stat.refCostIncomplete' : 'history.stat.refCost')}</span>
+              <span className={styles.statValue}>${stats.refTotal.toFixed(4)}</span>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -388,15 +400,10 @@ function History() {
                   <span>{s.trade_date}</span>
                   <span className={styles.rowSep}>·</span>
                   <span>{formatRelative(s.created_at)}</span>
-                  {s.estimated_cost_usd !== null ? (
+                  {historyCost(s, t).text ? (
                     <>
                       <span className={styles.rowSep}>·</span>
-                      <span>{t('history.estCost', { cost: `$${s.estimated_cost_usd.toFixed(4)}` })}</span>
-                    </>
-                  ) : s.live ? (
-                    <>
-                      <span className={styles.rowSep}>·</span>
-                      <span>{t('history.costUnknown')}</span>
+                      <span data-testid={`history-cost-${s.id}`}>{historyCost(s, t).text}</span>
                     </>
                   ) : null}
                 </div>

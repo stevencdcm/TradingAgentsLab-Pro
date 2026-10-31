@@ -145,6 +145,9 @@ def _do_initialize() -> None:
         scols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "elapsed_s" not in scols:
             conn.execute("ALTER TABLE sessions ADD COLUMN elapsed_s REAL")
+        if "cost_summary" not in scols:               # D23: digest of the official-price report, so the History list needs no events
+            conn.execute("ALTER TABLE sessions ADD COLUMN cost_summary TEXT")
+        _backfill_cost_summary(conn)
         if "market" not in wcols:
             conn.execute("ALTER TABLE watchlist ADD COLUMN market TEXT")
         if "name" not in wcols:
@@ -243,6 +246,10 @@ class SessionSummary:
     # Wall-clock seconds of the WHOLE run (data fetch, Dexter, debate), measured by the engine and stored
     # once; None for sessions saved before this was recorded (shown as "unknown", never guessed).
     elapsed_s: Optional[float] = None
+    auth_kind: Optional[str] = None
+    # Official-price digest (see cost_report.summary). `estimated_cost_usd` above is the BUDGET accounting (0 for a subscription);
+    # this is what a History card should show. Older sessions get a clearly-labelled recomputation at today's list price.
+    cost_summary: Optional[dict] = None
 
 
 @dataclass
@@ -271,6 +278,7 @@ def write_session(
     estimated_cost_usd: Optional[float] = None,
     auth_kind: Optional[str] = None,
     elapsed_s: Optional[float] = None,
+    cost_summary: Optional[dict] = None,
 ) -> Optional[str]:
     """Persist a completed session. Returns the new id, or None on failure.
 
@@ -294,9 +302,9 @@ def write_session(
                     id, ticker, trade_date,
                     decision_action, decision_confidence, decision_reasoning,
                     live, provider, model, input_tokens, output_tokens,
-                    estimated_cost_usd, auth_kind, created_at, events_json, elapsed_s
+                    estimated_cost_usd, auth_kind, created_at, events_json, elapsed_s, cost_summary
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -320,6 +328,7 @@ def write_session(
                     created_at,
                     json.dumps(events, separators=(",", ":")),
                     elapsed_s,
+                    json.dumps(cost_summary, separators=(",", ":")) if cost_summary else None,
                 ),
             )
             conn.commit()
@@ -368,7 +377,59 @@ def write_session_from_events(
         estimated_cost_usd=complete.get("estimated_cost_usd"),
         auth_kind=complete.get("auth_kind"),
         elapsed_s=complete.get("elapsed_s") if isinstance(complete.get("elapsed_s"), (int, float)) else None,
+        cost_summary=_summary_of(complete),
     )
+
+
+def _backfill_cost_summary(conn: Any) -> None:
+    """Sessions saved by an engine that had `cost_report` but no `cost_summary` column (PR21) or by an older engine after a rollback:
+    copy the digest of the report they already carry, so the list shows the MEASURED figure and not a today's-price recomputation.
+    Writes only the new digest column; never touches the accounting columns. Best-effort."""
+    try:
+        rows = conn.execute("SELECT id, events_json FROM sessions WHERE cost_summary IS NULL AND live = 1 "
+                            "AND events_json LIKE '%\"cost_report\"%'").fetchall()
+        for r in rows:
+            try:
+                digest = _summary_of(_complete_of(json.loads(r["events_json"])) or {})
+            except Exception:  # noqa: BLE001 - one unreadable blob must not stop the others
+                continue
+            if digest:
+                conn.execute("UPDATE sessions SET cost_summary = ? WHERE id = ?", (json.dumps(digest, separators=(",", ":")), r["id"]))
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[storage] cost_summary backfill skipped: {type(exc).__name__}: {exc}\n")
+
+
+def _complete_of(events: Any) -> Optional[dict]:
+    if not isinstance(events, list):
+        return None
+    return next((e for e in reversed(events) if isinstance(e, dict) and e.get("type") == "session.complete"), None)
+
+
+def _summary_of(complete: dict) -> Optional[dict]:
+    try:
+        from .cost_report import summary
+
+        rep = complete.get("cost_report")
+        return summary(rep) if isinstance(rep, dict) else None
+    except Exception:  # noqa: BLE001 - the digest is secondary; the session must still be saved
+        return None
+
+
+def _row_summary(row: Any) -> Optional[dict]:
+    """Stored digest, else (older live sessions) a labelled recomputation from the row's own columns - no events parsed."""
+    try:
+        raw = row["cost_summary"]
+        if raw:
+            return json.loads(raw)
+        if not row["live"]:
+            return None
+        from .cost_report import recompute_for_session, summary
+
+        return summary(recompute_for_session({
+            "provider": row["provider"], "auth_kind": row["auth_kind"], "model": row["model"],
+            "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def list_sessions(*, limit: int = 50, ticker: Optional[str] = None) -> list[SessionSummary]:
@@ -382,7 +443,7 @@ def list_sessions(*, limit: int = 50, ticker: Optional[str] = None) -> list[Sess
                     SELECT id, ticker, trade_date, decision_action,
                            decision_confidence, decision_reasoning,
                            live, provider, model, input_tokens, output_tokens,
-                           estimated_cost_usd, created_at, elapsed_s
+                           estimated_cost_usd, created_at, elapsed_s, auth_kind, cost_summary
                     FROM sessions
                     WHERE ticker = ?
                     ORDER BY created_at DESC
@@ -396,7 +457,7 @@ def list_sessions(*, limit: int = 50, ticker: Optional[str] = None) -> list[Sess
                     SELECT id, ticker, trade_date, decision_action,
                            decision_confidence, decision_reasoning,
                            live, provider, model, input_tokens, output_tokens,
-                           estimated_cost_usd, created_at, elapsed_s
+                           estimated_cost_usd, created_at, elapsed_s, auth_kind, cost_summary
                     FROM sessions
                     ORDER BY created_at DESC
                     LIMIT ?
@@ -420,6 +481,8 @@ def list_sessions(*, limit: int = 50, ticker: Optional[str] = None) -> list[Sess
                 estimated_cost_usd=row["estimated_cost_usd"],
                 created_at=row["created_at"],
                 elapsed_s=row["elapsed_s"],
+                auth_kind=row["auth_kind"],
+                cost_summary=_row_summary(row),
             )
             for row in rows
         ]
@@ -438,7 +501,7 @@ def get_session(session_id: str) -> Optional[SessionDetail]:
                 SELECT id, ticker, trade_date, decision_action,
                        decision_confidence, decision_reasoning,
                        live, provider, model, input_tokens, output_tokens,
-                       estimated_cost_usd, created_at, events_json, elapsed_s
+                       estimated_cost_usd, created_at, events_json, elapsed_s, auth_kind, cost_summary
                 FROM sessions
                 WHERE id = ?
                 """,
@@ -468,6 +531,9 @@ def get_session(session_id: str) -> Optional[SessionDetail]:
             estimated_cost_usd=row["estimated_cost_usd"],
             created_at=row["created_at"],
             elapsed_s=row["elapsed_s"],
+            auth_kind=row["auth_kind"],
+            # The saved report (if any) wins over a recomputation, so the header agrees with the report panel below it.
+            cost_summary=_row_summary(row) if row["cost_summary"] else (_summary_of(_complete_of(events) or {}) or _row_summary(row)),
             events=events,
         )
     except Exception as exc:  # noqa: BLE001

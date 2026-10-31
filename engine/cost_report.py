@@ -387,6 +387,19 @@ def add_dexter(report: Optional[dict[str, Any]], *, billing: str, provider: Opti
                      basis=report["basis"], extra=report.get("extra_incomplete", []))
 
 
+def summary(report: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Compact list-view digest of a report (what a History card needs), stored with the session so the list never parses events."""
+    if not report:
+        return None
+    t = report["totals"]
+    return {"billing": report["billing"], "basis": report["basis"], "run_state": report.get("run_state"), "complete": t["complete"],
+            "api_estimate_usd": t["api_estimate_usd"], "api_estimate_usd_max": t.get("api_estimate_usd_max"),
+            "api_equivalent_reference_usd": t["api_equivalent_reference_usd"],
+            "api_equivalent_reference_usd_max": t.get("api_equivalent_reference_usd_max"),
+            "external_api_usd": t["external_api_usd"], "price_version": report["price"]["version"],
+            "verified_at": report["price"]["verified_at"]}
+
+
 def brief(report: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """Small totals-only view for the live `cost.usage` event (the per-agent lines ride only on session.complete)."""
     if not report:
@@ -410,7 +423,7 @@ def recompute_for_session(complete: dict[str, Any]) -> Optional[dict[str, Any]]:
     in_t, out_t = _int(complete.get("input_tokens")), _int(complete.get("output_tokens"))
     if in_t is None or out_t is None or not prov:
         return None
-    billing = auth if auth in ("api_key", "oauth", "local") else ("local" if prov == "local" else "api_key")
+    billing = auth if auth in ("api_key", "oauth", "local") else ("local" if prov == "local" else "unknown")   # unknown auth: no figure, never a guess
     led = UsageLedger(provider=prov)
     br = complete.get("usage_breakdown") or {}
     dex = br.get("dexter") if isinstance(br, dict) else None

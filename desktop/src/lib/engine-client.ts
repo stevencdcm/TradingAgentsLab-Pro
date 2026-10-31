@@ -116,6 +116,15 @@ export interface ModelChoice {
   label: string;
   note?: string;
   recommended?: boolean;
+  /** Where the entry came from: the built-in table, the provider's model list (refreshed), or the user's saved choice
+   * that is in neither list (kept so a refresh never silently drops a legacy/custom model). */
+  origin?: 'builtin' | 'api' | 'saved';
+  /** Provider lifecycle (Anthropic): a deprecated model still works but is scheduled for retirement. */
+  deprecated?: boolean;
+  /** The provider marks this model retired: calling it fails. Only ever shown for the user's own saved choice, never offered as usable. */
+  retired?: boolean;
+  /** False = no exact price row in the engine's cost table: cost shows as unknown, never as $0. Absent = not checked. */
+  priced?: boolean;
 }
 
 export const PROVIDER_MODELS: Record<LLMProvider, ModelChoice[]> = {
@@ -126,11 +135,17 @@ export const PROVIDER_MODELS: Record<LLMProvider, ModelChoice[]> = {
     { id: 'gpt-4o',      label: 'gpt-4o',       note: 'Multimodal flagship' },
     { id: 'gpt-4o-mini', label: 'gpt-4o-mini',  note: 'Cheapest', recommended: true },
   ],
+  // Offline fallback. The 5.5 family is listed per platform.claude.com/docs/en/models/overview (2026-10-31); older ids stay so
+  // saved choices keep resolving. The recommended default is unchanged: adding models never switches anyone's default.
   anthropic: [
-    { id: 'claude-fable-5',    label: 'Claude Fable 5',    note: 'Latest release' },
-    { id: 'claude-opus-4-8',   label: 'Claude Opus 4.8',   note: 'Most capable' },
+    { id: 'claude-fable-5-1',  label: 'Claude Fable 5.1',  note: 'Latest, most capable' },
+    { id: 'claude-opus-5-5',   label: 'Claude Opus 5.5',   note: 'Agentic coding and knowledge work' },
+    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', note: 'Speed and intelligence' },
+    { id: 'claude-haiku-5-5',  label: 'Claude Haiku 5.5',  note: 'Lowest cost' },
+    { id: 'claude-fable-5',    label: 'Claude Fable 5',    note: 'Previous release' },
+    { id: 'claude-opus-4-8',   label: 'Claude Opus 4.8',   note: 'Previous release' },
     { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', note: 'Balanced', recommended: true },
-    { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5',  note: 'Cheapest' },
+    { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5',  note: 'Previous release' },
   ],
   openrouter: [
     { id: 'openai/gpt-4o-mini',          label: 'OpenAI · gpt-4o-mini',   note: 'Cheapest', recommended: true },
@@ -473,7 +488,8 @@ export interface CostUsageEvent {
   type: 'cost.usage';
   input_tokens: number;
   output_tokens: number;
-  est_cost_usd: number;
+  /** null = the price is unknown (no exact price row): show nothing, never $0.0000. */
+  est_cost_usd: number | null;
   free: boolean;
 }
 
@@ -991,6 +1007,56 @@ export async function listCodexModels(
     return (await res.json()) as CodexModelsResult;
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** One entry of POST /llm/catalog (engine/model_catalog.py). */
+export interface CatalogModel {
+  id: string;
+  label: string;
+  lifecycle?: string;
+  line?: string | null;
+  retires_at?: string | null;
+  max_tokens?: number | null;
+  thinking_can_be_disabled?: boolean | null;
+  priced?: boolean;
+}
+
+export interface ModelCatalogResult {
+  ok: boolean;
+  provider?: string;
+  /** live = just fetched; cache = engine cache; stale = refresh failed, last good list kept; unavailable; unsupported. */
+  source?: 'live' | 'cache' | 'stale' | 'unavailable' | 'unsupported';
+  /** Epoch seconds of the successful fetch the list came from. */
+  fetched_at?: number | null;
+  models?: CatalogModel[];
+  /** Ids the provider explicitly marks retired (authoritative: never usable, even from an older cached list). */
+  retired?: string[];
+  error?: { code: string; message: string };
+}
+
+/** Provider model list from the provider's official list endpoint, fetched by the engine with the saved key
+ * (discovery only: no inference). `refresh` bypasses the engine's 15-minute cache. */
+export async function fetchModelCatalog(
+  providerConfig: ProviderConfig,
+  refresh = false,
+): Promise<ModelCatalogResult> {
+  const { port, token } = await handshake();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LLM_TEST_TIMEOUT_MS);
+  try {
+    const res = await fetchWithTimeout(`${apiBase(port)}/llm/catalog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader(token) },
+      body: JSON.stringify({ provider_config: providerConfig, refresh }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false, error: { code: 'http', message: `${res.status} ${res.statusText}` } };
+    return (await res.json()) as ModelCatalogResult;
+  } catch (err) {
+    return { ok: false, error: { code: 'network', message: err instanceof Error ? err.message : String(err) } };
   } finally {
     clearTimeout(timer);
   }

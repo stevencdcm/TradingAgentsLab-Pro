@@ -132,6 +132,11 @@ class UsageLedger:
         ln = self._lines.setdefault(key, _Line(stage, agent, provider, model, model, None, "short"))
         ln.unmeasured = True
 
+    def has_usage_gap(self) -> bool:
+        """True when some finished call reported no usage numbers (or a stage could not be measured): measured totals are then a
+        LOWER bound, so a budget hold must not be derived from them alone."""
+        return any(ln.nousage_calls > 0 or ln.unmeasured for ln in self._lines.values())
+
     def __bool__(self) -> bool:
         return bool(self._lines)
 

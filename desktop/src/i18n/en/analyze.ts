@@ -7,6 +7,7 @@ export const analyze = {
   'analyze.option.oauth': '{provider} (OAuth)',
   'analyze.option.configure': '{provider} (configure in Settings)',
   'analyze.option.stub': 'Stub debate (no LLM configured)',
+  'analyze.err.retiredModel': 'This run did not start: the saved model {model} has been retired by the provider. Pick another model and try again.',
   'analyze.model.aria': 'Select model',
   'analyze.model.lastUsedOffline': '{model} (last used, runtime offline)',
   'analyze.model.recommended': ' (recommended)',

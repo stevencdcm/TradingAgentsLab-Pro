@@ -1,5 +1,10 @@
 /** Model-choice notes shown next to model names in the Analyze dropdown (keyed by the registry's English text). */
 export const modelNotes = {
+  'modelNote.agentic': 'Agentic coding and knowledge work',
+  'modelNote.latestMostCapable': 'Latest, most capable',
+  'modelNote.lowestCost': 'Lowest cost',
+  'modelNote.previousRelease': 'Previous release',
+  'modelNote.speedIntelligence': 'Speed and intelligence',
   'modelNote.balanced': 'Balanced',
   'modelNote.balancedCost': 'Balanced, cost-effective',
   'modelNote.cheapest': 'Cheapest',

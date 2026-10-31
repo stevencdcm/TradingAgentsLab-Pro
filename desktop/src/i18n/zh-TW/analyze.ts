@@ -8,6 +8,7 @@ export const analyzeZhTW: Record<keyof typeof analyze, string> = {
   'analyze.option.oauth': '{provider}（OAuth）',
   'analyze.option.configure': '{provider}（請至設定頁設定）',
   'analyze.option.stub': '示範辯論（尚未設定 LLM）',
+  'analyze.err.retiredModel': '未開始分析：已儲存的模型 {model} 已被供應商退役。請改選其他模型後再試。',
   'analyze.model.aria': '選擇模型',
   'analyze.model.lastUsedOffline': '{model}（上次使用，本機執行環境離線）',
   'analyze.model.recommended': '（建議）',

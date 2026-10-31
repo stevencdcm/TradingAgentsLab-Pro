@@ -82,6 +82,12 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6":   {"input": 3.00,  "output": 15.00},
     # Verified 2026-10-30 against https://platform.claude.com/docs/en/about-claude/pricing (Input $2 / Output $10 per MTok).
     "claude-sonnet-5-5":   {"input": 2.00,  "output": 10.00},
+    # Verified 2026-10-31 against the same page. Haiku 5.5 is tiered ($0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above):
+    # the HIGHER tier is stored as a CEILING for CostGuard only (see _CEILING_ONLY: it is never reported as the price). Cache
+    # writes (1.25x / 2x input) and reads are not modelled here; CostGuard's worst case already takes the dearer rate.
+    "claude-opus-5-5":     {"input": 4.00,  "output": 20.00},
+    "claude-haiku-5-5":    {"input": 0.50,  "output": 2.50},
+    "claude-fable-5-1":    {"input": 10.00, "output": 50.00},
     "claude-opus-4-7":     {"input": 15.00, "output": 75.00},  # kept for backward compat
     "claude-opus-4-8":     {"input": 15.00, "output": 75.00},  # conservative ceiling; verify vs billing
     "claude-fable-5":      {"input": 15.00, "output": 75.00},  # new model; conservative ceiling
@@ -165,13 +171,40 @@ def usage_detail(usage: Any, *, model: Any = None, service_tier: Any = None) -> 
     }
 
 
-def is_priced(model: str) -> bool:
+# Rows in the table that are a CEILING only, not the exact price: the provider's price depends on a per-request property the
+# aggregated token counts here cannot reveal (Haiku 5.5: $0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above). CostGuard
+# still reserves against the row (a bound), but nothing shown or stored as a cost may present it as the price: for these
+# models the displayed/settled cost is UNKNOWN (null), never the ceiling and never 0.
+_CEILING_ONLY: frozenset[str] = frozenset({"claude-haiku-5-5"})
+
+
+def has_cost_ceiling(model: str) -> bool:
+    """True when CostGuard can bound this model's spend (exact price OR ceiling-only row)."""
     return model in _COST_PER_M_TOKENS
 
 
+def is_priced(model: str) -> bool:
+    """True only for an EXACT price. Ceiling-only rows are not priced for display, reports and settlement."""
+    return model in _COST_PER_M_TOKENS and model not in _CEILING_ONLY
+
+
+def ceiling_cost(model: str, in_tokens: int, out_tokens: int) -> float | None:
+    """Upper bound (USD) CostGuard may hold for measured usage of a model that only has a CEILING row (see _CEILING_ONLY): the
+    high-tier rates applied to the measured tokens. Never shown or stored as a price. None = the table has no row at all.
+    (The app sends no cache_control, so cache-write surcharges do not apply; revisit if prompt caching is ever enabled.)"""
+    rates = _COST_PER_M_TOKENS.get(model)
+    if rates is None:
+        return None
+    return (max(0, in_tokens) * rates["input"] + max(0, out_tokens) * rates["output"]) / 1_000_000
+
+
+def is_ceiling_only(model: str) -> bool:
+    return model in _CEILING_ONLY
+
+
 def estimate_cost_or_none(model: str, in_tokens: int, out_tokens: int) -> float | None:
-    """Like estimate_cost, but None (unknown) instead of 0.0 for a model with no price."""
-    return estimate_cost(model, in_tokens, out_tokens) if model in _COST_PER_M_TOKENS else None
+    """Like estimate_cost, but None (unknown) instead of 0.0 for a model with no exact price."""
+    return estimate_cost(model, in_tokens, out_tokens) if is_priced(model) else None
 
 
 def worst_case_job_cost(model: str, total_tokens: int) -> float | None:
@@ -182,7 +215,7 @@ def worst_case_job_cost(model: str, total_tokens: int) -> float | None:
 
 def estimate_cost(model: str, in_tokens: int, out_tokens: int) -> float:
     rates = _COST_PER_M_TOKENS.get(model)
-    if rates is None:
+    if rates is None or model in _CEILING_ONLY:   # unknown / ceiling-only: no exact figure to report (callers gate on is_priced)
         return 0.0
     return (in_tokens * rates["input"] + out_tokens * rates["output"]) / 1_000_000
 

@@ -56,7 +56,7 @@ export interface DataProviderEventDetail {
 }
 
 export interface CostUsageEventDetail {
-  est_cost_usd: number;
+  est_cost_usd: number | null;
   free: boolean;
 }
 

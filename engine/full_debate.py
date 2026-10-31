@@ -525,6 +525,33 @@ def _run_cost(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") -> f
         return 0.0
 
 
+def _ceiling_hold(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") -> tuple[bool, Optional[float]]:
+    """(hold, bound) for a per-token run whose cost is reported as unknown ONLY because a model (deep or quick) has a
+    ceiling-only price row (Haiku 5.5): CostGuard keeps holding the budget at the measured upper bound instead of releasing
+    it as NULL. Any model with no row at all keeps the old unknown/NULL path (it needs an explicit override to run)."""
+    if auth_kind in ("oauth", "local"):
+        return False, None
+    try:
+        from .llm_providers import ceiling_cost, has_cost_ceiling, is_ceiling_only
+
+        models = [m for m in (merged.get("deep_think_llm"), merged.get("quick_think_llm")) if m]
+        if not models or not all(has_cost_ceiling(m) for m in models) or not any(is_ceiling_only(m) for m in models):
+            return False, None
+        # Measured totals are a bound only when every call reported usage and none is still in flight: a call with no usage
+        # numbers, an unmetered in-flight call, or calls recorded with zero tokens are MISSING data, not a true zero -> hold
+        # the reserved estimate (bound None). Only "no call ever happened" releases at 0.
+        ledger = getattr(meter, "ledger", None)
+        if (ledger is not None and ledger.has_usage_gap()) or getattr(meter, "inflight", 0) > 0:
+            return True, None
+        if meter.input_tokens == 0 and meter.output_tokens == 0 and getattr(meter, "calls", 0) > 0:
+            return True, None
+        # The run may bill either client: bound it by the dearer of the two at the measured totals.
+        bounds = [ceiling_cost(m, meter.input_tokens, meter.output_tokens) for m in models]
+        return True, max(b for b in bounds if b is not None)
+    except Exception:  # noqa: BLE001 - pricing is best-effort; on failure the reserved estimate is held (bound None)
+        return True, None
+
+
 def _finalize_reservation(
     reservation_id: Optional[str],
     auth_kind: str,
@@ -546,9 +573,12 @@ def _finalize_reservation(
         from . import cost_guard as _cost_guard
 
         # A per-token run on a model (deep OR quick) with no verified price has an UNKNOWN cost: settle as NULL, not 0.
+        known = _run_cost_known(auth_kind, merged) and not unknown
+        hold, ceiling = _ceiling_hold(auth_kind, merged, meter) if not known else (False, None)
         _cost_guard.finalize_reservation(
             reservation_id,
-            actual_cost_usd=_run_cost(auth_kind, merged, meter) if (_run_cost_known(auth_kind, merged) and not unknown) else None,
+            actual_cost_usd=_run_cost(auth_kind, merged, meter) if known else None,
+            **({"hold_ceiling": True, "ceiling_cost_usd": ceiling} if hold else {}),
         )
     except Exception as exc:  # noqa: BLE001 — finalize is best-effort
         sys.stderr.write(
@@ -623,7 +653,7 @@ async def full_debate(
             "output_tokens": meter.output_tokens,
             # Cost is finalized against the provider on session.complete; during
             # the run we report tokens and let the UI's cost-guard poll fill USD.
-            "est_cost_usd": 0.0,
+            "est_cost_usd": 0.0 if _run_cost_known(auth_kind, merged) else None,   # unknown price -> null, not a $0.0000 tick
             "free": merged.get("llm_provider") in ("local", "openai_compatible"),
         }
         try:

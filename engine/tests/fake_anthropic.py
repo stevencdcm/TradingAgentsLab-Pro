@@ -8,6 +8,31 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+# Haiku 5.5 is included as the SAFE superset: officially it rejects sampling parameters but accepts forced tool_choice, so a
+# request that passes the strict rules for every model is valid for it too.
+STRICT_55 = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+
+
+def reject_55_request(body: dict) -> str | None:
+    """Request settings Claude 5.5 models answer with HTTP 400 (migration guides for Opus 5.5 / Sonnet 5.5): sampling
+    parameters, thinking disabled / manual budget, forced tool_choice (any / tool), a trailing assistant prefill."""
+    if not str(body.get("model", "")).startswith(STRICT_55):
+        return None
+    for k in ("temperature", "top_p", "top_k"):
+        if k in body:
+            return f"{k}: not supported for this model"
+    th = body.get("thinking")
+    if isinstance(th, dict) and th.get("type") in ("disabled", "enabled"):
+        return f"thinking.type={th.get('type')}: not supported for this model"
+    tc = body.get("tool_choice")
+    if isinstance(tc, dict) and tc.get("type") in ("any", "tool"):
+        return 'tool_choice: type "tool" and "any" are not supported for this model.'
+    msgs = body.get("messages") or []
+    if msgs and msgs[-1].get("role") == "assistant":
+        return "assistant prefill is not supported for this model"
+    return None
+
+
 class FakeAnthropic:
     def __init__(self, key: str = "sk-ant-test-key-1234567890"):
         self.bodies: list[dict] = []
@@ -23,6 +48,15 @@ class FakeAnthropic:
                 body = json.loads(self.rfile.read(n) or b"{}")
                 me.bodies.append(body)
                 me.headers.append({k.lower(): v for k, v in self.headers.items()})
+                bad = reject_55_request(body)
+                if bad:      # what the real API answers for a Claude 5.5 request it does not accept (platform docs, 2026-10)
+                    raw = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": bad}}).encode()
+                    self.send_response(400)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
                 ok = key in (self.headers.get("x-api-key"), (self.headers.get("authorization") or "").removeprefix("Bearer "))
                 tool = [t for t in body.get("tools", [])]
                 content = ([{"type": "tool_use", "id": "toolu_1", "name": tool[0]["name"], "input": {}}] if tool and body.get("tool_choice")

@@ -23,6 +23,7 @@ export const batch = {
   'batch.summary.failed': 'Failed: {n}',
   'batch.summary.cost': 'Cost: {cost}',
   'batch.err.noProvider': 'No LLM provider configured. Open Settings → LLM Providers.',
+  'batch.err.retiredModel': 'No batch started: the saved model {model} has been retired by the provider. Pick another model in Analyze and try again.',
   'batch.err.costCapShort': 'Cost guard cap reached',
   'batch.err.costBlocked': 'Cost guard blocked {ticker}, adjust caps in Settings or stop the batch.',
   'batch.secondsShort': '{n}s',

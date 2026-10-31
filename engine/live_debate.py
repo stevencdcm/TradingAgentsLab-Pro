@@ -39,6 +39,8 @@ from .llm_providers import (
     ProviderConfig,
     adapter_for,
     estimate_cost,
+    ceiling_cost,
+    is_ceiling_only,
     is_priced,
 )
 
@@ -721,7 +723,8 @@ async def live_debate(
                 "type": "cost.usage",
                 "input_tokens": state.input_tokens,
                 "output_tokens": state.output_tokens,
-                "est_cost_usd": round(running_cost, 4),
+                # Unknown (no exact price: unpriced model or a ceiling-only one) is null, never a $0.0000 tick.
+                "est_cost_usd": None if (not free and not is_priced(config.model)) else round(running_cost, 4),
                 "free": free,
             }
             try:
@@ -815,9 +818,19 @@ async def live_debate(
                     if is_priced(config.model)
                     else None            # unknown price: settle as NULL (unknown), never as a fake 0
                 )
-                _cost_guard.finalize_reservation(
-                    reservation_id, actual_cost_usd=final_cost
+                # A ceiling-only model (Haiku 5.5) reports unknown cost but its budget is HELD at the measured upper bound, so the
+                # daily/weekly/monthly caps keep counting it (releasing it at NULL would let caps never fill).
+                hold = config.auth_kind == "api_key" and is_ceiling_only(config.model)
+                # Measured totals are only a bound when every finished call reported usage. A call WITHOUT usage numbers
+                # (missing) must not look like a true zero: no bound -> the reserved estimate stays held. A genuine zero
+                # (no call ever finished) releases at 0.
+                gap = bool(ledger is not None and ledger.has_usage_gap())
+                extra = (
+                    {"hold_ceiling": True,
+                     "ceiling_cost_usd": None if gap else ceiling_cost(config.model, state.input_tokens, state.output_tokens)}
+                    if hold else {}
                 )
+                _cost_guard.finalize_reservation(reservation_id, actual_cost_usd=final_cost, **extra)
             except Exception as exc:  # noqa: BLE001 — finalize is best-effort
                 sys.stderr.write(
                     f"[live_debate] cost_guard finalize failed: "

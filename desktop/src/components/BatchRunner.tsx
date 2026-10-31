@@ -19,6 +19,7 @@
  * once-for-all that auto-applies to the rest of the queue.
  */
 
+import { isRetiredModel, resolveSelectedModel } from '../lib/model-catalog';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './BatchRunner.module.css';
 import { useI18n, type I18n } from '../i18n';
@@ -26,7 +27,6 @@ import { describeEngineError } from '../lib/engine-errors';
 import {
   PROVIDER_PRIORITY,
   PROVIDER_SECRET_KEY,
-  getRecommendedModel,
   type DebateEvent,
   type LLMProvider,
   type StreamHandle,
@@ -120,6 +120,15 @@ function BatchRunner({ tickers, onRunningChange }: BatchRunnerProps) {
     const active = await resolveActiveProvider();
     if (!active.provider) {
       setBatchError(t('batch.err.noProvider'));
+      runningRef.current = false;
+      setPhase('cancelled');
+      return;
+    }
+
+    // A saved model the provider has retired would fail every ticker: stop before starting and say so. The selection is
+    // not changed for the user (pick another one in Analyze).
+    if (isRetiredModel(active.provider, active.model)) {
+      setBatchError(t('batch.err.retiredModel', { model: active.model }));
       runningRef.current = false;
       setPhase('cancelled');
       return;
@@ -411,7 +420,7 @@ interface ActiveProvider {
  * still exist, otherwise fall back to the priority order's first
  * configured provider. OAuth wins over API key on the OpenAI path.
  */
-async function resolveActiveProvider(): Promise<ActiveProvider> {
+export async function resolveActiveProvider(): Promise<ActiveProvider> {
   const [secrets, oauth] = await Promise.all([
     listSecrets().catch(() => []),
     getOpenAIOAuthStatus().catch(() => ({ connected: false } as const)),
@@ -442,7 +451,8 @@ async function resolveActiveProvider(): Promise<ActiveProvider> {
     null;
   const openaiAuthKind: 'oauth' | 'api_key' =
     oauth.connected ? 'oauth' : 'api_key';
-  const model = provider ? getRecommendedModel(provider, openaiAuthKind) : '';
+  // The user's saved model for this provider (shared with the Analyze picker and its refreshed catalog), else the recommendation.
+  const model = provider ? resolveSelectedModel(provider, openaiAuthKind) : '';
   return { provider, openaiAuthKind, model };
 }
 

@@ -821,8 +821,13 @@ async def live_debate(
                 # A ceiling-only model (Haiku 5.5) reports unknown cost but its budget is HELD at the measured upper bound, so the
                 # daily/weekly/monthly caps keep counting it (releasing it at NULL would let caps never fill).
                 hold = config.auth_kind == "api_key" and is_ceiling_only(config.model)
+                # Measured totals are only a bound when every finished call reported usage. A call WITHOUT usage numbers
+                # (missing) must not look like a true zero: no bound -> the reserved estimate stays held. A genuine zero
+                # (no call ever finished) releases at 0.
+                gap = bool(ledger is not None and ledger.has_usage_gap())
                 extra = (
-                    {"hold_ceiling": True, "ceiling_cost_usd": ceiling_cost(config.model, state.input_tokens, state.output_tokens)}
+                    {"hold_ceiling": True,
+                     "ceiling_cost_usd": None if gap else ceiling_cost(config.model, state.input_tokens, state.output_tokens)}
                     if hold else {}
                 )
                 _cost_guard.finalize_reservation(reservation_id, actual_cost_usd=final_cost, **extra)

@@ -537,6 +537,14 @@ def _ceiling_hold(auth_kind: str, merged: Dict[str, Any], meter: "_TokenMeter") 
         models = [m for m in (merged.get("deep_think_llm"), merged.get("quick_think_llm")) if m]
         if not models or not all(has_cost_ceiling(m) for m in models) or not any(is_ceiling_only(m) for m in models):
             return False, None
+        # Measured totals are a bound only when every call reported usage and none is still in flight: a call with no usage
+        # numbers, an unmetered in-flight call, or calls recorded with zero tokens are MISSING data, not a true zero -> hold
+        # the reserved estimate (bound None). Only "no call ever happened" releases at 0.
+        ledger = getattr(meter, "ledger", None)
+        if (ledger is not None and ledger.has_usage_gap()) or getattr(meter, "inflight", 0) > 0:
+            return True, None
+        if meter.input_tokens == 0 and meter.output_tokens == 0 and getattr(meter, "calls", 0) > 0:
+            return True, None
         # The run may bill either client: bound it by the dearer of the two at the measured totals.
         bounds = [ceiling_cost(m, meter.input_tokens, meter.output_tokens) for m in models]
         return True, max(b for b in bounds if b is not None)

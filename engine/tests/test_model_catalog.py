@@ -3,6 +3,7 @@ good list, auth errors never echo a credential, only GET list requests (no infer
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,15 +42,20 @@ class FakeCatalogServer:
             def do_GET(self):  # noqa: N802
                 u = urlparse(self.path)
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}
-                me.requests.append({"method": "GET", "path": u.path, "query": q, "headers": {k.lower(): v for k, v in self.headers.items()}})
+                multi = parse_qs(u.query)
+                me.requests.append({"method": "GET", "path": u.path, "query": q, "multi": multi, "raw_query": u.query, "headers": {k.lower(): v for k, v in self.headers.items()}})
                 if me.fail:
                     return self._send(me.fail, {"type": "error", "error": {"type": "x", "message": "echo " + (self.headers.get("x-api-key") or "")}})
                 if self.headers.get("x-api-key") != KEY:
                     return self._send(401, {"type": "error", "error": {"message": "invalid x-api-key"}})
-                ids = [m["id"] for m in me.models]
+                # Official behaviour: without `lifecycle` only active + deprecated models are listed; retired ones appear only
+                # when requested explicitly.
+                wanted = set(multi.get("lifecycle[]") or multi.get("lifecycle") or ["active", "deprecated"])
+                visible = [m for m in me.models if (m.get("lifecycle") or "active") in wanted]
+                ids = [m["id"] for m in visible]
                 start = ids.index(q["after_id"]) + 1 if q.get("after_id") in ids else 0
-                chunk = me.models[start:start + me.page_size]
-                has_more = start + me.page_size < len(me.models)
+                chunk = visible[start:start + me.page_size]
+                has_more = start + me.page_size < len(visible)
                 last = chunk[-1]["id"] if chunk else None
                 if me.stuck_cursor:
                     has_more, last = True, "same"
@@ -301,3 +307,50 @@ def test_a_truly_empty_answer_still_keeps_the_previous_list(srv):
     srv.models = []
     out = model_catalog.list_models("anthropic", KEY, now=2.0, force_refresh=True)
     assert out["source"] == "stale" and out["error"]["code"] == "empty" and out["models"]
+
+
+# ---- lifecycle parameter (official format) and cache-hit consistency -----------------------------------------------------
+
+
+def test_the_request_asks_for_retired_models_explicitly_in_the_official_repeated_key_format(srv):
+    model_catalog.list_models("anthropic", KEY)
+    assert srv.requests[0]["multi"]["lifecycle[]"] == ["active", "deprecated", "retired"]
+    assert srv.requests[0]["query"]["limit"] == "1000"
+
+
+def test_our_lifecycle_encoding_is_what_the_official_sdk_sends(srv):
+    """The official SDK's List Models call encodes `lifecycle=[...]` as repeated `lifecycle[]` keys; ours must decode to the same list."""
+    import anthropic
+
+    async def go():
+        c = anthropic.AsyncAnthropic(api_key=KEY, base_url=srv.url)
+        try:
+            await c.models.list(limit=1000, lifecycle=["active", "deprecated", "retired"])
+        except anthropic.APIStatusError:
+            pass                      # only the encoded query matters here; the fake may answer 401 to the SDK's auth header
+        finally:
+            await c.close()
+
+    asyncio.run(go())
+    sdk_raw = srv.requests[0]["raw_query"]
+    sdk_q = parse_qs(sdk_raw)
+    srv.requests.clear()
+    model_catalog.list_models("anthropic", KEY)
+    ours = parse_qs(srv.requests[0]["raw_query"])
+    assert sdk_q["lifecycle[]"] == ours["lifecycle[]"] == ["active", "deprecated", "retired"]
+
+
+def test_real_retirement_is_visible_because_we_request_it(srv):
+    """Without the lifecycle request the official API would silently omit a retired model (it would just vanish)."""
+    srv.models.append(_model("claude-gone-1", lifecycle="retired"))
+    out = model_catalog.list_models("anthropic", KEY)
+    assert out["retired"] == ["claude-gone-1"] and "claude-gone-1" not in [m["id"] for m in out["models"]]
+
+
+def test_all_retired_is_the_same_error_on_a_cache_hit(srv):
+    srv.models = [_model("claude-a", lifecycle="retired")]
+    live = model_catalog.list_models("anthropic", KEY, now=1.0)
+    hit = model_catalog.list_models("anthropic", KEY, now=2.0)
+    assert live["source"] == "live" and hit["source"] == "cache"
+    for r in (live, hit):
+        assert r["ok"] is False and r["models"] == [] and r["error"]["code"] == "all_retired" and r["retired"] == ["claude-a"]

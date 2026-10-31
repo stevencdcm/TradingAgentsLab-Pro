@@ -159,3 +159,77 @@ def test_pro_finalize_holds_the_ceiling_for_haiku_and_not_for_unrelated_unknowns
     assert fd._ceiling_hold("api_key", {"deep_think_llm": "claude-opus-9-9", "quick_think_llm": M}, _Meter(1, 1)) == (False, None)
     assert fd._ceiling_hold("oauth", merged, _Meter(1, 1)) == (False, None)
     assert fd._ceiling_hold("api_key", {"deep_think_llm": "claude-opus-5-5", "quick_think_llm": "claude-opus-5-5"}, _Meter(1, 1)) == (False, None)
+
+
+# ---- missing usage vs a true zero (review: usage gaps must not release the hold) -----------------------------------------
+
+
+class _ScriptAdapter:
+    def __init__(self, script):
+        self._script = list(script)
+
+    async def open(self, *, api_key: str) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+    async def complete(self, **_kw):
+        item = self._script.pop(0) if self._script else ("ok", 10, 5)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+async def _drain_live(monkeypatch, rid, script):
+    from engine import live_debate
+
+    monkeypatch.setattr(live_debate, "adapter_for", lambda _c: _ScriptAdapter(script))
+    return [e async for e in live_debate.live_debate(ticker="AAPL", trade_date="2026-10-30", summary=None, headlines=None,
+                                                    config=_cfg(), reservation_id=rid)]
+
+
+def test_a_call_without_usage_numbers_keeps_the_reserved_estimate_held(tmp_db, monkeypatch):
+    initialize()
+    r = _res()
+    script = [("ok", 10, 5)] * 3 + [("no usage", 0, 0)] + [("ok", 10, 5)] * 8    # one finished call reported nothing
+    asyncio.run(_drain_live(monkeypatch, r.reservation_id, script))
+    assert get_state()[0].daily_usd == pytest.approx(r.est_cost_usd)               # MISSING data: not the (low) measured bound
+
+
+def test_complete_usage_is_held_at_the_measured_bound_not_the_estimate(tmp_db, monkeypatch):
+    initialize()
+    r = _res()
+    asyncio.run(_drain_live(monkeypatch, r.reservation_id, [("ok", 10, 5)] * 12))
+    assert get_state()[0].daily_usd == pytest.approx(ceiling_cost(M, 12 * 10, 12 * 5))
+    assert get_state()[0].daily_usd < r.est_cost_usd
+
+
+def test_a_true_zero_nothing_ran_releases_the_hold(tmp_db, monkeypatch):
+    initialize()
+    r = _res()
+    asyncio.run(_drain_live(monkeypatch, r.reservation_id, [RuntimeError("provider down")] * 12))
+    assert get_state()[0].daily_usd == 0.0
+
+
+def test_pro_missing_usage_vs_true_zero(tmp_db):
+    from engine import full_debate as fd
+    from engine.cost_report import UsageLedger
+
+    merged = {"deep_think_llm": M, "quick_think_llm": M}
+
+    class Meter(_Meter):
+        def __init__(self, i, o, calls=0, inflight=0, ledger=None):
+            super().__init__(i, o)
+            self.calls, self.inflight, self.ledger = calls, inflight, ledger
+
+    assert fd._ceiling_hold("api_key", merged, Meter(0, 0, calls=0)) == (True, 0.0)            # no call ever happened: true zero
+    assert fd._ceiling_hold("api_key", merged, Meter(0, 0, calls=3)) == (True, None)           # calls finished, no usage: missing
+    assert fd._ceiling_hold("api_key", merged, Meter(500, 50, calls=2, inflight=1)) == (True, None)   # unmetered call in flight
+    gap = UsageLedger(provider="anthropic")
+    gap.record_no_usage(stage="debate", agent="a", provider="anthropic", model=M)
+    assert fd._ceiling_hold("api_key", merged, Meter(500, 50, calls=2, ledger=gap)) == (True, None)
+    ok = UsageLedger(provider="anthropic")
+    ok.record(stage="debate", agent="a", provider="anthropic", model_requested=M, model_billed=M, input_tokens=500, output_tokens=50)
+    hold, bound = fd._ceiling_hold("api_key", merged, Meter(500, 50, calls=1, ledger=ok))
+    assert hold and bound == pytest.approx(ceiling_cost(M, 500, 50))

@@ -61,7 +61,7 @@ class _Spec:
 # ---- helpers ---------------------------------------------------------------
 
 
-def _get_json(client: httpx.Client, url: str, *, headers: dict[str, str], params: Optional[dict] = None) -> Any:
+def _get_json(client: httpx.Client, url: str, *, headers: dict[str, str], params: Any = None) -> Any:
     try:
         resp = client.get(url, headers=headers, params=params)
     except httpx.TimeoutException as exc:
@@ -120,13 +120,17 @@ def parse_anthropic_page(body: Any) -> tuple[list[dict], bool, Optional[str]]:
 
 def _fetch_anthropic(client: httpx.Client, base: str, key: str) -> list[dict]:
     headers = {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "accept": "application/json"}
+    # Official behaviour: with no `lifecycle` the list holds only active + deprecated models, and retired ones appear only when
+    # requested explicitly (array of up to 3 values). Encoded exactly as the official anthropic SDK does it (`lifecycle[]=` repeated,
+    # verified against the installed SDK in the tests). Ask for all three so the answer is authoritative about what is retired.
+    lifecycle = [("lifecycle[]", "active"), ("lifecycle[]", "deprecated"), ("lifecycle[]", "retired")]
     models: list[dict] = []
     after: Optional[str] = None
     seen: set[str] = set()
     for _ in range(_MAX_PAGES):
-        params: dict[str, Any] = {"limit": _PAGE_LIMIT}
+        params: list[tuple[str, Any]] = [("limit", _PAGE_LIMIT), *lifecycle]
         if after:
-            params["after_id"] = after
+            params.append(("after_id", after))
         page, has_more, last_id = parse_anthropic_page(
             _get_json(client, f"{base.rstrip('/')}/v1/models", headers=headers, params=params))
         models.extend(page)
@@ -295,7 +299,9 @@ def list_models(provider: str, credential: str, *, force_refresh: bool = False, 
     key = (provider, _fingerprint(credential))
     cached = _cache.get(key)
     if cached and not force_refresh and clock - cached[0] < CACHE_TTL_S:
-        return _result(provider, "cache", cached[0], cached[1], cached[2])
+        # Same answer as the live one that filled the cache: "everything retired" is an error state, also on a cache hit.
+        return _result(provider, "cache", cached[0], cached[1], cached[2],
+                       None if cached[1] else CatalogError("all_retired", "the provider lists every model as retired"))
 
     def fall_back(err: CatalogError) -> dict:
         if cached and cached[1]:

@@ -11,9 +11,11 @@
  * for it, and listing says nothing about price (`priced === false` means cost will show as unknown).
  */
 
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import {
   fetchModelCatalog,
+  getAvailableModels,
+  getModelStorageKey,
   PROVIDER_MODELS,
   PROVIDER_SECRET_KEY,
   type CatalogModel,
@@ -21,7 +23,8 @@ import {
   type ModelChoice,
   type ProviderConfig,
 } from './engine-client';
-import { getSecret } from './secrets';
+import { cachedCodexModels } from './codex-models';
+import { getSecret, listSecrets, onSecretsChanged } from './secrets';
 
 const CACHE_PREFIX = 'tal:model-catalog:v1:';
 /** Providers whose official list endpoint the engine uses (engine/model_catalog.py SPECS). Others: "not supported". */
@@ -40,9 +43,12 @@ export interface CatalogState {
   error: { code: string; message: string } | null;
   /** True when the visible list is older than the failed refresh (engine kept the last good list). */
   stale: boolean;
+  /** Which saved key the list was fetched with (update time + hint of its Settings entry; never the key). A different
+   * stamp means the key was replaced or removed, so the list belongs to another account and is discarded. */
+  credStamp: string | null;
 }
 
-const EMPTY: CatalogState = { models: [], fetchedAt: null, status: 'idle', error: null, stale: false };
+const EMPTY: CatalogState = { models: [], fetchedAt: null, status: 'idle', error: null, stale: false, credStamp: null };
 
 const states = new Map<LLMProvider, CatalogState>();
 const listeners = new Set<() => void>();
@@ -55,13 +61,13 @@ function readCache(provider: LLMProvider): CatalogState {
   try {
     const raw = localStorage.getItem(CACHE_PREFIX + provider);
     if (!raw) return EMPTY;
-    const parsed = JSON.parse(raw) as { models?: unknown; fetchedAt?: unknown };
+    const parsed = JSON.parse(raw) as { models?: unknown; fetchedAt?: unknown; credStamp?: unknown };
     if (!Array.isArray(parsed.models)) return EMPTY;
     const models = parsed.models.filter(
       (m): m is CatalogModel => !!m && typeof m === 'object' && typeof (m as CatalogModel).id === 'string',
     );
     const fetchedAt = typeof parsed.fetchedAt === 'number' ? parsed.fetchedAt : null;
-    return { ...EMPTY, models, fetchedAt };
+    return { ...EMPTY, models, fetchedAt, credStamp: typeof parsed.credStamp === 'string' ? parsed.credStamp : null };
   } catch {
     return EMPTY;
   }
@@ -69,7 +75,7 @@ function readCache(provider: LLMProvider): CatalogState {
 
 function writeCache(provider: LLMProvider, s: CatalogState): void {
   try {
-    localStorage.setItem(CACHE_PREFIX + provider, JSON.stringify({ models: s.models, fetchedAt: s.fetchedAt }));
+    localStorage.setItem(CACHE_PREFIX + provider, JSON.stringify({ models: s.models, fetchedAt: s.fetchedAt, credStamp: s.credStamp }));
   } catch {
     /* storage unavailable: the in-memory list still works for this session */
   }
@@ -96,13 +102,47 @@ async function catalogConfig(provider: LLMProvider): Promise<ProviderConfig | nu
   return { provider, auth: { type: 'api_key', api_key: apiKey } };
 }
 
+/** Identity of the saved key for this provider as Settings knows it (never the key). null = no key saved / unknown. */
+async function credentialStamp(provider: LLMProvider): Promise<string | null> {
+  const entry = (await listSecrets()).find((e) => e.key === PROVIDER_SECRET_KEY[provider]);
+  return entry ? `${entry.updatedAt}|${entry.hint}` : null;
+}
+
+function forget(provider: LLMProvider): void {
+  try {
+    localStorage.removeItem(CACHE_PREFIX + provider);
+  } catch {
+    /* storage unavailable */
+  }
+  setState(provider, EMPTY);
+}
+
+/**
+ * Drop the cached list when the saved key changed (replaced or deleted): a list fetched with one account's key must never
+ * be shown, or kept as the "last good" fallback, for another. If the key identity cannot be read, nothing is dropped.
+ */
+export async function validateCatalogCredential(provider: LLMProvider): Promise<void> {
+  const cur = getCatalogState(provider);
+  if (cur.models.length === 0 && cur.credStamp === null) return;
+  let stamp: string | null;
+  try {
+    stamp = await credentialStamp(provider);
+  } catch {
+    return;
+  }
+  if (stamp !== cur.credStamp) forget(provider);
+}
+
 /** Ask the provider for its current model list. One refresh at a time per provider; never throws. */
 export async function refreshCatalog(provider: LLMProvider): Promise<void> {
   if (!CATALOG_PROVIDERS.has(provider)) return;
+  if (getCatalogState(provider).status === 'loading') return;
+  await validateCatalogCredential(provider);         // a replaced key must not inherit the previous key's list
   const before = getCatalogState(provider);
   if (before.status === 'loading') return;
   setState(provider, { ...before, status: 'loading' });
   try {
+    const stamp = await credentialStamp(provider).catch(() => null);
     const cfg = await catalogConfig(provider);
     if (!cfg) {
       setState(provider, { ...before, status: 'idle', error: { code: 'no_credential', message: 'no saved key for this provider' } });
@@ -111,14 +151,14 @@ export async function refreshCatalog(provider: LLMProvider): Promise<void> {
     const res = await fetchModelCatalog(cfg, true);
     const models = res.models ?? [];
     if (res.ok && models.length > 0 && (res.source === 'live' || res.source === 'cache')) {
-      const next: CatalogState = { models, fetchedAt: res.fetched_at ?? Date.now() / 1000, status: 'idle', error: null, stale: false };
+      const next: CatalogState = { models, fetchedAt: res.fetched_at ?? Date.now() / 1000, status: 'idle', error: null, stale: false, credStamp: stamp };
       writeCache(provider, next);
       setState(provider, next);
       return;
     }
     // Failure (or the engine's own stale copy): keep the best list we have, say why it is not fresh.
     const keep = before.models.length > 0 ? before : models.length > 0
-      ? { ...before, models, fetchedAt: res.fetched_at ?? before.fetchedAt }
+      ? { ...before, models, fetchedAt: res.fetched_at ?? before.fetchedAt, credStamp: stamp }
       : before;
     setState(provider, {
       ...keep,
@@ -192,6 +232,12 @@ export function useModelCatalog(provider: LLMProvider | null): ModelCatalogHook 
   const refresh = useCallback(() => {
     if (provider) void refreshCatalog(provider);
   }, [provider]);
+  // Check the cached list against the saved key now and whenever Settings changes a secret.
+  useEffect(() => {
+    if (!provider || !CATALOG_PROVIDERS.has(provider)) return undefined;
+    void validateCatalogCredential(provider);
+    return onSecretsChanged(() => void validateCatalogCredential(provider));
+  }, [provider]);
   return { ...state, supported: !!provider && CATALOG_PROVIDERS.has(provider), refresh };
 }
 
@@ -203,4 +249,25 @@ export function catalogChoices(provider: LLMProvider, savedId?: string | null): 
 export function _resetModelCatalogForTests(): void {
   states.clear();
   emit();
+}
+
+/**
+ * The model a non-interactive run (Batch) should use: the user's saved choice for this provider when it is still selectable,
+ * else the list's recommended entry. Same sources as the Analyze picker (built-in table + refreshed provider list + the saved
+ * id itself), so a model picked in Analyze, including a newly listed 5.5 one or a legacy id, is what Batch runs. Never writes
+ * the selection: nothing is switched automatically. Local runs take their model from the saved local config (returns '').
+ */
+export function resolveSelectedModel(provider: LLMProvider, authKind: 'oauth' | 'api_key' | 'local' | null): string {
+  if (provider === 'local') return '';
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(getModelStorageKey(provider, authKind));
+  } catch {
+    /* storage unavailable: fall through to the recommendation */
+  }
+  const list = provider === 'openai' && authKind === 'oauth'
+    ? cachedCodexModels()                       // retired ChatGPT-sign-in models self-heal to the account default
+    : mergeModelChoices(getAvailableModels(provider, authKind), getCatalogState(provider).models, saved);
+  if (saved && list.some((m) => m.id === saved)) return saved;
+  return (list.find((m) => m.recommended) ?? list[0]).id;
 }

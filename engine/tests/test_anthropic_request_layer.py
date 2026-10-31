@@ -129,5 +129,21 @@ def test_langchain_layer_builds_requests_claude_55_accepts(srv, model):
         llm.with_structured_output(Out).invoke("give x")
     except Exception as exc:  # noqa: BLE001 - parsing the fake's reply may fail; an HTTP 400 on the request must not
         assert "not supported for this model" not in str(exc), exc
-    assert not any("tool_choice" in b and b["tool_choice"].get("type") in ("any", "tool") for b in srv.bodies if model != "claude-haiku-5-5")
+    assert not any("tool_choice" in b and b["tool_choice"].get("type") in ("any", "tool") for b in srv.bodies)
     assert all("temperature" not in b and b.get("thinking", {}).get("type") not in ("disabled", "enabled") for b in srv.bodies)
+
+
+def test_haiku_55_live_debate_reports_cost_unknown_not_the_ceiling(srv):
+    """Haiku 5.5 is tiered: the free engine runs on it, CostGuard can bound it, but the reported cost is UNKNOWN (null)."""
+    from engine.live_debate import live_debate
+
+    cfg = ProviderConfig.from_dict({"provider": "anthropic", "auth": {"type": "api_key", "api_key": KEY}, "model": "claude-haiku-5-5"})
+
+    async def go():
+        return [e async for e in live_debate(ticker="AAPL", trade_date="2026-10-30", summary=None, headlines=None, config=cfg, report_language="zh-TW")]
+
+    events = asyncio.run(go())
+    done = next(e for e in events if e["type"] == "session.complete")
+    assert done["estimated_cost_usd"] is None and done["cost_known"] is False
+    assert all(e.get("est_cost_usd") == 0.0 for e in events if e["type"] == "cost.usage")   # never the 0.50/2.50 ceiling
+    assert srv.bodies and all(set(b) <= ALLOWED for b in srv.bodies)

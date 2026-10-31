@@ -8,7 +8,9 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-STRICT_55 = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5")
+# Haiku 5.5 is included although its restrictions are not documented where we checked: a request that is safe under the
+# strict rules is safe either way.
+STRICT_55 = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 
 
 def reject_55_request(body: dict) -> str | None:

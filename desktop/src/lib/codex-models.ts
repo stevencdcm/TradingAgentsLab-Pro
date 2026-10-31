@@ -50,6 +50,11 @@ function readCache(): ModelChoice[] | null {
   }
 }
 
+/** The Codex list a picker would show right now without any network: last live list, else the built-in fallback. */
+export function cachedCodexModels(): ModelChoice[] {
+  return withRecommended(readCache() ?? OPENAI_CODEX_MODELS);
+}
+
 function writeCache(models: ModelChoice[]): void {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(models));

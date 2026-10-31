@@ -38,6 +38,32 @@ def _supports_effort(model: str) -> bool:
     return (major, minor) >= _EFFORT_MIN_VERSION[family]
 
 
+# langchain-anthropic skips the forced ``tool_choice`` (types any/tool) for the models whose docs say it returns HTTP 400 (Fable 5.1,
+# Opus 5.5, Sonnet 5.5). Haiku 5.5's restrictions were not documented where we checked, and a missing forced tool call only
+# degrades structured output to the existing free-text fallback, so we treat it like the others: never force a tool call.
+_NO_FORCED_TOOL_CHOICE_EXTRA = ("claude-haiku-5-5",)
+
+
+def _extend_forced_tool_choice_guard() -> None:
+    try:
+        from langchain_anthropic import chat_models as _cm
+
+        original = _cm._supports_forced_tool_choice
+        if getattr(original, "_tal_extended", False):
+            return
+
+        def _supports_forced_tool_choice(model: str) -> bool:
+            return original(model) and not str(model).startswith(_NO_FORCED_TOOL_CHOICE_EXTRA)
+
+        _supports_forced_tool_choice._tal_extended = True  # type: ignore[attr-defined]
+        _cm._supports_forced_tool_choice = _supports_forced_tool_choice
+    except Exception:  # noqa: BLE001 - a langchain-anthropic layout change must not break imports; the 3 listed models stay guarded
+        pass
+
+
+_extend_forced_tool_choice_guard()
+
+
 class NormalizedChatAnthropic(ChatAnthropic):
     """ChatAnthropic with normalized content output.
 

@@ -19,6 +19,7 @@
  * once-for-all that auto-applies to the rest of the queue.
  */
 
+import { resolveSelectedModel } from '../lib/model-catalog';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './BatchRunner.module.css';
 import { useI18n, type I18n } from '../i18n';
@@ -26,7 +27,6 @@ import { describeEngineError } from '../lib/engine-errors';
 import {
   PROVIDER_PRIORITY,
   PROVIDER_SECRET_KEY,
-  getRecommendedModel,
   type DebateEvent,
   type LLMProvider,
   type StreamHandle,
@@ -411,7 +411,7 @@ interface ActiveProvider {
  * still exist, otherwise fall back to the priority order's first
  * configured provider. OAuth wins over API key on the OpenAI path.
  */
-async function resolveActiveProvider(): Promise<ActiveProvider> {
+export async function resolveActiveProvider(): Promise<ActiveProvider> {
   const [secrets, oauth] = await Promise.all([
     listSecrets().catch(() => []),
     getOpenAIOAuthStatus().catch(() => ({ connected: false } as const)),
@@ -442,7 +442,8 @@ async function resolveActiveProvider(): Promise<ActiveProvider> {
     null;
   const openaiAuthKind: 'oauth' | 'api_key' =
     oauth.connected ? 'oauth' : 'api_key';
-  const model = provider ? getRecommendedModel(provider, openaiAuthKind) : '';
+  // The user's saved model for this provider (shared with the Analyze picker and its refreshed catalog), else the recommendation.
+  const model = provider ? resolveSelectedModel(provider, openaiAuthKind) : '';
   return { provider, openaiAuthKind, model };
 }
 

@@ -244,4 +244,40 @@ def test_endpoint_flags_models_without_an_exact_price(client, srv):
     body = client.post("/llm/catalog", json={"provider_config": CFG, "refresh": True}).json()
     priced = {m["id"]: m["priced"] for m in body["models"]}
     assert priced["claude-opus-5-5"] is True and priced["claude-sonnet-5-5"] is True
+    assert priced["claude-haiku-5-5"] is False              # tiered price: ceiling for CostGuard only, no exact price to show
     assert priced["claude-opus-9-9"] is False
+
+
+def test_replaced_key_never_sees_the_previous_keys_list_even_when_its_own_fetch_fails(srv):
+    model_catalog.list_models("anthropic", KEY, now=1.0)                        # account A cached
+    srv.fail = 500
+    out = model_catalog.list_models("anthropic", "sk-ant-account-b-0000000000", now=2.0, force_refresh=True)
+    assert out["source"] == "unavailable" and out["models"] == []                # no stale copy of A's list for B
+    srv.fail = None
+    again = model_catalog.list_models("anthropic", KEY, now=3.0)
+    assert again["source"] == "cache" and again["models"]                        # A's cache is intact
+
+
+def test_rotating_back_to_the_old_key_after_the_new_one_failed_auth_is_isolated(srv):
+    bad = "sk-ant-wrong-key-000000000"
+    assert model_catalog.list_models("anthropic", bad)["error"]["code"] == "auth"
+    ok = model_catalog.list_models("anthropic", KEY)
+    assert ok["ok"] and ok["source"] == "live"
+
+
+def test_a_model_retired_between_refreshes_disappears_from_the_next_list(srv):
+    first = model_catalog.list_models("anthropic", KEY, now=1.0)
+    assert "claude-haiku-4-5" in [m["id"] for m in first["models"]]
+    srv.models[-1] = _model("claude-haiku-4-5", lifecycle="retired")
+    second = model_catalog.list_models("anthropic", KEY, now=2.0, force_refresh=True)
+    assert second["source"] == "live" and "claude-haiku-4-5" not in [m["id"] for m in second["models"]]
+    srv.fail = 503                                                               # ...and a later failure keeps THAT list
+    third = model_catalog.list_models("anthropic", KEY, now=3.0, force_refresh=True)
+    assert third["source"] == "stale" and "claude-haiku-4-5" not in [m["id"] for m in third["models"]]
+
+
+def test_only_retired_models_returned_is_an_error_that_keeps_the_last_list(srv):
+    model_catalog.list_models("anthropic", KEY, now=1.0)
+    srv.models = [_model("claude-old-1", lifecycle="retired")]
+    out = model_catalog.list_models("anthropic", KEY, now=2.0, force_refresh=True)
+    assert out["source"] == "stale" and out["error"]["code"] == "empty" and out["models"]

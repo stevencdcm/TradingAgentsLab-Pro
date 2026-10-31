@@ -5,18 +5,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchModelCatalog = vi.fn();
 let secret: string | null = 'sk-ant-secret-value-123';
+let listing: { key: string; hint: string; updatedAt: string }[] = [{ key: 'llm:anthropic', hint: '…123', updatedAt: 'T1' }];
 vi.mock('../../src/lib/engine-client', async () => {
   const actual = await vi.importActual<any>('../../src/lib/engine-client');
   return { ...actual, fetchModelCatalog: (...a: unknown[]) => fetchModelCatalog(...a) };
 });
 vi.mock('../../src/lib/secrets', async () => {
   const actual = await vi.importActual<any>('../../src/lib/secrets');
-  return { ...actual, getSecret: vi.fn(async () => secret) };
+  return { ...actual, getSecret: vi.fn(async () => secret), listSecrets: vi.fn(async () => listing), onSecretsChanged: () => () => {} };
 });
 
 import { PROVIDER_MODELS, getRecommendedModel } from '../../src/lib/engine-client';
 import {
-  _resetModelCatalogForTests, catalogChoices, getCatalogState, mergeModelChoices, refreshCatalog,
+  _resetModelCatalogForTests, catalogChoices, getCatalogState, mergeModelChoices, refreshCatalog, resolveSelectedModel,
+  validateCatalogCredential,
 } from '../../src/lib/model-catalog';
 
 const live = (...ids: string[]) => ids.map((id) => ({ id, label: id.toUpperCase(), lifecycle: 'active', priced: true }));
@@ -34,6 +36,7 @@ beforeEach(() => {
   _resetModelCatalogForTests();
   fetchModelCatalog.mockReset();
   secret = 'sk-ant-secret-value-123';
+  listing = [{ key: 'llm:anthropic', hint: '…123', updatedAt: 'T1' }];
 });
 
 describe('built-in fallback', () => {
@@ -159,5 +162,94 @@ describe('Pro effort guard covers the 5.5 models that document effort', () => {
     expect(effortAllowed('anthropic', 'claude-opus-5-5', 'claude-haiku-5-5')).toBe(false);   // Haiku 5.5: not documented, not sent
     expect(effortAllowed('anthropic', 'claude-opus-5-5', 'claude-haiku-4-5')).toBe(false);
     expect(effortAllowed('openai', 'claude-opus-5-5', 'claude-opus-5-5')).toBe(false);
+  });
+});
+
+
+describe('replacing or removing the saved key', () => {
+  const ok = (...ids: string[]) => ({ ok: true, source: 'live', fetched_at: 100, models: live(...ids) });
+
+  it("a new key discards the old key's list; its failed refresh cannot bring it back", async () => {
+    fetchModelCatalog.mockResolvedValueOnce(ok('acct-a-only'));
+    await refreshCatalog('anthropic');
+    expect(getCatalogState('anthropic').models.map((m) => m.id)).toEqual(['acct-a-only']);
+    listing = [{ key: 'llm:anthropic', hint: '…999', updatedAt: 'T2' }];      // user replaced the key in Settings
+    await validateCatalogCredential('anthropic');
+    expect(getCatalogState('anthropic').models).toEqual([]);
+    expect(localStorage.getItem('tal:model-catalog:v1:anthropic')).toBeNull();
+    fetchModelCatalog.mockResolvedValueOnce({ ok: false, source: 'unavailable', models: [], error: { code: 'auth', message: 'x' } });
+    await refreshCatalog('anthropic');
+    expect(getCatalogState('anthropic')).toMatchObject({ models: [], stale: false, error: { code: 'auth' } });
+  });
+
+  it('a refresh run after a key change drops the old list first even if nobody validated yet', async () => {
+    fetchModelCatalog.mockResolvedValueOnce(ok('acct-a-only'));
+    await refreshCatalog('anthropic');
+    listing = [{ key: 'llm:anthropic', hint: '…999', updatedAt: 'T2' }];
+    fetchModelCatalog.mockResolvedValueOnce({ ok: false, source: 'unavailable', models: [], error: { code: 'network', message: 'x' } });
+    await refreshCatalog('anthropic');
+    expect(getCatalogState('anthropic').models).toEqual([]);                    // not acct-a-only
+  });
+
+  it('deleting the key drops the list; an unchanged key keeps it', async () => {
+    fetchModelCatalog.mockResolvedValueOnce(ok('a-1'));
+    await refreshCatalog('anthropic');
+    await validateCatalogCredential('anthropic');
+    expect(getCatalogState('anthropic').models).toHaveLength(1);
+    listing = [];
+    await validateCatalogCredential('anthropic');
+    expect(getCatalogState('anthropic').models).toEqual([]);
+  });
+
+  it('a list persisted before this check (no stamp) is not trusted', async () => {
+    localStorage.setItem('tal:model-catalog:v1:anthropic', JSON.stringify({ fetchedAt: 1, models: live('old-1') }));
+    _resetModelCatalogForTests();
+    await validateCatalogCredential('anthropic');
+    expect(getCatalogState('anthropic').models).toEqual([]);
+  });
+});
+
+describe('a model retired by the provider', () => {
+  it('disappears from the refreshed list but a saved choice of it stays selectable, marked as saved', async () => {
+    fetchModelCatalog.mockResolvedValueOnce({ ok: true, source: 'live', fetched_at: 1, models: live('claude-opus-5-5') });   // haiku-4-5 no longer listed
+    await refreshCatalog('anthropic');
+    const out = mergeModelChoices(PROVIDER_MODELS.anthropic, getCatalogState('anthropic').models, 'claude-retired-1');
+    expect(out[0]).toMatchObject({ id: 'claude-retired-1', origin: 'saved' });
+  });
+});
+
+describe('resolveSelectedModel (Batch and any non-interactive run)', () => {
+  const key = 'tal:analyze:selected-model:anthropic';
+  it('uses the saved Analyze choice, including a newly listed model, not the built-in recommendation', async () => {
+    fetchModelCatalog.mockResolvedValueOnce({ ok: true, source: 'live', fetched_at: 1, models: live('claude-opus-5-6') });
+    await refreshCatalog('anthropic');
+    localStorage.setItem(key, 'claude-opus-5-6');
+    expect(resolveSelectedModel('anthropic', 'api_key')).toBe('claude-opus-5-6');
+  });
+  it('keeps a saved legacy/custom id; with nothing saved it falls back to the recommendation; it never writes', () => {
+    localStorage.setItem(key, 'claude-opus-4-7');
+    expect(resolveSelectedModel('anthropic', null)).toBe('claude-opus-4-7');
+    localStorage.removeItem(key);
+    expect(resolveSelectedModel('anthropic', null)).toBe('claude-sonnet-4-6');
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+  it('local runs take the model from the saved local config (empty here); OAuth self-heals a retired saved model', () => {
+    expect(resolveSelectedModel('local', 'local')).toBe('');
+    localStorage.setItem('tal:analyze:selected-model:openai-oauth', 'gpt-5.5-retired');
+    expect(resolveSelectedModel('openai', 'oauth')).toBe('gpt-6.1-sol');
+  });
+});
+
+import { assembleProConfig, DEFAULT_PRO_CONFIG } from '../../src/lib/pro-config';
+
+describe('Pro deep/quick path with a newly selected model', () => {
+  it('without a deep/quick override both clients run the selected model, so any listed model is usable', () => {
+    const cfg = assembleProConfig('claude-opus-5-6', 'anthropic', { ...DEFAULT_PRO_CONFIG });
+    expect(cfg.deep_think_llm).toBe('claude-opus-5-6');
+    expect(cfg.quick_think_llm).toBe('claude-opus-5-6');
+  });
+  it('an explicit deep/quick override still wins (existing settings preserved)', () => {
+    const cfg = assembleProConfig('claude-opus-5-5', 'anthropic', { ...DEFAULT_PRO_CONFIG, deepModel: 'claude-opus-5-5', quickModel: 'claude-sonnet-5-5', effort: 'high' });
+    expect(cfg).toMatchObject({ deep_think_llm: 'claude-opus-5-5', quick_think_llm: 'claude-sonnet-5-5', effort: 'high' });
   });
 });

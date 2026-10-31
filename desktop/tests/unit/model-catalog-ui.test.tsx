@@ -116,7 +116,7 @@ describe('Analyze model picker uses the shared catalog', () => {
 
   it('after a refresh the provider-reported models appear, marked; a saved legacy choice stays selected', async () => {
     stubStorage({
-      'tal:model-catalog:v1:anthropic': JSON.stringify({ fetchedAt: 1_790_000_000, models: liveModels('claude-opus-5-6', 'claude-opus-9-9', 'claude-opus-5-5') }),
+      'tal:model-catalog:v1:anthropic': JSON.stringify({ fetchedAt: 1_790_000_000, credStamp: '2026-10-31|…1234', models: liveModels('claude-opus-5-6', 'claude-opus-9-9', 'claude-opus-5-5') }),
       'tal:analyze:selected-model:anthropic': 'claude-opus-4-7',   // legacy id in neither list
     });
     mount();
@@ -140,5 +140,23 @@ describe('Analyze model picker uses the shared catalog', () => {
     const after = await options();
     expect(after.ids).toContain('claude-opus-5-6');
     expect(after.sel.value).toBe('claude-haiku-4-5');
+  });
+});
+
+
+describe('Batch uses the same selected model as Analyze', () => {
+  it('runs the saved Analyze choice (a refreshed, newly listed model), not the built-in recommendation', async () => {
+    stubStorage({
+      'tal:model-catalog:v1:anthropic': JSON.stringify({ fetchedAt: 1, credStamp: '2026-10-31|…1234', models: liveModels('claude-opus-5-6') }),
+      'tal:analyze:selected-model:anthropic': 'claude-opus-5-6',
+    });
+    const { resolveActiveProvider } = await import('../../src/components/BatchRunner');
+    expect(await resolveActiveProvider()).toMatchObject({ provider: 'anthropic', model: 'claude-opus-5-6' });
+  });
+  it('with nothing saved it still uses the recommendation, and never writes the selection', async () => {
+    const store = stubStorage();
+    const { resolveActiveProvider } = await import('../../src/components/BatchRunner');
+    expect(await resolveActiveProvider()).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-6' });
+    expect(store.has('tal:analyze:selected-model:anthropic')).toBe(false);
   });
 });

@@ -77,6 +77,8 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "claude-haiku-4-5":    {"input": 1.00,  "output": 5.00},
     "claude-sonnet-4-5":   {"input": 3.00,  "output": 15.00},
     "claude-sonnet-4-6":   {"input": 3.00,  "output": 15.00},
+    # Verified 2026-10-30 against https://platform.claude.com/docs/en/about-claude/pricing (Input $2 / Output $10 per MTok).
+    "claude-sonnet-5-5":   {"input": 2.00,  "output": 10.00},
     "claude-opus-4-7":     {"input": 15.00, "output": 75.00},  # kept for backward compat
     "claude-opus-4-8":     {"input": 15.00, "output": 75.00},  # conservative ceiling; verify vs billing
     "claude-fable-5":      {"input": 15.00, "output": 75.00},  # new model; conservative ceiling

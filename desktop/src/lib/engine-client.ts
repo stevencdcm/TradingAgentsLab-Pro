@@ -313,6 +313,14 @@ export interface AnalyzeRequest {
    * Absent means market-only (free, yfinance). The engine persists no secrets;
    * this is sent per run. */
   alpha_vantage_key?: string;
+  /** Taiwan code only: 'full' (Pro graph on Taiwan data, default) or 'simplified' (evidence pack + Dexter). */
+  tw_flow?: 'full' | 'simplified';
+  /** Full flow only: run the sandboxed Dexter evidence check before the graph (default on; a skip is always shown). */
+  tw_dexter?: boolean;
+  /** Full flow only: force the strict as-of mode. Absent = automatic (recent dates use "latest available data"). */
+  tw_data_mode?: 'latest' | 'historical';
+  /** Optional FinMind member token (a secret reference in the web build). Absent = anonymous Free tier. */
+  finmind_token?: string;
   /** Optional per-stream data provider override (e.g. Alpaca). Engine
    * falls through to yfinance default when absent. */
   data_config?: DataConfig;
@@ -392,6 +400,10 @@ export interface SessionCompleteEvent {
   };
   usage_complete?: boolean;
   cost_complete?: boolean;
+  /** Taiwan full graph: data mode, Dexter outcome and the FIXED limitations block (written by the engine, not the model). */
+  data_mode?: 'latest' | 'historical';
+  dexter?: { ran: boolean; status: string | null; reason: string | null; verified?: number };
+  limitations?: Array<{ code: string; text: string }>;
 }
 
 export type AssetClass = 'equity' | 'crypto';
@@ -517,6 +529,8 @@ export interface EvidencePackEvent {
 /** Result of the sandboxed Dexter job. `status` is never "succeeded" unless a finding was verified. */
 export interface DexterResultEvent {
   type: 'dexter.result';
+  /** False when Dexter did not run at all (disabled, unsupported provider, cost cap, stage error). */
+  ran?: boolean;
   status: 'succeeded' | 'partial' | 'failed' | 'timeout' | 'canceled' | 'unsupported';
   reason: string | null;
   findings: Array<{
@@ -1225,6 +1239,10 @@ export async function streamDebate(
         pro_config: req.pro_config,
         // Optional Alpha Vantage data key (unlocks non-market analysts).
         alpha_vantage_key: req.alpha_vantage_key,
+        tw_flow: req.tw_flow,
+        tw_dexter: req.tw_dexter,
+        tw_data_mode: req.tw_data_mode,
+        finmind_token: req.finmind_token,
         report_language: req.report_language,
       }),
     );
@@ -1264,4 +1282,51 @@ export async function streamDebate(
     },
     done,
   };
+}
+
+
+export type TwSourceState = 'connected' | 'wired_untested' | 'failed' | 'not_implemented';
+
+export interface TwSource {
+  id: string;
+  name: string;
+  official_docs: string[];
+  data_types: string[];
+  free_scope: string;
+  token_requirement: string;
+  limits: string;
+  update_cadence: string;
+  license_notes: string;
+  verified_at: string;
+  verification_scope: string;
+  implementation_status: 'wired' | 'unsupported';
+  state: TwSourceState;
+  used_by: string[];
+  last_ok_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  calls_observed: number;
+  token_configured: boolean | null;
+}
+
+export async function listTwSources(): Promise<TwSource[]> {
+  const { port, token } = await handshake();
+  const res = await fetchWithTimeout(`${apiBase(port)}/tw/sources`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`listTwSources failed: ${res.status}`);
+  return ((await res.json()) as { sources: TwSource[] }).sources;
+}
+
+export async function testTwSource(id: string): Promise<{ ok: boolean; error?: string; ms?: number; rows?: number; note?: string | null; status?: string; http_status?: number | null }> {
+  const { port, token } = await handshake();
+  try {
+    const res = await fetchWithTimeout(
+      `${apiBase(port)}/tw/sources/test`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) },
+      90_000,
+    );
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` };
+    return await res.json();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

@@ -465,8 +465,10 @@ def _finalize_reservation(
     try:
         from . import cost_guard as _cost_guard
 
+        # A per-token run on a model (deep OR quick) with no verified price has an UNKNOWN cost: settle as NULL, not 0.
         _cost_guard.finalize_reservation(
-            reservation_id, actual_cost_usd=_run_cost(auth_kind, merged, meter)
+            reservation_id,
+            actual_cost_usd=_run_cost(auth_kind, merged, meter) if _run_cost_known(auth_kind, merged) else None,
         )
     except Exception as exc:  # noqa: BLE001 — finalize is best-effort
         sys.stderr.write(

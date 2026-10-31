@@ -139,6 +139,11 @@ def resolve_start_frame(start: Any) -> Any:
         if name != _AV_NAME:
             raise SecretRefError("secret reference not allowed in this field")
         out["alpha_vantage_key"] = _lookup(name)
+    name = _ref_name(out.get("finmind_token"))
+    if name is not None:
+        if name != _FINMIND_NAME:
+            raise SecretRefError("secret reference not allowed in this field")
+        out["finmind_token"] = _lookup(name)
     leftover = {k: v for k, v in out.items() if k not in ("provider_config",)}
     leftover_dc = {k: v for k, v in (out.get("data_config") or {}).items()} if isinstance(out.get("data_config"), dict) else {}
     # References that were resolved above are now plain values; whatever is still a reference is illegal.
@@ -183,3 +188,13 @@ def redact(text: str, *extra: Optional[str]) -> str:
         out = out.replace(value, "[redacted]")
         out = out.replace(value[-8:], "[redacted]")
     return out
+
+
+def has_named(name: str) -> bool:
+    """Whether a server-held secret exists (never returns its value)."""
+    return _store is not None and _store.has(name)
+
+
+def named_value(name: str) -> Optional[str]:
+    """Server-side use only (e.g. the FinMind token for a connectivity test); never sent to the page."""
+    return _lookup(name) if has_named(name) else None

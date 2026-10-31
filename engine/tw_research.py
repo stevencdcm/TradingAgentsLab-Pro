@@ -96,6 +96,45 @@ def evidence_context(pack: dict, dexter: dict, report_language: str) -> str:
     return "\n".join(lines)
 
 
+async def dexter_stage(*, pack: dict, path: Path, out_dir: Path, config: ProviderConfig, lang: str, run_dexter: bool = True) -> dict[str, Any]:
+    """Run (or visibly skip) the sandboxed Dexter job over a built evidence pack. Shared by the simplified flow and the
+    Pro full graph. Never silent: `event` always says whether Dexter ran, why not, and what it used."""
+    model, env, unsupported = dexter_model_and_env(config)
+    billable = config.auth_kind not in ("oauth", "local")
+    worst = worst_case_job_cost(config.model, HARD_LIMITS["max_total_tokens"]) if billable else 0.0
+    blocked = cost_guard.check_extra_usd(est_cost_usd=worst or 0.0, auth_kind=config.auth_kind) if model is not None else None
+    if model is not None and billable and not is_priced(config.model):
+        blocked = "unknown_price"          # never start an extra paid job whose cost cannot be bounded
+    if not run_dexter or model is None or blocked:
+        reason = unsupported or ("cost_guard_blocked:" + blocked if blocked else "disabled")
+        dexter = {"schema": "her30.dexter.result/1", "status": "unsupported", "reason": reason, "findings": [],
+                  "unknowns": [], "tool_calls": [], "usage": {"measured": False}}
+    else:
+        question = ("請針對最新價量與營收趨勢，列出有證據支持的重點與反證。" if lang == "zh-TW"
+                    else "List the evidence-backed points on the latest price action and revenue trend, plus counter-evidence.")
+        dexter = await asyncio.to_thread(
+            run_dexter_job, evidence_pack_path=path, question=question, model=model,
+            jobs_root=out_dir.parent / "dexter-jobs", dexter_root=DEXTER_ROOT, provider_env=env, market="TW", report_language=lang,
+        )
+        dexter["unknowns"] = [secret_refs.redact(str(u)) for u in dexter.get("unknowns", [])]
+    dexter_ran = dexter.get("status") != "unsupported"
+    du = dexter.get("usage") or {}
+    # Cost of the Dexter job: measured tokens x price; never 0 for "unknown". Unmeasured usage of a
+    # job that ran is billed at the job's hard ceiling (conservative) when the model has a price.
+    d_in, d_out = int(du.get("input_tokens") or 0), int(du.get("output_tokens") or 0)
+    if not dexter_ran or not billable:
+        d_cost: Optional[float] = 0.0
+    elif du.get("measured"):
+        d_cost = estimate_cost_or_none(config.model, d_in, d_out)
+    else:
+        d_cost = worst
+    usage = {"input_tokens": d_in, "output_tokens": d_out, "measured": bool(du.get("measured")), "est_cost_usd": d_cost, "ran": dexter_ran}
+    event = {"type": "dexter.result", "ran": dexter_ran,
+             **{k: dexter.get(k) for k in ("status", "reason", "findings", "unknowns", "answer_markdown", "tool_calls", "usage", "elapsed_ms", "job_id")}}
+    return {"dexter": dexter, "ran": dexter_ran, "raw_usage": du, "billable": billable, "worst": worst,
+            "d_in": d_in, "d_out": d_out, "d_cost": d_cost, "usage": usage, "event": event}
+
+
 async def tw_research(
     *, code: str, trade_date: str, config: ProviderConfig, report_language: str, reservation_id: Optional[str] = None,
     run_dexter: bool = True,
@@ -125,36 +164,10 @@ async def tw_research(
            "sessions": summary.sessions, "source": summary.source, "asset_class": "equity"}
 
     # --- Dexter (read_file over the pack only) -----------------------------------------
-    model, env, unsupported = dexter_model_and_env(config)
-    billable = config.auth_kind not in ("oauth", "local")
-    worst = worst_case_job_cost(config.model, HARD_LIMITS["max_total_tokens"]) if billable else 0.0
-    blocked = cost_guard.check_extra_usd(est_cost_usd=worst or 0.0, auth_kind=config.auth_kind) if model is not None else None
-    if not run_dexter or model is None or blocked:
-        reason = unsupported or ("cost_guard_blocked:" + blocked if blocked else "disabled")
-        dexter = {"schema": "her30.dexter.result/1", "status": "unsupported", "reason": reason, "findings": [],
-                  "unknowns": [], "tool_calls": [], "usage": {"measured": False}}
-    else:
-        question = ("請針對最新價量與營收趨勢，列出有證據支持的重點與反證。" if lang == "zh-TW"
-                    else "List the evidence-backed points on the latest price action and revenue trend, plus counter-evidence.")
-        dexter = await asyncio.to_thread(
-            run_dexter_job, evidence_pack_path=path, question=question, model=model,
-            jobs_root=out_dir.parent / "dexter-jobs", dexter_root=DEXTER_ROOT, provider_env=env, market="TW", report_language=lang,
-        )
-        dexter["unknowns"] = [secret_refs.redact(str(u)) for u in dexter.get("unknowns", [])]
-    dexter_ran = dexter.get("status") != "unsupported"
-    du = dexter.get("usage") or {}
-    # Cost of the Dexter job: measured tokens x price; never 0 for "unknown". Unmeasured usage of a
-    # job that ran is billed at the job's hard ceiling (conservative) when the model has a price.
-    d_in, d_out = int(du.get("input_tokens") or 0), int(du.get("output_tokens") or 0)
-    if not dexter_ran or not billable:
-        d_cost: Optional[float] = 0.0
-    elif du.get("measured"):
-        d_cost = estimate_cost_or_none(config.model, d_in, d_out)
-    else:
-        d_cost = worst
-    dexter_usage = {"input_tokens": d_in, "output_tokens": d_out, "measured": bool(du.get("measured")),
-                    "est_cost_usd": d_cost, "ran": dexter_ran}
-    yield {"type": "dexter.result", **{k: dexter.get(k) for k in ("status", "reason", "findings", "unknowns", "answer_markdown", "tool_calls", "usage", "elapsed_ms", "job_id")}}
+    st = await dexter_stage(pack=pack, path=path, out_dir=out_dir, config=config, lang=lang, run_dexter=run_dexter)
+    dexter, dexter_ran, du, billable, worst = st["dexter"], st["ran"], st["raw_usage"], st["billable"], st["worst"]
+    d_in, d_out, d_cost, dexter_usage = st["d_in"], st["d_out"], st["d_cost"], st["usage"]
+    yield st["event"]
 
     # --- Debate grounded on the pack ----------------------------------------------------
     ctx = evidence_context(pack, dexter, lang)
@@ -182,3 +195,51 @@ async def tw_research(
                   "cost_complete": bool(cost_known and (not billable or is_priced(config.model)) and (du.get("measured") or not dexter_ran or not billable)),
                   "usage_complete": bool(du.get("measured") or not dexter_ran)}
         yield ev
+
+
+async def full_graph_dexter(*, code: str, trade_date: str, config: ProviderConfig, lang: str, enabled: bool = True) -> dict[str, Any]:
+    """Dexter pre-step of the Taiwan Pro full graph: build the evidence pack for the SAME trade date, run Dexter over it
+    (or visibly skip), and return a tool-visible summary plus the event/usage the server folds into the run.
+    Never raises and never silently omits Dexter: the returned `event` always states ran / not-ran and why."""
+    as_of = f"{trade_date}T16:30:00+08:00"
+    out_dir = Path(os.environ.get("TAL_EVIDENCE_DIR") or storage._default_db_path().parent / "evidence")
+    try:
+        pack = await asyncio.to_thread(tw_evidence.build_tw_evidence, code, as_of)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{pack['security_id'].replace(':', '_')}-{pack['snapshot_id'][:16]}.json"
+        path.write_text(json.dumps(pack, ensure_ascii=False, indent=1), encoding="utf-8")
+        st = await dexter_stage(pack=pack, path=path, out_dir=out_dir, config=config, lang=lang, run_dexter=enabled)
+    except Exception as exc:  # noqa: BLE001 — the graph still runs; Dexter's absence is stated, not hidden
+        reason = secret_refs.redact(f"{type(exc).__name__}: {exc}")
+        ev = {"type": "dexter.result", "ran": False, "status": "unsupported", "reason": f"stage_error: {reason}", "findings": [], "unknowns": []}
+        return {"event": ev, "block": {"ran": False, "status": "unsupported", "reason": ev["reason"], "text": "", "verified": 0},
+                "d_in": 0, "d_out": 0, "d_cost": 0.0, "usage": {"input_tokens": 0, "output_tokens": 0, "measured": False, "est_cost_usd": 0.0, "ran": False},
+                "ran": False, "measured": False, "billable": False}
+    dexter = st["dexter"]
+    text = evidence_context(pack, dexter, lang) if st["ran"] else ""
+    verified = len([f for f in dexter.get("findings", []) if f.get("verification") == "verified"])
+    st["event"] = {**st["event"], "snapshot_id": pack["snapshot_id"]}
+    block = {"ran": st["ran"], "status": dexter.get("status"), "reason": dexter.get("reason"), "text": text if st["ran"] else "", "verified": verified}
+    return {"event": st["event"], "block": block, "d_in": st["d_in"], "d_out": st["d_out"], "d_cost": st["d_cost"], "usage": st["usage"],
+            "ran": st["ran"], "measured": bool(st["raw_usage"].get("measured")), "billable": st["billable"]}
+
+
+def fold_dexter_into_complete(ev: dict[str, Any], res: Optional[dict[str, Any]], config: ProviderConfig) -> dict[str, Any]:
+    """Add Dexter's measured usage/cost to a full-graph `session.complete`; unknown stays unknown (never a fake 0)."""
+    if res is None:
+        return {**ev, "dexter": {"ran": False, "status": "not_requested", "reason": "disabled"}}
+    d_cost = res["d_cost"]
+    debate_cost = ev.get("estimated_cost_usd")
+    known = debate_cost is not None and d_cost is not None
+    blk = res["block"]
+    return {
+        **ev,
+        "dexter": {"ran": blk["ran"], "status": blk["status"], "reason": blk["reason"], "verified": blk["verified"]},
+        "usage_breakdown": {"debate": {"input_tokens": ev.get("input_tokens"), "output_tokens": ev.get("output_tokens"), "est_cost_usd": debate_cost},
+                            "dexter": res["usage"]},
+        "input_tokens": (ev.get("input_tokens") or 0) + res["d_in"],
+        "output_tokens": (ev.get("output_tokens") or 0) + res["d_out"],
+        "estimated_cost_usd": round(debate_cost + d_cost, 4) if known else None,
+        "cost_known": bool(known and ev.get("cost_known", True)),
+        "usage_complete": bool(res["measured"] or not res["ran"]),
+    }

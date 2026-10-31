@@ -265,17 +265,17 @@ def test_ws_live_debate_blocked_by_cost_guard(client):
 
 
 def test_unpriced_paid_model_is_refused_while_caps_are_enabled(client):
-    r = client.post("/cost-guard/check", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400}).json()
+    r = client.post("/cost-guard/check", json={"model": "claude-unpriced-test-9", "auth_kind": "api_key", "max_tokens": 400}).json()
     assert r["allow"] is False and r["over_dimension"] == "unknown_price"
-    res = client.post("/cost-guard/reserve", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400})
+    res = client.post("/cost-guard/reserve", json={"model": "claude-unpriced-test-9", "auth_kind": "api_key", "max_tokens": 400})
     assert res.status_code == 402 and res.json()["detail"]["over_dimension"] == "unknown_price"
 
 
 def test_unpriced_paid_model_may_proceed_only_by_explicit_override_or_when_guard_is_off(client):
-    ok = client.post("/cost-guard/reserve", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400, "override": True})
+    ok = client.post("/cost-guard/reserve", json={"model": "claude-unpriced-test-9", "auth_kind": "api_key", "max_tokens": 400, "override": True})
     assert ok.status_code == 200
     client.put("/cost-guard/config", json={"enabled": False})
-    assert client.post("/cost-guard/check", json={"model": "claude-sonnet-5-5", "auth_kind": "api_key", "max_tokens": 400}).json()["allow"] is True
+    assert client.post("/cost-guard/check", json={"model": "claude-unpriced-test-9", "auth_kind": "api_key", "max_tokens": 400}).json()["allow"] is True
 
 
 def test_free_and_priced_paths_are_unaffected(client):
@@ -301,7 +301,101 @@ def test_session_complete_stores_null_cost_for_unpriced_models(monkeypatch, tmp_
         cfg = ProviderConfig(provider="anthropic", auth={"type": "api_key", "api_key": "k"}, model=model)
         return [e async for e in live_debate(ticker="AAPL", trade_date="2026-10-30", summary=None, headlines=None, config=cfg)]
 
-    unknown = [e for e in asyncio.run(run("claude-sonnet-5-5")) if e["type"] == "session.complete"][0]
+    unknown = [e for e in asyncio.run(run("claude-unpriced-test-9")) if e["type"] == "session.complete"][0]
     assert unknown["estimated_cost_usd"] is None and unknown["cost_known"] is False
     known = [e for e in asyncio.run(run("gpt-4o-mini")) if e["type"] == "session.complete"][0]
     assert known["estimated_cost_usd"] > 0 and known["cost_known"] is True
+
+
+# ---- E10: unknown cost is settled as unknown (NULL) and EVERY billable model is checked -----------------------------
+
+
+def _fin(rid):
+    with cost_guard._connect() as conn:
+        return conn.execute("SELECT finalized, finalized_cost_usd, override FROM cost_reservations WHERE id = ?", (rid,)).fetchone()
+
+
+def test_unknown_price_reservation_settles_as_null_not_zero(client):
+    rid = client.post("/cost-guard/reserve", json={"model": "claude-unpriced-test-9", "auth_kind": "api_key", "max_tokens": 400, "override": True}).json()["reservation_id"]
+    assert cost_guard.reservation_override(rid) is True
+    assert cost_guard.finalize_reservation(rid, actual_cost_usd=None) is True
+    row = _fin(rid)
+    assert row[0] == 1 and row[1] is None                                    # unknown, NOT 0.0
+    rid2 = client.post("/cost-guard/reserve", json={"model": "gpt-4o-mini", "auth_kind": "api_key", "max_tokens": 400}).json()["reservation_id"]
+    cost_guard.finalize_reservation(rid2, actual_cost_usd=0.0123)
+    assert _fin(rid2)[1] == 0.0123                                           # priced runs still settle numerically
+
+
+def test_full_debate_and_live_debate_settle_unknown_models_as_null(tmp_db):
+    from engine import full_debate as fd
+
+    cg = cost_guard
+    for deep, quick, known in (("gpt-4o", "claude-unpriced-test-9", False), ("claude-unpriced-test-9", "gpt-4o", False), ("gpt-4o", "gpt-4o-mini", True)):
+        rid = cg.reserve(model="gpt-4o", auth_kind="api_key", max_tokens=400, override=True).reservation_id
+        meter = fd._TokenMeter(None)
+        meter.input_tokens, meter.output_tokens = 1000, 100
+        fd._finalize_reservation(rid, "api_key", {"deep_think_llm": deep, "quick_think_llm": quick}, meter)
+        cost = _fin(rid)[1]
+        assert (cost is not None) is known, (deep, quick, cost)
+
+
+def test_pro_quick_model_is_checked_not_only_deep(client):
+    body = {"model": "gpt-4o", "auth_kind": "api_key", "max_tokens": 400}
+    assert client.post("/cost-guard/check", json=body).json()["allow"] is True
+    r = client.post("/cost-guard/check", json={**body, "extra_models": ["claude-unpriced-test-9"]}).json()
+    assert r["allow"] is False and r["over_dimension"] == "unknown_price"
+    assert client.post("/cost-guard/reserve", json={**body, "extra_models": ["claude-unpriced-test-9"]}).status_code == 402
+    assert client.post("/cost-guard/reserve", json={**body, "extra_models": ["claude-unpriced-test-9"], "override": True}).status_code == 200
+    assert client.post("/cost-guard/check", json={**body, "auth_kind": "local", "extra_models": ["claude-unpriced-test-9"]}).json()["allow"] is True
+
+
+async def _async_empty():
+    return []
+
+
+def test_ws_pro_run_with_unpriced_quick_model_is_blocked_without_override(client, monkeypatch):
+    from engine import full_debate as fd
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("graph must not start")
+        yield
+
+    async def no_net(**_):
+        return None
+
+    from engine import server as srv
+
+    monkeypatch.setattr(fd, "full_debate", must_not_run)
+    monkeypatch.setattr(srv, "_fetch_summary_safe", no_net)       # isolated: no yfinance / network
+    monkeypatch.setattr(srv, "_fetch_news_safe", lambda **_: _async_empty())
+    pre = client.post("/cost-guard/reserve", json={"model": "gpt-4o", "auth_kind": "api_key", "max_tokens": 400}).json()["reservation_id"]
+    frame = {"ticker": "AAPL", "trade_date": "2026-10-29", "engine": "pro", "reservation_id": pre,
+             "provider_config": {"provider": "openai", "auth": {"type": "api_key", "api_key": "k"}, "model": "gpt-4o"},
+             "pro_config": {"deep_think_llm": "gpt-4o", "quick_think_llm": "claude-unpriced-test-9"}}
+    with client.websocket_connect(f"/stream?token={TOKEN}") as ws:
+        ws.send_json(frame)
+        ev = ws.receive_json()
+        while ev["type"] != "cost.blocked":
+            ev = ws.receive_json()
+    assert ev["type"] == "cost.blocked" and ev["over_dimension"] == "unknown_price"
+
+
+def test_dexter_never_starts_for_an_unpriced_paid_model_and_shares_the_run_budget(monkeypatch, tmp_db):
+    import asyncio
+
+    from engine import tw_research as twr
+    from engine.llm_providers import ProviderConfig
+
+    monkeypatch.setattr(twr, "dexter_model_and_env", lambda c: ({"id": "m"}, {}, None))
+    ran = []
+    monkeypatch.setattr(twr, "run_dexter_job", lambda **k: ran.append(1) or {"status": "succeeded", "findings": [], "usage": {"measured": True}})
+    pack = {"snapshot_id": "a" * 64, "security_id": "TW:2330"}
+    cfg = ProviderConfig(provider="anthropic", auth={"type": "api_key", "api_key": "k"}, model="claude-unpriced-test-9")
+    st = asyncio.run(twr.dexter_stage(pack=pack, path=tmp_db.parent / "p.json", out_dir=tmp_db.parent, config=cfg, lang="en"))
+    assert not ran and st["ran"] is False and st["dexter"]["reason"] == "cost_guard_blocked:unknown_price"
+    # Same budget: the graph's own reservation is already counted, so Dexter's worst case must fit in what is LEFT.
+    cfg2 = ProviderConfig(provider="anthropic", auth={"type": "api_key", "api_key": "k"}, model="claude-haiku-4-5")
+    res = cost_guard.reserve(model="claude-haiku-4-5", auth_kind="api_key", max_tokens=400)
+    cost_guard.update_config(enabled=True, cap_daily_usd=res.est_cost_usd + 0.0001)
+    st2 = asyncio.run(twr.dexter_stage(pack=pack, path=tmp_db.parent / "p.json", out_dir=tmp_db.parent, config=cfg2, lang="en"))
+    assert not ran and st2["ran"] is False and st2["dexter"]["reason"].startswith("cost_guard_blocked:")

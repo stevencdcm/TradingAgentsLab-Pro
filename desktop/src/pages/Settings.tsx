@@ -1,3 +1,4 @@
+import TwSourcesPanel from '../components/TwSourcesPanel';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Settings.module.css';
 import UpdatesSection from '../components/UpdatesSection';
@@ -234,6 +235,16 @@ const DATA_PROVIDERS: SecretRow[] = [
     placeholder: 'Alpha Vantage API key',
     placeholderKey: 'settings.row.alphaVantage.placeholder',
   },
+  {
+    secretKey: 'data:finmind',
+    name: 'FinMind: member token (optional)',
+    nameKey: 'settings.row.finmind.name',
+    noteKey: 'settings.row.finmind.note',
+    pillKey: 'settings.pill.secret',
+    pillVariant: 'default',
+    placeholder: 'FinMind token',
+    placeholderKey: 'settings.row.finmind.placeholder',
+  },
 ];
 
 function Settings() {
@@ -368,6 +379,7 @@ function Settings() {
                 hasKey={listingByKey.has('data:alpha-vantage')}
                 onSaved={refresh}
               />
+              <TwSourcesPanel tokenSaved={listingByKey.has('data:finmind')} />
             </>
           )}
           {active === 'analysis' && <ProAnalysisTab />}

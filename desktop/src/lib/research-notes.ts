@@ -9,6 +9,14 @@ export interface ResearchInfo {
   complete: SessionCompleteEvent | null;
 }
 
+/** `run.notice` messages the engine emitted (e.g. social analyst disabled for Taiwan, data purpose). */
+export function findNotices(events: DebateEvent[]): string[] {
+  return events
+    .filter((e) => (e as { type: string }).type === 'run.notice')
+    .map((e) => String((e as unknown as { message?: string }).message ?? ''))
+    .filter(Boolean);
+}
+
 export function findResearch(events: DebateEvent[]): ResearchInfo {
   const evidence = events.find((e) => e.type === 'evidence.pack') as EvidencePackEvent | undefined;
   const dexter = events.find((e) => e.type === 'dexter.result') as DexterResultEvent | undefined;
@@ -22,7 +30,7 @@ export function researchNotes(info: ResearchInfo, t: T, fmt: (n: number) => stri
   if (!c || c.market !== 'TW') return [];
   const notes: string[] = [];
   if (c.engine === 'simplified') notes.push(t('evidence.engineSimplified'));
-  notes.push(t('evidence.notNumberChecked'));
+  if (info.dexter) notes.push(t('evidence.notNumberChecked'));
   const u = c.usage_breakdown;
   if (u) {
     const d = (u.debate?.input_tokens ?? 0) + (u.debate?.output_tokens ?? 0);
@@ -35,8 +43,26 @@ export function researchNotes(info: ResearchInfo, t: T, fmt: (n: number) => stri
   return notes;
 }
 
+/** Fixed limitations block the engine wrote for a Taiwan full-graph run (not model text). */
+export function findLimitations(info: ResearchInfo): Array<{ code: string; text: string }> {
+  return info.complete?.limitations ?? [];
+}
+
+/** Markdown for the fixed "data limitations" section; empty when the run carried none. */
+export function limitationsMarkdown(info: ResearchInfo, t: T): string[] {
+  const lim = findLimitations(info);
+  if (!lim.length) return [];
+  return [`## ${t('limits.title')}`, '', ...lim.map((x) => `- ${x.text}`), ''];
+}
+
+/** Export section: research disclosures followed by the fixed limitations block. */
+export function researchMarkdown(info: ResearchInfo, t: T, fmt: (n: number) => string = String, notices: string[] = []): string[] {
+  return [...researchMarkdownCore(info, t, fmt, notices), ...limitationsMarkdown(info, t)];
+}
+
 /** Markdown section for the export: snapshot, gaps, Dexter status and every finding with its verdict. */
-export function researchMarkdown(info: ResearchInfo, t: T, fmt: (n: number) => string = String): string[] {
+function researchMarkdownCore(info: ResearchInfo, t: T, fmt: (n: number) => string = String, notices: string[] = []): string[] {
+  if (notices.length && !info.evidence && !info.dexter) return [...notices.map((n) => `> ${n}`), ''];
   if (!info.evidence && !info.dexter) return [];
   const lines: string[] = [];
   const ev = info.evidence;
@@ -52,7 +78,7 @@ export function researchMarkdown(info: ResearchInfo, t: T, fmt: (n: number) => s
   const dx = info.dexter;
   if (dx) {
     lines.push(`## ${t('dexter.title')}`, '');
-    const bits = [t(`dexter.status.${dx.status}` as const), dx.reason ?? ''];
+    const bits = [dx.ran === false ? t('dexter.notRun') : '', t(`dexter.status.${dx.status}` as const), dx.reason ?? ''];
     if (dx.usage?.measured) bits.push(t('dexter.tokens', { n: fmt(dx.usage.total_tokens ?? 0) }));
     lines.push(bits.filter(Boolean).join(' · '), '');
     if (dx.findings.length === 0) lines.push(`_${t('dexter.noFindings')}_`, '');

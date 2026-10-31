@@ -49,6 +49,9 @@ export interface RunAnalysisOptions {
   /** Language the generated report is written in. Follows the UI language so the
    * research itself (summary, analysts, risk, conclusion) comes back in it. */
   reportLanguage?: Locale;
+  /** Taiwan code only: which flow to run. Default 'full' (Pro graph on Taiwan data). */
+  twFlow?: 'full' | 'simplified';
+  twDexter?: boolean;
 }
 
 export interface RunAnalysisCallbacks {
@@ -95,6 +98,8 @@ export async function runAnalysis(
   // Optional Alpha Vantage data key — unlocks the news/social/fundamentals
   // analysts in the Pro engine. Absent => market-only (free).
   const alphaVantageKey = (await getSecret('data:alpha-vantage')) ?? undefined;
+  // Optional FinMind member token (higher quota). Anonymous Free tier when absent. Web: a server-side reference.
+  const finmindToken = (await getSecret('data:finmind')) ?? undefined;
 
   // Pro is a distinct build: every live run drives the real LangGraph "full"
   // engine. `pro_config` carries the deep/quick split, rounds, analyst
@@ -112,6 +117,8 @@ export async function runAnalysis(
       model: cgModel,
       auth_kind: providerConfig.auth.type,
       max_tokens: maxTokens,
+      // Every other model this run can bill (Pro quick model, main model for Dexter): an unpriced one makes the cost unknown.
+      extra_models: [proConfig.quick_think_llm, providerConfig.model].filter((m): m is string => !!m && m !== cgModel),
     };
     try {
       const reservation = await reserveCostGuard(reserveReq);
@@ -159,6 +166,9 @@ export async function runAnalysis(
       engine: 'pro',
       pro_config: proConfig,
       alpha_vantage_key: alphaVantageKey,
+      tw_flow: opts.twFlow,
+      tw_dexter: opts.twFlow === 'full' ? opts.twDexter : undefined,
+      finmind_token: finmindToken,
       report_language: opts.reportLanguage,
     },
     wrappedOnEvent,

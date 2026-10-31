@@ -19,6 +19,7 @@ Security model
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -356,13 +357,52 @@ def build_web_app(
         }
 
     @app.post("/web/report-pdf")
-    async def report_pdf(body: dict[str, Any] = Body(...)):
+    async def report_pdf(request: Request):
         # Behind the same cookie / verified-proxy gate as every /web/* route. Renders only when the user clicked "Export PDF";
-        # takes a document string (never a URL or path) and returns the PDF bytes. See pdf_export for the hardening.
-        try:
-            pdf = await run_in_threadpool(pdf_export.render_pdf, body.get("html"))
-        except pdf_export.PdfExportError as exc:
+        # takes a JSON document string (never a URL or path) and returns the PDF bytes. See pdf_export for the hardening.
+        def refuse(exc: "pdf_export.PdfExportError"):
             return JSONResponse({"ok": False, "code": exc.code, "error": exc.message}, status_code=exc.status)
+
+        # Bounded request size at the transport: Content-Length is only a fast refusal, the stream is counted regardless
+        # (chunked or lying clients), and we stop reading as soon as the cap is passed.
+        cap = pdf_export.MAX_BODY_BYTES
+        declared = request.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > cap):
+            return refuse(pdf_export.PdfExportError("pdf_too_large", 413, "document too large"))
+        chunks: list[bytes] = []
+        got = 0
+        async for chunk in request.stream():
+            got += len(chunk)
+            if got > cap:
+                return refuse(pdf_export.PdfExportError("pdf_too_large", 413, "document too large"))
+            chunks.append(chunk)
+        try:
+            body = json.loads(b"".join(chunks))
+            if not isinstance(body, dict):
+                raise ValueError
+        except (ValueError, UnicodeDecodeError):
+            return refuse(pdf_export.PdfExportError("pdf_bad_request", 400, "expected a JSON object"))
+
+        # Client cancel / disconnect must stop the browser, free the single render slot and the temp dir - not just the download.
+        cancel = threading.Event()
+
+        async def watch_disconnect() -> None:
+            while not cancel.is_set():
+                if await request.is_disconnected():
+                    cancel.set()
+                    return
+                await asyncio.sleep(0.2)
+
+        watcher = asyncio.create_task(watch_disconnect())
+        try:
+            pdf = await run_in_threadpool(pdf_export.render_pdf, body.get("html"), cancel)
+        except pdf_export.PdfExportError as exc:
+            return refuse(exc)
+        except asyncio.CancelledError:
+            cancel.set()
+            raise
+        finally:
+            watcher.cancel()
         name = pdf_export.safe_filename(body.get("name"))
         return Response(pdf, media_type="application/pdf", headers={
             "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",

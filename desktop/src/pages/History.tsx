@@ -1,6 +1,7 @@
 import { formatRunDuration } from '../lib/duration';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './History.module.css';
+import ReportPdfButton from '../components/ReportPdfButton';
 import DebateStream from '../components/DebateStream';
 import {
   deleteSession,
@@ -144,11 +145,15 @@ function History() {
 
   // Same full-page HTML view as Analyze — lazily imported for the same
   // bundle-size reason (react-dom/server rides along with the generator).
+  const buildReportHtml = useCallback(async () => {
+    const { buildTranscriptHtml } = await import('../lib/transcript-html');
+    return buildTranscriptHtml(detail?.events ?? [], locale, detail?.cost_report ?? null);
+  }, [detail, locale]);
+
   const onOpenHtml = useCallback(async () => {
     if (!detail) return;
     try {
-      const { buildTranscriptHtml } = await import('../lib/transcript-html');
-      const { html, suggestedName } = buildTranscriptHtml(detail.events, locale, detail.cost_report ?? null);
+      const { html, suggestedName } = await buildReportHtml();
       await window.tradingAgentsLab.transcript.openHtml(html, suggestedName);
     } catch (err) {
       setError(
@@ -239,6 +244,7 @@ function History() {
               >
                 {t('history.openHtml')}
               </button>
+              <ReportPdfButton className={styles.toolbarButton} build={buildReportHtml} disabled={busy} testId="history-export-pdf" />
               <button
                 className={`${styles.toolbarButton} ${styles.toolbarDanger}`}
                 onClick={() => void onDelete(detail.id)}

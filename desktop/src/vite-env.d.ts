@@ -161,6 +161,9 @@ interface TradingAgentsLabBridge {
     /** Writes a standalone HTML transcript to userData/transcripts and
      * opens it in the default browser; resolves with the file path. */
     openHtml: (html: string, baseName: string) => Promise<string>;
+    /** Web bridge only: has the local engine render the report HTML to a PDF and downloads it; resolves with the file name.
+     * Absent in the Electron preload (the button hides itself). Rejects with an Error carrying `code`. */
+    savePdf?: (html: string, baseName: string, signal?: AbortSignal) => Promise<string>;
   };
   oauth: OAuthBridge;
   onMenuCommand: (

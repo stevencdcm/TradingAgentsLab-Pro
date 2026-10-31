@@ -39,7 +39,10 @@ import { runAnalysis } from '../lib/run-analysis';
 const SELECTED_PROVIDER_STORAGE_KEY = 'tal:analyze:selected-provider';
 
 interface BatchRunnerProps {
+  /** The tickers the user ticked, in list order. Read once when Run is clicked; later changes never touch a running batch. */
   tickers: string[];
+  /** True while a batch is in flight, so the caller can lock the selection without remounting (remount would cancel). */
+  onRunningChange?: (running: boolean) => void;
 }
 
 type BatchPhase = 'idle' | 'running' | 'complete' | 'cancelled';
@@ -54,7 +57,7 @@ interface PerTickerState {
   error?: string;
 }
 
-function BatchRunner({ tickers }: BatchRunnerProps) {
+function BatchRunner({ tickers, onRunningChange }: BatchRunnerProps) {
   const i18n = useI18n();
   const { t, tp, locale } = i18n;
   const [phase, setPhase] = useState<BatchPhase>('idle');
@@ -63,9 +66,12 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
   const [batchError, setBatchError] = useState<string | null>(null);
 
   const stopRequestedRef = useRef(false);
+  const runningRef = useRef(false);
+  const onRunningChangeRef = useRef(onRunningChange);
+  onRunningChangeRef.current = onRunningChange;
   const currentHandleRef = useRef<StreamHandle | null>(null);
   const currentStartRef = useRef<number>(0);
-  const [elapsedTick, setElapsedTick] = useState(0);
+  const [, setElapsedTick] = useState(0);
   /** Mount-guard. Watchlist is conditionally rendered in App.tsx; if the
    * user navigates away mid-batch, the component unmounts but `onRun`'s
    * async loop keeps going. Without this guard, returning to Watchlist
@@ -82,6 +88,10 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
     };
   }, []);
 
+  useEffect(() => {
+    onRunningChangeRef.current?.(phase === 'running');
+  }, [phase]);
+
   // 1Hz tick for the elapsed display on the active ticker. Cheap; only
   // runs while a batch is in flight.
   useEffect(() => {
@@ -96,7 +106,10 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
   }, []);
 
   const onRun = useCallback(async () => {
-    if (tickers.length === 0) return;
+    // Freeze the queue now: the selection, the list and the props may all change while the batch runs.
+    const queue = Array.from(new Set(tickers));
+    if (queue.length === 0 || runningRef.current) return;
+    runningRef.current = true;
     setPhase('running');
     setBatchError(null);
     stopRequestedRef.current = false;
@@ -107,27 +120,29 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
     const active = await resolveActiveProvider();
     if (!active.provider) {
       setBatchError(t('batch.err.noProvider'));
+      runningRef.current = false;
       setPhase('cancelled');
       return;
     }
 
-    const initial: PerTickerState[] = tickers.map((tk) => ({
+    const initial: PerTickerState[] = queue.map((tk) => ({
       ticker: tk,
       status: 'pending',
     }));
     setRows(initial);
 
-    for (let i = 0; i < tickers.length; i++) {
+    for (let i = 0; i < queue.length; i++) {
       if (!mountedRef.current) return;
       if (stopRequestedRef.current) {
         setRows((prev) =>
           prev.map((r, idx) => (idx >= i ? { ...r, status: 'skipped' } : r)),
         );
+        runningRef.current = false;
         setPhase('cancelled');
         return;
       }
       setCurrentIndex(i);
-      const ticker = tickers[i];
+      const ticker = queue[i];
       currentStartRef.current = Date.now();
       setRows((prev) =>
         prev.map((r, idx) => (idx === i ? { ...r, status: 'running' } : r)),
@@ -180,6 +195,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
             ),
           );
           setBatchError(t('batch.err.costBlocked', { ticker }));
+          runningRef.current = false;
           setPhase('cancelled');
           return;
         }
@@ -233,6 +249,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
     }
 
     setCurrentIndex(-1);
+    runningRef.current = false;
     setPhase('complete');
   }, [tickers, t, locale]);
 
@@ -242,7 +259,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
     <div className={styles.batchCard} data-testid="batch-runner">
       <div className={styles.batchHeader}>
         <h2 className={styles.batchTitle}>{t('batch.title')}</h2>
-        <div className={styles.batchStatus}>{statusLine(phase, currentIndex, tickers.length, rows, elapsedTick, t, tp)}</div>
+        <div className={styles.batchStatus}>{statusLine(phase, currentIndex, tickers.length, rows.length, t, tp)}</div>
         <div className={styles.batchActions}>
           {phase === 'running' ? (
             <button
@@ -261,7 +278,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
               disabled={tickers.length === 0}
               data-testid="batch-run-button"
             >
-              {t('batch.runAll', { count: tickers.length })}
+              {t('batch.runSelected', { count: tickers.length })}
             </button>
           )}
         </div>
@@ -313,7 +330,7 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
       {(phase === 'complete' || phase === 'cancelled') && rows.length > 0 && (
         <div className={styles.summaryBar}>
           <span>
-            {t('batch.summary.complete', { done: summary.done, total: tickers.length })}
+            {t('batch.summary.complete', { done: summary.done, total: rows.length })}
           </span>
           {summary.bullish > 0 && <span>{t('batch.summary.bullish', { n: summary.bullish })}</span>}
           {summary.bearish > 0 && <span>{t('batch.summary.bearish', { n: summary.bearish })}</span>}
@@ -332,15 +349,14 @@ function BatchRunner({ tickers }: BatchRunnerProps) {
 function statusLine(
   phase: BatchPhase,
   currentIndex: number,
-  total: number,
-  _rows: PerTickerState[],
-  _tick: number,
+  selectedCount: number,
+  queueTotal: number,
   t: I18n['t'],
   tp: I18n['tp'],
 ): string {
-  if (phase === 'idle') return total === 0 ? t('batch.noTickers') : tp('batch.ready', total);
+  if (phase === 'idle') return selectedCount === 0 ? t('batch.noneSelected') : tp('batch.ready', selectedCount);
   if (phase === 'running' && currentIndex >= 0) {
-    return t('batch.running', { current: currentIndex + 1, total });
+    return t('batch.running', { current: currentIndex + 1, total: queueTotal });
   }
   if (phase === 'complete') return t('batch.complete');
   if (phase === 'cancelled') return t('batch.cancelled');

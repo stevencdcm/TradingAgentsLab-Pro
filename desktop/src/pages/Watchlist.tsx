@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Watchlist.module.css';
 import {
   addWatchlist,
@@ -24,6 +24,11 @@ function Watchlist() {
   const [tickerInput, setTickerInput] = useState('');
   const [noteInput, setNoteInput] = useState('');
   const tickerInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Batch selection. Empty by default so a click never spends on the whole list by accident; "Select all" opts in.
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  const [batchRunning, setBatchRunning] = useState(false);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   // Taiwan symbol/name suggestions (official TWSE/TPEx index). US tickers never touch this path.
   const [suggestions, setSuggestions] = useState<TwSymbol[]>([]);
@@ -147,6 +152,12 @@ function Watchlist() {
       try {
         await removeWatchlist(ticker);
         setEntries((prev) => (prev ?? []).filter((e) => e.ticker !== ticker));
+        setPicked((prev) => {
+          if (!prev.has(ticker)) return prev;
+          const next = new Set(prev);
+          next.delete(ticker);
+          return next;
+        });
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : t('watchlist.err.remove'));
       } finally {
@@ -155,6 +166,36 @@ function Watchlist() {
     },
     [t],
   );
+
+  // Only tickers that are still on the list, once each, in the order shown.
+  const selectedTickers = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const e of entries ?? []) {
+      if (picked.has(e.ticker) && !seen.has(e.ticker)) {
+        seen.add(e.ticker);
+        out.push(e.ticker);
+      }
+    }
+    return out;
+  }, [entries, picked]);
+  const total = entries?.length ?? 0;
+  const allSelected = total > 0 && selectedTickers.length === total;
+  const partial = selectedTickers.length > 0 && !allSelected;
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = partial;
+  }, [partial]);
+
+  const toggleOne = useCallback((ticker: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(ticker)) next.delete(ticker);
+      else next.add(ticker);
+      return next;
+    });
+  }, []);
+  const selectAll = useCallback(() => setPicked(new Set((entries ?? []).map((e) => e.ticker))), [entries]);
+  const clearAll = useCallback(() => setPicked(new Set()), []);
 
   const onAnalyze = useCallback((ticker: string) => {
     setPendingTicker(ticker);
@@ -280,8 +321,39 @@ function Watchlist() {
 
       {loadError && <div className={styles.errorBanner}>{describeEngineError(loadError, i18n)}</div>}
 
+      {/* Stay mounted while a batch runs even if the list empties: unmounting cancels the job. */}
+      {entries && (entries.length > 0 || batchRunning) && (
+        <BatchRunner tickers={selectedTickers} onRunningChange={setBatchRunning} />
+      )}
+
       {entries && entries.length > 0 && (
-        <BatchRunner tickers={entries.map((e) => e.ticker)} />
+        <div className={styles.selectBar} role="group" aria-label={t('watchlist.select.group')} data-testid="watchlist-select-bar">
+          <label className={styles.selectAll}>
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              className={styles.check}
+              checked={allSelected}
+              disabled={batchRunning}
+              onChange={() => (allSelected ? clearAll() : selectAll())}
+              data-testid="watchlist-select-all"
+            />
+            <span>{t('watchlist.select.all')}</span>
+          </label>
+          <span className={styles.selectCount} aria-live="polite" data-testid="watchlist-select-count">
+            {t('watchlist.select.count', { selected: selectedTickers.length, total })}
+          </span>
+          <button
+            type="button"
+            className={styles.selectClear}
+            onClick={clearAll}
+            disabled={batchRunning || selectedTickers.length === 0}
+            data-testid="watchlist-select-clear"
+          >
+            {t('watchlist.select.clear')}
+          </button>
+          {batchRunning && <span className={styles.selectLocked}>{t('watchlist.select.locked')}</span>}
+        </div>
       )}
 
       {entries === null && !loadError && (
@@ -305,6 +377,17 @@ function Watchlist() {
               className={styles.row}
               data-testid={`watchlist-row-${entry.ticker}`}
             >
+              <label className={styles.pick}>
+                <input
+                  type="checkbox"
+                  className={styles.check}
+                  checked={picked.has(entry.ticker)}
+                  disabled={batchRunning}
+                  onChange={() => toggleOne(entry.ticker)}
+                  aria-label={t('watchlist.select.rowAria', { ticker: entry.ticker })}
+                  data-testid={`watchlist-select-${entry.ticker}`}
+                />
+              </label>
               <div className={styles.rowMain}>
                 <div className={styles.rowHeadline}>
                   <span className={styles.rowTicker}>{entry.ticker}</span>

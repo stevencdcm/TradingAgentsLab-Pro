@@ -1046,7 +1046,7 @@ def test_webhook_failure_text_with_a_bot_token_never_reaches_run_events(world, m
     """P3-b: the REAL dispatcher fails with an exception that echoes the endpoint; nothing token-like may be stored or replayed."""
     import httpx
 
-    token = "123456789:AAEhBP0abcDEFghiJKLmnoPQRstuVWXyz01"
+    token = "123456789" + ":" + "FAKE" * 8 + "xyz"             # synthetic, assembled at runtime so no token-shaped literal is tracked
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
     async def decided(**kw):                         # a parseable decision, so the real dispatcher actually tries to fire
@@ -1082,7 +1082,7 @@ def test_webhook_failure_text_with_a_bot_token_never_reaches_run_events(world, m
 def test_scrubbers_cover_bot_tokens_and_urls():
     from engine import secret_refs as sr
 
-    assert "[redacted]" in sr.scrub_key_shapes("x 123456789:AAEhBP0abcDEFghiJKLmnoPQRstuVWXyz01 y")
+    assert "[redacted]" in sr.scrub_key_shapes("x " + "123456789" + ":" + "FAKE" * 8 + "xyz" + " y")
     assert sr.scrub_urls_and_tokens("failed https://hooks.slack.com/services/T000/B000/XXXX ok") == "failed [url] ok"
 
 

@@ -69,6 +69,9 @@ export interface ProConfigState {
   maxDebateRounds: number;
   maxRiskRounds: number;
   selectedAnalysts: AnalystId[];
+  /** True once the user has changed the analyst list themselves. While false, a Taiwan code runs the Taiwan default (market, fundamentals, news);
+   * a US code always uses `selectedAnalysts`. A saved explicit selection is never overridden. */
+  analystsExplicit: boolean;
   /** News analyst headline source (Part B). Default `auto`. */
   newsSource: NewsSource;
   /** Hard token-cap backstop; null = no cap (rely on the pre-flight reserve). */
@@ -82,6 +85,7 @@ export const DEFAULT_PRO_CONFIG: ProConfigState = {
   maxDebateRounds: 1,
   maxRiskRounds: 1,
   selectedAnalysts: ['market'],
+  analystsExplicit: false,
   newsSource: 'auto',
   tokenCap: null,
 };
@@ -102,11 +106,16 @@ export function loadProConfig(): ProConfigState {
     const newsSource = (NEWS_SOURCES as readonly string[]).includes(parsed.newsSource as string)
       ? (parsed.newsSource as NewsSource)
       : DEFAULT_PRO_CONFIG.newsSource;
+    const finalAnalysts = analysts.length > 0 ? analysts : DEFAULT_PRO_CONFIG.selectedAnalysts;
+    // A blob saved before the flag existed: a list that differs from the old market-only default can only have been chosen by the user
+    // (kept as explicit); exactly the old default is indistinguishable from "never touched" and takes the Taiwan default for Taiwan codes.
+    const legacyDiffers = finalAnalysts.length !== 1 || finalAnalysts[0] !== 'market';
     return {
       ...DEFAULT_PRO_CONFIG,
       ...parsed,
       // Never allow an empty analyst set (a run with zero analysts is invalid).
-      selectedAnalysts: analysts.length > 0 ? analysts : DEFAULT_PRO_CONFIG.selectedAnalysts,
+      selectedAnalysts: finalAnalysts,
+      analystsExplicit: typeof parsed.analystsExplicit === 'boolean' ? parsed.analystsExplicit : legacyDiffers,
       newsSource,
     };
   } catch {
@@ -155,6 +164,7 @@ export function assembleProConfig(
     max_debate_rounds: state.maxDebateRounds,
     max_risk_discuss_rounds: state.maxRiskRounds,
     selected_analysts: state.selectedAnalysts.slice(),
+    analysts_explicit: state.analystsExplicit,
     news_source: state.newsSource,
   };
   if (state.tokenCap && state.tokenCap > 0) {

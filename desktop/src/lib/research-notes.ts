@@ -48,6 +48,35 @@ export function findLimitations(info: ResearchInfo): Array<{ code: string; text:
   return info.complete?.limitations ?? [];
 }
 
+export interface SnapshotView {
+  /** 'present' = manifest saved; 'missing' = a Taiwan full-graph report written before snapshots existed (never reconstructed); 'failed' = the run could not save one. */
+  state: 'present' | 'missing' | 'failed';
+  id?: string;
+  calls?: number;
+  sources: Array<{ id: string; ok: number; notOk: number }>;
+  gaps: string[];
+}
+
+/** What the Taiwan run actually fed its analysts: the snapshot manifest, an explicit "none" for older reports, or null for non-Taiwan/other flows. */
+export function findSnapshot(info: ResearchInfo): SnapshotView | null {
+  const c = info.complete;
+  if (!c || c.market !== 'TW' || (c as { tw_flow?: string }).tw_flow !== 'full') return null;
+  const m = c.evidence_snapshot;
+  if (!m) return { state: 'missing', sources: [], gaps: [] };
+  if (m.status && m.status !== 'ok') return { state: 'failed', sources: [], gaps: [] };
+  const sources = Object.entries(m.coverage?.sources ?? {}).map(([id, v]) => ({ id, ok: v.ok, notOk: v.not_ok }));
+  return { state: 'present', id: m.snapshot_id, calls: m.calls, sources, gaps: m.coverage?.gaps ?? [] };
+}
+
+/** Markdown for the snapshot/coverage section (empty for non-Taiwan-full reports). */
+export function snapshotMarkdown(info: ResearchInfo, t: T): string[] {
+  const v = findSnapshot(info);
+  if (!v) return [];
+  if (v.state !== 'present') return [`## ${t('snapshot.title')}`, '', `- ${t(v.state === 'missing' ? 'snapshot.missing' : 'snapshot.failed')}`, ''];
+  return [`## ${t('snapshot.title')}`, '', `- ${t('snapshot.id', { id: String(v.id).slice(0, 16), n: String(v.calls ?? 0) })}`,
+    ...v.sources.map((s) => `- ${s.id}: ${s.ok} ok / ${s.notOk} ${t('snapshot.notOk')}`), ...v.gaps.map((g) => `- ${t('snapshot.gap')}: ${g}`), ''];
+}
+
 /** Markdown for the fixed "data limitations" section; empty when the run carried none. */
 export function limitationsMarkdown(info: ResearchInfo, t: T): string[] {
   const lim = findLimitations(info);
@@ -57,7 +86,7 @@ export function limitationsMarkdown(info: ResearchInfo, t: T): string[] {
 
 /** Export section: research disclosures followed by the fixed limitations block. */
 export function researchMarkdown(info: ResearchInfo, t: T, fmt: (n: number) => string = String, notices: string[] = []): string[] {
-  return [...researchMarkdownCore(info, t, fmt, notices), ...limitationsMarkdown(info, t)];
+  return [...researchMarkdownCore(info, t, fmt, notices), ...limitationsMarkdown(info, t), ...snapshotMarkdown(info, t)];
 }
 
 /** Markdown section for the export: snapshot, gaps, Dexter status and every finding with its verdict. */

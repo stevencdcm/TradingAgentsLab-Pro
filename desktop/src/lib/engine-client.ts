@@ -300,6 +300,8 @@ export interface ProConfig {
   max_risk_discuss_rounds?: number;
   effort?: string;
   selected_analysts?: string[];
+  /** false = the user never chose analysts: the engine applies the Taiwan default for a Taiwan code (US codes use selected_analysts). */
+  analysts_explicit?: boolean;
   /** News analyst headline source: 'auto' | 'alpaca' | 'yfinance'. Absent =
    * 'auto' (engine prefers Alpaca when connected, else yfinance). */
   news_source?: string;
@@ -425,6 +427,18 @@ export interface SessionCompleteEvent {
   data_mode?: 'latest' | 'historical';
   dexter?: { ran: boolean; status: string | null; reason: string | null; verified?: number };
   limitations?: Array<{ code: string; text: string }>;
+  /** Taiwan full graph: manifest of the immutable evidence snapshot (what the tools actually handed to the analysts). Absent on older reports. */
+  evidence_snapshot?: {
+    status?: string;
+    reason?: string;
+    snapshot_id?: string;
+    content_sha256?: string;
+    calls?: number;
+    data_mode?: string;
+    analysts?: string[] | null;
+    coverage?: { sources?: Record<string, { ok: number; not_ok: number }>; gaps?: string[] };
+  };
+  tw_flow?: string;
 }
 
 export type AssetClass = 'equity' | 'crypto';

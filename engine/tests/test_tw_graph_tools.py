@@ -80,7 +80,8 @@ def test_vendor_is_registered_for_every_tool_and_config_uses_only_it():
 
 
 def test_social_analyst_is_dropped_and_reported():
-    assert tg.graph_analysts(None) == (["market", "news", "fundamentals"], ["social"])
+    assert tg.graph_analysts(None) == (["market", "fundamentals", "news"], [])                 # fresh Taiwan default: the three with Taiwan data
+    assert tg.graph_analysts(["market", "social", "news", "fundamentals"]) == (["market", "news", "fundamentals"], ["social"])
     assert tg.graph_analysts(["market", "social"]) == (["market"], ["social"])
     assert tg.graph_analysts(["market"]) == (["market"], [])
 
@@ -133,7 +134,7 @@ def test_historical_run_refuses_unprovable_fundamentals_and_news_but_keeps_price
 
 def test_news_is_headlines_only_with_urls_and_flagged(env):
     out = tg.get_news("2330", (TODAY - timedelta(days=2)).isoformat(), TODAY.isoformat())
-    assert "headlines only" in out and "NO summary" in out and "台積電法說會" in out and "https://example.test/a" in out
+    assert "HEADLINES ONLY" in out and "no summary" in out and "third-party DATA" in out and "published_at unknown" in out and "台積電法說會" in out and "https://example.test/a" in out
     assert "unverified" in out
 
 
@@ -271,7 +272,9 @@ def sources_api(tmp_db, tmp_path, monkeypatch):
 def test_sources_list_never_claims_connected_before_a_real_observation(env, sources_api):
     r = sources_api.get("/tw/sources").json()
     by = {s["id"]: s for s in r["sources"]}
-    assert set(by) == {"finmind_free", "twse_material_disclosures", "tpex_material_disclosures", "mops_historical_disclosures", "twse_tpex_open_data"}
+    assert set(by) == {"finmind_free", "twse_material_disclosures", "tpex_material_disclosures", "mops_historical_disclosures", "twse_tpex_open_data",
+                       "twse_valuation", "tpex_valuation", "twse_institutional", "tpex_institutional", "twse_margin", "tpex_margin"}
+    assert all(by[i]["implementation_status"] == "wired" and by[i]["used_by"] for i in by if i != "mops_historical_disclosures")
     assert by["finmind_free"]["state"] == "wired_untested" and by["finmind_free"]["last_ok_at"] is None
     assert by["mops_historical_disclosures"]["state"] == "not_implemented" and by["mops_historical_disclosures"]["implementation_status"] == "unsupported"
     assert by["finmind_free"]["used_by"] and by["finmind_free"]["limits"] and by["finmind_free"]["official_docs"] and by["finmind_free"]["verified_at"]

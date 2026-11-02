@@ -1,6 +1,6 @@
 import { formatRunDuration } from '../lib/duration';
 import { findNotices,
-  findLimitations, findResearch, researchNotes } from '../lib/research-notes';
+  findLimitations, findResearch, findSnapshot, researchNotes } from '../lib/research-notes';
 import { useEffect, useRef, useState } from 'react';
 import type {
   DebateEvent,
@@ -353,6 +353,7 @@ function DebateStream({ events, isStreaming, costReport }: DebateStreamProps) {
   const notices = findNotices(events);
   const researchNotesList = researchNotes(findResearch(events), t, i18n.formatNumber);
   const limitations = findLimitations(findResearch(events));
+  const snapshot = findSnapshot(findResearch(events));
   const groups = groupByPhase(events);
   const decision = findDecision(events);
   const meta = findDecisionMeta(events);
@@ -521,6 +522,37 @@ function DebateStream({ events, isStreaming, costReport }: DebateStreamProps) {
                 <span className={styles.newsMeta}>{x.text}</span>
               </li>
             ))}
+          </ul>
+        </div>
+      )}
+
+      {snapshot && (
+        <div className={styles.news} data-testid="run-snapshot">
+          <div className={styles.newsHeader}>
+            <span className={styles.newsLabel}>{t('snapshot.title')}</span>
+          </div>
+          <ul className={styles.newsList}>
+            {snapshot.state !== 'present' ? (
+              <li className={styles.newsItem}>
+                <span className={styles.newsMeta}>{t(snapshot.state === 'missing' ? 'snapshot.missing' : 'snapshot.failed')}</span>
+              </li>
+            ) : (
+              <>
+                <li className={styles.newsItem}>
+                  <span className={styles.newsMeta}>{t('snapshot.id', { id: String(snapshot.id).slice(0, 16), n: String(snapshot.calls ?? 0) })}</span>
+                </li>
+                {snapshot.sources.map((s) => (
+                  <li key={s.id} className={styles.newsItem}>
+                    <span className={styles.newsMeta}>{s.id}: {s.ok} ok / {s.notOk} {t('snapshot.notOk')}</span>
+                  </li>
+                ))}
+                {snapshot.gaps.map((g) => (
+                  <li key={g} className={styles.newsItem}>
+                    <span className={styles.newsMeta}>{t('snapshot.gap')}: {g}</span>
+                  </li>
+                ))}
+              </>
+            )}
           </ul>
         </div>
       )}

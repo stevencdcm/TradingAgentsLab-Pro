@@ -26,7 +26,7 @@ _CATALOG: tuple[dict[str, Any], ...] = (
         "license_notes": "僅用於符合 FinMind Free 條款的非商業研究；原始資料不得再散布。設定頁需明示來源 FinMind。",
         "verified_at": _VERIFIED_AT,
         "verification_scope": "官方文件與 2330/6488 少量匿名 API 探測；不代表完整歷史或研究圖已接通。",
-        "implementation_status": "adapter_available_unwired",
+        "implementation_status": "wired",
     },
     {
         "id": "twse_material_disclosures",
@@ -40,7 +40,7 @@ _CATALOG: tuple[dict[str, Any], ...] = (
         "license_notes": "呈現須標明 TWSE 原始來源；公告發言/事實日期不等於可證明的公開時間。",
         "verified_at": _VERIFIED_AT,
         "verification_scope": "OpenAPI schema 與當日匿名 GET；非歷史完整性驗證。",
-        "implementation_status": "adapter_available_unwired",
+        "implementation_status": "wired",
     },
     {
         "id": "tpex_material_disclosures",
@@ -54,7 +54,7 @@ _CATALOG: tuple[dict[str, Any], ...] = (
         "license_notes": "呈現須標明 TPEx 原始來源；公告發言/事實日期不等於可證明的公開時間。",
         "verified_at": _VERIFIED_AT,
         "verification_scope": "OpenAPI schema 與當日匿名 GET；6488 當日無列，不代表歷史無公告。",
-        "implementation_status": "adapter_available_unwired",
+        "implementation_status": "wired",
     },
     {
         "id": "mops_historical_disclosures",

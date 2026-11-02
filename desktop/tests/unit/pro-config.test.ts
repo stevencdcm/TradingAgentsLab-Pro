@@ -137,3 +137,25 @@ describe('news source (Part B)', () => {
     expect(loadProConfig().newsSource).toBe('alpaca');
   });
 });
+
+describe('analyst selection: Taiwan default vs explicit choice (D47)', () => {
+  it('a fresh install sends analysts_explicit=false so the engine applies the Taiwan default; US keeps selected_analysts', () => {
+    const cfg = assembleProConfig('m', 'anthropic', base);
+    expect(cfg.analysts_explicit).toBe(false);
+    expect(cfg.selected_analysts).toEqual(['market']);            // what a US code runs, unchanged
+  });
+
+  it('a selection the user made is sent as explicit and never overridden', () => {
+    const chosen = { ...base, selectedAnalysts: ['market'] as ProConfigState['selectedAnalysts'], analystsExplicit: true };
+    saveProConfig(chosen);
+    expect(loadProConfig().analystsExplicit).toBe(true);
+    expect(assembleProConfig('m', 'anthropic', loadProConfig()).analysts_explicit).toBe(true);
+  });
+
+  it('a blob saved before the flag existed: a custom list stays explicit, exactly the old default counts as untouched', () => {
+    localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market', 'news'], maxDebateRounds: 1 }));
+    expect(loadProConfig().analystsExplicit).toBe(true);
+    localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market'] }));
+    expect(loadProConfig().analystsExplicit).toBe(false);
+  });
+});

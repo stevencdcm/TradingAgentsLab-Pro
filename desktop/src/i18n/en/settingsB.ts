@@ -64,6 +64,8 @@ export const settingsB = {
   'analysis.analysts': 'Analysts',
   'analysis.analystsHint':
     'Which analysts run in the diligence. Market is free (yfinance). News, Social, and Fundamentals require an Alpha Vantage data key (add one under Data Providers). Without a data key, keep Market only.',
+  'analysis.analystsTwHint':
+    'Taiwan codes: until you pick analysts yourself, the default is Market, Fundamentals and News using FinMind (free tier) and official TWSE/TPEx data - no Alpha Vantage key needed. The Social analyst is always off for Taiwan (no reliable Taiwan social data). Once you choose, your selection is used.',
   'analysis.requiresKey': 'Requires an Alpha Vantage data key',
   'analysis.newsSource': 'News source',
   'analysis.newsSourceHint':

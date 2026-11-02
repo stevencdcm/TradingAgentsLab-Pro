@@ -36,6 +36,9 @@ TWSE_MARGIN_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 TPEX_MARGIN_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"
 
 AVAILABILITY = "exchange_daily_file_release_time_unverified"
+COMPARABILITY = ("Each exchange's own definition. 'foreign' excludes foreign dealers on both markets (foreign dealers are shown separately); 'dealers' follows "
+                 "each exchange's own grouping and margin units/limits are each exchange's own. TWSE and TPEx values with the same name are NOT one series "
+                 "and must not be added or compared directly.")
 SCHEMA = "her30.tw_market/1"
 
 
@@ -117,9 +120,7 @@ class OfficialMarketData:
         rec = {"pe_ratio": pe, "pb_ratio": pb, "dividend_yield_pct": dy,
                "pe_note": None if pe is not None else "P/E not reported by the exchange (usually no positive trailing earnings) - not zero",
                "units": {"pe_ratio": "times", "pb_ratio": "times", "dividend_yield_pct": "percent"}}
-        if market == "TWSE":
-            rec.update(close_price=num(row.get("ClosePrice")), dividend_year_roc=str(row.get("DividendYear") or "") or None, fiscal_year_quarter=row.get("FiscalYearQuarter"))
-        else:
+        if market != "TWSE":                      # the TWSE all-stocks file has no price / dividend-year columns; only TPEx adds dividend per share
             rec.update(dividend_per_share_twd=num(row.get("DividendPerShare")))
         return _ok("valuation", src, url, market, code, dd, rec, req, fetched, hit)
 
@@ -138,11 +139,12 @@ class OfficialMarketData:
         r = {k.strip(): v for k, v in row.items()}          # exact keys: two 'Dealers' sell columns differ only by a space
 
         def grp(prefix_buy: str, prefix_sell: str, prefix_diff: str) -> dict[str, Any]:
-            b, s, d = num(r.get(prefix_buy)), num(r.get(prefix_sell)), num(r.get(prefix_diff))
-            return {"buy": b, "sell": s, "net": d, "consistent": None if None in (b, s, d) else abs((b - s) - d) < 0.5}
-        rec = {"unit": "shares",
-               "foreign": grp("ForeignInvestorsIncludeMainlandAreaInvestors-TotalBuy", "ForeignInvestorsIncludeMainlandAreaInvestors-TotalSell",
-                              "ForeignInvestorsInclude MainlandAreaInvestors-Difference"),
+            b, s_, d = num(r.get(prefix_buy)), num(r.get(prefix_sell)), num(r.get(prefix_diff))
+            return {"buy": b, "sell": s_, "net": d, "consistent": None if None in (b, s_, d) else abs((b - s_) - d) < 0.5}
+        ex = "Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)"
+        rec = {"unit": "shares", "comparability": COMPARABILITY,
+               "foreign": grp(f"{ex}-Total Buy", f"{ex}-Total Sell", f"{ex}-Difference"),              # same caliber as TWSE: foreign dealers excluded
+               "foreign_dealers": grp("Foreign Dealers-Total Buy", "Foreign Dealers-TotalSell", "ForeignDealers-Difference"),
                "investment_trust": grp("SecuritiesInvestmentTrustCompanies-TotalBuy", "SecuritiesInvestmentTrustCompanies-TotalSell",
                                        "SecuritiesInvestmentTrustCompanies-Difference"),
                "dealers": grp("Dealers-TotalBuy", "Dealers-TotalSell", "Dealers-Difference"),
@@ -170,7 +172,9 @@ class OfficialMarketData:
         fb, fs, fn = g("外陸資買進股數(不含外資自營商)"), g("外陸資賣出股數(不含外資自營商)"), g("外陸資買賣超股數(不含外資自營商)")
         tb, ts, tn = g("投信買進股數"), g("投信賣出股數"), g("投信買賣超股數")
         dn = g("自營商買賣超股數")
-        rec = {"unit": "shares",
+        fdn = g("外資自營商買賣超股數")
+        rec = {"unit": "shares", "comparability": COMPARABILITY,
+               "foreign_dealers": {"buy": g("外資自營商買進股數"), "sell": g("外資自營商賣出股數"), "net": fdn, "consistent": None},
                "foreign": {"buy": fb, "sell": fs, "net": fn, "consistent": None if None in (fb, fs, fn) else abs((fb - fs) - fn) < 0.5},
                "investment_trust": {"buy": tb, "sell": ts, "net": tn, "consistent": None if None in (tb, ts, tn) else abs((tb - ts) - tn) < 0.5},
                "dealers": {"buy": None, "sell": None, "net": dn, "consistent": None},

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -78,6 +79,7 @@ class Recorder:
         self.dropped = 0
         self._lock = threading.Lock()
         self.started_at = _now()
+        self.run_nonce = uuid.uuid4().hex                  # makes the snapshot id unique PER RUN (see finalize)
 
     def add(self, tool: str, args: dict[str, Any], output: str, evidence: Optional[list[dict[str, Any]]] = None, gaps: Optional[list[str]] = None) -> None:
         text = output if isinstance(output, str) else str(output)
@@ -107,13 +109,16 @@ class Recorder:
                 "analysts": analysts, "dropped_analysts": dropped_analysts or [], "model": model,
                 "items": items, "items_dropped_over_limit": dropped,
                 "coverage": {"sources": covered, "gaps": sorted(set(gaps))[:60]}}
-        # the id/hash cover the content that matters for comparison (calls, exact-output hashes, evidence), not wall-clock stamps
+        # `content_sha256` covers only what the analysts were handed (calls, exact-output hashes, evidence) - no model, analysts, clock or run key -
+        # so two runs that saw identical inputs share it: that is the "same input" test for comparing models. The snapshot ID, by contrast, is
+        # unique per run (content + run nonce): each run owns its own file, so a run's model, analysts and times can never be read from
+        # another run that happened to see the same text.
         stable = {"stock_id": self.code, "trade_date": self.trade_date, "data_mode": mode,
                   "calls": [{"tool": i["tool"], "args": i["args"], "output_sha256": i["output_sha256"],
                              "evidence": [{k: e[k] for k in ("source_id", "request", "status", "data_date", "content_sha256")} for e in i["evidence"]]} for i in items]}
         digest = sha256_text(canonical(stable))
         body["content_sha256"] = digest
-        body["snapshot_id"] = "tws_" + digest[:32]
+        body["snapshot_id"] = "tws_" + sha256_text(digest + ":" + self.run_nonce)[:32]
         return body
 
 
@@ -131,7 +136,7 @@ def owner_dir(owner: str, base: Optional[Path] = None) -> Path:
 
 
 def persist(owner: str, snap: dict[str, Any], base: Optional[Path] = None) -> dict[str, Any]:
-    """Write the snapshot once; return the manifest that goes into the session (id, hash, counts, coverage - no content)."""
+    """Write this run's snapshot once (its own file); return the manifest that goes into the session (id, hash, counts, coverage - no content)."""
     d = owner_dir(owner, base)
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     raw = json.dumps(snap, ensure_ascii=False)
@@ -143,13 +148,12 @@ def persist(owner: str, snap: dict[str, Any], base: Optional[Path] = None) -> di
     path = d / f"{snap['snapshot_id']}.json"
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:                                                  # same content already saved for this owner: immutable, reuse
-        fd = None
-    if fd is not None:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(raw)
-        os.chmod(path, 0o400)
-        _prune(d, keep=path)
+    except FileExistsError:                                                  # ids are per run: a collision is never silently shared
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(raw)
+    os.chmod(path, 0o400)
+    _prune(d, keep=path)
     return manifest_of(snap)
 
 

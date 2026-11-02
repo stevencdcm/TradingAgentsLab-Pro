@@ -107,15 +107,15 @@ export function loadProConfig(): ProConfigState {
       ? (parsed.newsSource as NewsSource)
       : DEFAULT_PRO_CONFIG.newsSource;
     const finalAnalysts = analysts.length > 0 ? analysts : DEFAULT_PRO_CONFIG.selectedAnalysts;
-    // A blob saved before the flag existed: a list that differs from the old market-only default can only have been chosen by the user
-    // (kept as explicit); exactly the old default is indistinguishable from "never touched" and takes the Taiwan default for Taiwan codes.
-    const legacyDiffers = finalAnalysts.length !== 1 || finalAnalysts[0] !== 'market';
+    // Anything the user persisted counts as their choice: a stored analyst list is NEVER replaced by the Taiwan default behind their back
+    // (that would add paid agents they had not asked for). Only "nothing saved / unreadable" is untouched (handled by the callers below).
+    const hasSavedList = Array.isArray(parsed.selectedAnalysts) && analysts.length > 0;
     return {
       ...DEFAULT_PRO_CONFIG,
       ...parsed,
       // Never allow an empty analyst set (a run with zero analysts is invalid).
       selectedAnalysts: finalAnalysts,
-      analystsExplicit: typeof parsed.analystsExplicit === 'boolean' ? parsed.analystsExplicit : legacyDiffers,
+      analystsExplicit: typeof parsed.analystsExplicit === 'boolean' ? parsed.analystsExplicit : hasSavedList,
       newsSource,
     };
   } catch {

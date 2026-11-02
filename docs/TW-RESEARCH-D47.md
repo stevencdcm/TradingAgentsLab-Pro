@@ -37,4 +37,7 @@ exchange payloads (the live probe in `docs/tw-probes/` is metadata only).
 ## Limits
 * Not a back-test source; no adjusted prices; no Taiwan social, macro-news or insider data.
 * A snapshot exists only for a run that reached `session.complete` (a cancelled/failed run has none).
-* Identical content from the same owner shares one snapshot file (immutable); the manifest's `created_at` is the run's own.
+* Each run owns its snapshot file (id = content hash + a per-run nonce), so its model, analysts and times are its own. `content_sha256` is the
+  same for runs that saw identical tool outputs: that is how two models are shown to have had the same input.
+* TWSE and TPEx institutional/margin fields keep each exchange's own definition. `foreign` excludes foreign dealers on both (shown separately as
+  `foreign_dealers`); same-named values from the two markets are not one series and must not be compared directly.

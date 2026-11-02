@@ -152,10 +152,20 @@ describe('analyst selection: Taiwan default vs explicit choice (D47)', () => {
     expect(assembleProConfig('m', 'anthropic', loadProConfig()).analysts_explicit).toBe(true);
   });
 
-  it('a blob saved before the flag existed: a custom list stays explicit, exactly the old default counts as untouched', () => {
+  it('a saved list is always the user\'s choice - even exactly [market] from a blob that predates the flag - and is never widened', () => {
     localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market', 'news'], maxDebateRounds: 1 }));
     expect(loadProConfig().analystsExplicit).toBe(true);
     localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market'] }));
+    const cfg = loadProConfig();
+    expect(cfg.analystsExplicit).toBe(true);
+    expect(assembleProConfig('m', 'anthropic', cfg)).toMatchObject({ selected_analysts: ['market'], analysts_explicit: true });
+  });
+
+  it('only "nothing saved" or an unreadable blob is untouched (Taiwan default applies); a flag written by this version is honoured', () => {
     expect(loadProConfig().analystsExplicit).toBe(false);
+    localStorage.setItem('tal:pro-config', '{not json');
+    expect(loadProConfig().analystsExplicit).toBe(false);
+    localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market'], analystsExplicit: false, maxDebateRounds: 2 }));
+    expect(loadProConfig().analystsExplicit).toBe(false);          // written by this version after the user changed something else
   });
 });

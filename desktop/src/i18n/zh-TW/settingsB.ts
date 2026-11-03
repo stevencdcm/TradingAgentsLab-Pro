@@ -63,6 +63,8 @@ export const settingsBZhTW: Record<keyof typeof settingsB, string> = {
   'analysis.analysts': '分析師',
   'analysis.analystsHint':
     '盡職調查要執行哪些分析師。市場分析師免費（yfinance）。新聞、社群與基本面需要 Alpha Vantage 資料金鑰（請到「資料供應商」新增）。沒有資料金鑰時，請只保留市場分析師。',
+  'analysis.analystsTwHint':
+    '台股（四碼代號）：尚未自行選擇時，預設使用市場、基本面、新聞三位分析師，資料來自 FinMind 免費層與證交所／櫃買官方資料，不需要 Alpha Vantage；社群分析師在台股一律停用（沒有可靠的台股社群資料）。你一旦自己勾選，就會照你的選擇執行。',
   'analysis.requiresKey': '需要 Alpha Vantage 資料金鑰',
   'analysis.newsSource': '新聞來源',
   'analysis.newsSourceHint':

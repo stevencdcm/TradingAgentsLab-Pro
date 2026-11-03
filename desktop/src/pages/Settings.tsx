@@ -1873,7 +1873,7 @@ function ProAnalysisTab() {
     // Keep canonical order and never allow an empty set (an analyst-less run
     // is invalid); fall back to market-only.
     const ordered = ALL_ANALYSTS.filter((a) => raw.includes(a));
-    persist({ ...state, selectedAnalysts: ordered.length > 0 ? ordered : ['market'] });
+    persist({ ...state, analystsExplicit: true, selectedAnalysts: ordered.length > 0 ? ordered : ['market'] });
   };
 
   const commitTokenCap = () => {
@@ -1889,6 +1889,7 @@ function ProAnalysisTab() {
       <fieldset className={styles.formGroup}>
         <legend className={styles.formLegend}>{t('analysis.analysts')}</legend>
         <p className={styles.formHint}>{t('analysis.analystsHint')}</p>
+        <p className={styles.formHint}>{t('analysis.analystsTwHint')}</p>
         {ALL_ANALYSTS.map((id) => (
           <label key={id} className={styles.toggleRow}>
             <input

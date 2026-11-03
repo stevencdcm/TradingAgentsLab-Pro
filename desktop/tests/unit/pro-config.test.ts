@@ -137,3 +137,35 @@ describe('news source (Part B)', () => {
     expect(loadProConfig().newsSource).toBe('alpaca');
   });
 });
+
+describe('analyst selection: Taiwan default vs explicit choice (D47)', () => {
+  it('a fresh install sends analysts_explicit=false so the engine applies the Taiwan default; US keeps selected_analysts', () => {
+    const cfg = assembleProConfig('m', 'anthropic', base);
+    expect(cfg.analysts_explicit).toBe(false);
+    expect(cfg.selected_analysts).toEqual(['market']);            // what a US code runs, unchanged
+  });
+
+  it('a selection the user made is sent as explicit and never overridden', () => {
+    const chosen = { ...base, selectedAnalysts: ['market'] as ProConfigState['selectedAnalysts'], analystsExplicit: true };
+    saveProConfig(chosen);
+    expect(loadProConfig().analystsExplicit).toBe(true);
+    expect(assembleProConfig('m', 'anthropic', loadProConfig()).analysts_explicit).toBe(true);
+  });
+
+  it('a saved list is always the user\'s choice - even exactly [market] from a blob that predates the flag - and is never widened', () => {
+    localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market', 'news'], maxDebateRounds: 1 }));
+    expect(loadProConfig().analystsExplicit).toBe(true);
+    localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market'] }));
+    const cfg = loadProConfig();
+    expect(cfg.analystsExplicit).toBe(true);
+    expect(assembleProConfig('m', 'anthropic', cfg)).toMatchObject({ selected_analysts: ['market'], analysts_explicit: true });
+  });
+
+  it('only "nothing saved" or an unreadable blob is untouched (Taiwan default applies); a flag written by this version is honoured', () => {
+    expect(loadProConfig().analystsExplicit).toBe(false);
+    localStorage.setItem('tal:pro-config', '{not json');
+    expect(loadProConfig().analystsExplicit).toBe(false);
+    localStorage.setItem('tal:pro-config', JSON.stringify({ selectedAnalysts: ['market'], analystsExplicit: false, maxDebateRounds: 2 }));
+    expect(loadProConfig().analystsExplicit).toBe(false);          // written by this version after the user changed something else
+  });
+});

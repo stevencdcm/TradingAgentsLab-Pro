@@ -1,0 +1,185 @@
+{
+ "schema": "her30.tw_live_probe/1",
+ "run_date": "2026-11-02",
+ "probed_at": "2026-11-02T13:52:44Z",
+ "note": "metadata only; no values, no response bodies",
+ "results": [
+  {
+   "stock_id": "2330",
+   "market": "TWSE",
+   "kind": "valuation",
+   "source_id": "twse_valuation",
+   "source_url": "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL",
+   "request": {
+    "stock_id": "2330",
+    "market": "TWSE"
+   },
+   "status": "ok",
+   "reason": null,
+   "data_date": "2026-10-30",
+   "published_at": null,
+   "availability": "exchange_daily_file_release_time_unverified",
+   "fetched_at": "2026-11-02T13:52:35.793807+00:00",
+   "usable_in_latest_run": true,
+   "stale_days": 3,
+   "fields_present": [
+    "dividend_yield_pct",
+    "pb_ratio",
+    "pe_ratio"
+   ],
+   "record_sha256": "572a91d6edaf921dcd35abc7da89624e8abc782b93c90e21d673141dc1cc0f1e"
+  },
+  {
+   "stock_id": "2330",
+   "market": "TWSE",
+   "kind": "institutional",
+   "source_id": "twse_institutional",
+   "source_url": "https://www.twse.com.tw/rwd/zh/fund/T86?date=20261102&selectType=ALL&response=json",
+   "request": {
+    "stock_id": "2330",
+    "market": "TWSE",
+    "date": "2026-11-02",
+    "selectType": "ALL"
+   },
+   "status": "ok",
+   "reason": null,
+   "data_date": "2026-11-02",
+   "published_at": null,
+   "availability": "exchange_daily_file_release_time_unverified",
+   "fetched_at": "2026-11-02T13:52:36.877116+00:00",
+   "usable_in_latest_run": true,
+   "stale_days": 0,
+   "fields_present": [
+    "total_net",
+    "unit"
+   ],
+   "record_sha256": "0eebd985cd548bac9959ffcc0727a018d444a05db362822a42a3245c9b4e4780"
+  },
+  {
+   "stock_id": "2330",
+   "market": "TWSE",
+   "kind": "margin",
+   "source_id": "twse_margin",
+   "source_url": "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=20261102&selectType=STOCK&response=json",
+   "request": {
+    "stock_id": "2330",
+    "market": "TWSE",
+    "date": "2026-11-02",
+    "selectType": "STOCK"
+   },
+   "status": "ok",
+   "reason": null,
+   "data_date": "2026-11-02",
+   "published_at": null,
+   "availability": "exchange_daily_file_release_time_unverified",
+   "fetched_at": "2026-11-02T13:52:37.799936+00:00",
+   "usable_in_latest_run": true,
+   "stale_days": 0,
+   "fields_present": [
+    "margin_balance",
+    "margin_balance_prev",
+    "margin_buy",
+    "margin_cash_repay",
+    "margin_limit_next",
+    "margin_sell",
+    "offset",
+    "short_balance",
+    "short_balance_prev",
+    "short_cover_buy",
+    "short_limit_next",
+    "short_sell",
+    "short_stock_repay",
+    "unit"
+   ],
+   "record_sha256": "4b7e7c99839c47e3d2ac402b3fda5f40beb96021f8b4f5486cc421d0e0ca4c71"
+  },
+  {
+   "stock_id": "6488",
+   "market": "TPEx",
+   "kind": "valuation",
+   "source_id": "tpex_valuation",
+   "source_url": "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis",
+   "request": {
+    "stock_id": "6488",
+    "market": "TPEx"
+   },
+   "status": "ok",
+   "reason": null,
+   "data_date": "2026-11-02",
+   "published_at": null,
+   "availability": "exchange_daily_file_release_time_unverified",
+   "fetched_at": "2026-11-02T13:52:40.063521+00:00",
+   "usable_in_latest_run": true,
+   "stale_days": 0,
+   "fields_present": [
+    "dividend_per_share_twd",
+    "dividend_yield_pct",
+    "pb_ratio",
+    "pe_ratio"
+   ],
+   "record_sha256": "dbdc85b58fd3615a3d12e7baefb632ee5247c8aa8ab24a73d966a13be6502f74"
+  },
+  {
+   "stock_id": "6488",
+   "market": "TPEx",
+   "kind": "institutional",
+   "source_id": "tpex_institutional",
+   "source_url": "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading",
+   "request": {
+    "stock_id": "6488",
+    "market": "TPEx"
+   },
+   "status": "ok",
+   "reason": null,
+   "data_date": "2026-11-02",
+   "published_at": null,
+   "availability": "exchange_daily_file_release_time_unverified",
+   "fetched_at": "2026-11-02T13:52:42.396523+00:00",
+   "usable_in_latest_run": true,
+   "stale_days": 0,
+   "fields_present": [
+    "total_net",
+    "unit"
+   ],
+   "record_sha256": "0b5ab3f0a36642500ab01d3db876a2da9a6cc286206a41d9e3389ab438881b12"
+  },
+  {
+   "stock_id": "6488",
+   "market": "TPEx",
+   "kind": "margin",
+   "source_id": "tpex_margin",
+   "source_url": "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance",
+   "request": {
+    "stock_id": "6488",
+    "market": "TPEx"
+   },
+   "status": "ok",
+   "reason": null,
+   "data_date": "2026-10-30",
+   "published_at": null,
+   "availability": "exchange_daily_file_release_time_unverified",
+   "fetched_at": "2026-11-02T13:52:44.402210+00:00",
+   "usable_in_latest_run": true,
+   "stale_days": 3,
+   "fields_present": [
+    "margin_balance",
+    "margin_balance_prev",
+    "margin_buy",
+    "margin_cash_repay",
+    "margin_limit_next",
+    "margin_sell",
+    "margin_utilization_pct",
+    "offset",
+    "short_balance",
+    "short_balance_prev",
+    "short_cover_buy",
+    "short_limit_next",
+    "short_sell",
+    "short_stock_repay",
+    "short_utilization_pct",
+    "unit"
+   ],
+   "record_sha256": "338c12ec409ffdd356a90aec844af760391a9b236023dd4bf3b27713288dc861"
+  }
+ ]
+}

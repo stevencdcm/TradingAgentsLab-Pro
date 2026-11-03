@@ -508,6 +508,16 @@ def build_app(*, token: str) -> FastAPI:
             )
         return telegram_bot.status().to_dict()
 
+    @app.get("/tw/run-snapshots/{snapshot_id}", dependencies=bearer)
+    async def tw_run_snapshot(snapshot_id: str, request: Request) -> dict[str, Any]:
+        """The exact Taiwan tool inputs one run's analysts saw (owner-scoped; 404 for anyone else's or an unknown id)."""
+        from . import tw_snapshot
+
+        snap = tw_snapshot.load(str(request.scope.get("tal_owner") or "local"), snapshot_id)
+        if snap is None:
+            raise HTTPException(status_code=404, detail="snapshot not found")
+        return snap
+
     @app.post("/tw/evidence", dependencies=bearer)
     async def tw_evidence_build(req: TwEvidenceRequest) -> dict[str, Any]:
         """Build (and save) an immutable Taiwan evidence pack. No LLM, no cost.
@@ -1071,8 +1081,13 @@ def build_app(*, token: str) -> FastAPI:
                             fm_token = secret_refs.resolve_named(start.get("finmind_token"), "data:finmind") if start.get("finmind_token") else None
                         except secret_refs.SecretRefError:
                             fm_token = None
-                        tw_graph_tools.begin_run(trade_date, fm_token, str(start.get("tw_data_mode") or "").lower() or None)
+                        tw_graph_tools.begin_run(trade_date, fm_token, str(start.get("tw_data_mode") or "").lower() or None, code=ticker)
                         tw_run_started = True
+                        # Fresh Taiwan install (analysts never chosen by the user, flag sent as false) -> the Taiwan default of three;
+                        # a saved explicit selection, or a client that sends no flag, is kept exactly as sent.
+                        analysts_source = "taiwan_default" if (pro_config_raw.get("analysts_explicit") is False or not selected) else "user_selection"
+                        if pro_config_raw.get("analysts_explicit") is False:
+                            selected = None
                         selected, dropped = tw_graph_tools.graph_analysts(selected)
                         lib_dv = {**(pro_lib_config.get("data_vendors") or {}), **tw_graph_tools.library_config()["data_vendors"]}
                         pro_lib_config = {**pro_lib_config, "data_vendors": lib_dv, "tool_vendors": {}}
@@ -1080,9 +1095,10 @@ def build_app(*, token: str) -> FastAPI:
                             "type": "run.notice", "code": "taiwan_full_graph",
                             "data_mode": tw_graph_tools.mode(), "market": "TW",
                             "data_mode_label": ("歷史日期：只採用可證明當時已公開的資料" if tw_graph_tools.mode() == "historical" else "最新可得資料（截至選定日期）"),
-                            "dropped_analysts": dropped,
+                            "dropped_analysts": dropped, "analysts": selected, "analysts_source": analysts_source,
                             "message": (
                                 "台股 Pro 完整圖：價量／財報／新聞來自 FinMind 免費層與證交所／櫃買官方開放資料，不使用美股來源。"
+                                + ("已使用台股預設分析師（市場／基本面／新聞）。" if analysts_source == "taiwan_default" else "")
                                 + ("社群分析師已停用：沒有可靠的台股社群資料來源。" if dropped else "")
                                 + ("歷史日期：只採用可證明當時已公開的資料，免費來源無法證明財報／新聞公布時間，故這些項目會缺漏。"
                                    if tw_graph_tools.mode() == "historical" else "最新資料模式：財報與新聞的公布時間未知，已標示。")
@@ -1159,7 +1175,10 @@ def build_app(*, token: str) -> FastAPI:
                               event = fold_dexter_into_complete(event, tw_dexter_res, config)
                               event = {**event, "market": "TW", "tw_flow": "full", "data_mode": _twg.mode(),
                                        "data_vendor": _twg.VENDOR, "source_health": _twg.source_health(),
-                                       "limitations": _twg.limitations(report_language)}
+                                       "limitations": _twg.limitations(report_language),
+                                       "evidence_snapshot": _twg.finalize_snapshot(
+                                           str(ws.scope.get("tal_owner") or "local"), analysts=selected, dropped=dropped,
+                                           model={"provider": config.provider, "model": config.model})}
                       await ws.send_json(event)
                       captured_events.append(event)
                       await asyncio.sleep(0.15)

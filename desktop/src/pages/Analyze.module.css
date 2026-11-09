@@ -346,3 +346,19 @@
   .fieldRow { grid-template-columns: minmax(0, 1fr); }
   .fieldRow > * { min-width: 0; }
 }
+
+.batchBanner {
+  margin: var(--tal-space-3) 0 0;
+  padding: var(--tal-space-2) var(--tal-space-3);
+  border: 1px solid var(--tal-border);
+  border-radius: var(--tal-radius-md);
+  background: var(--tal-bg-sunken);
+  font-size: var(--tal-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.batchNote {
+  margin: var(--tal-space-1) 0 0;
+  font-size: var(--tal-text-xs);
+  color: var(--tal-text-muted);
+}

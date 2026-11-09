@@ -1327,6 +1327,10 @@ export interface RunStatusSnapshot {
   session_id: string | null;
   terminal_code: string | null;
   error: string | null;
+  /** Set only for a run the engine's BatchManager started (D56). Null/absent for a single Analyze run. */
+  batch_id?: string | null;
+  batch_index?: number | null;
+  batch_total?: number | null;
 }
 
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 8000, 15000, 15000];
@@ -1541,6 +1545,123 @@ export async function cancelRun(runId: string): Promise<RunStatusSnapshot> {
   const res = await runFetch(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
   if (!res.ok) throw new Error(`cancel failed: ${res.status}`);
   return (await res.json()) as RunStatusSnapshot;
+}
+
+// ---- Server-side batches (D56/D58): the queue lives in the engine, the page only starts it and reads progress. ----
+
+export type BatchState = 'queued' | 'running' | 'completed' | 'cancelled' | 'stopped' | 'interrupted';
+export type BatchItemState = 'pending' | 'waiting_slot' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped' | 'interrupted';
+export type BatchTerminalCode =
+  | 'invalid_credential'
+  | 'user_cancelled' | 'cost_guard_blocked' | 'oauth_expired' | 'oauth_refresh_failed' | 'storage_unavailable' | 'server_restart';
+
+export interface BatchItem {
+  index: number;
+  ticker: string;
+  state: BatchItemState;
+  run_id: string | null;
+  session_id: string | null;
+  stance: string | null;
+  conviction: number | null;
+  estimated_cost_usd: number | null;
+  cost_known: boolean | null;
+  cost_partial: boolean;
+  elapsed_s: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+  error_code: string | null;
+  error: string | null;
+}
+
+export interface BatchSnapshot {
+  batch_id: string;
+  state: BatchState;
+  /** state === 'queued' || state === 'running' */
+  active: boolean;
+  cancel_requested: boolean;
+  terminal_code: BatchTerminalCode | null;
+  error: string | null;
+  provider: string | null;
+  model: string | null;
+  auth_kind: string | null;
+  engine: string | null;
+  trade_date: string | null;
+  report_language: string | null;
+  created_at: number;
+  started_at: number | null;
+  ended_at: number | null;
+  total: number;
+  counts: Record<BatchItemState, number>;
+  /** The item now waiting for a slot / running; null while queued before the first slot (show "preparing", never null + 1). */
+  current_index: number | null;
+  cost: { known_usd: number; unknown_items: number; partial: boolean };
+  items: BatchItem[];
+  current_run: null | {
+    run_id: string;
+    phase: string | null;
+    steps_done: number;
+    elapsed_s: number;
+    since_last_event_s: number | null;
+    last_event_type: string | null;
+    cancelling: boolean;
+  };
+}
+
+/** Failure of a /batches call. `code` is the engine's `detail.code` (e.g. batch_active, invalid_batch); `status` the HTTP status (0 = network). */
+export class BatchApiError extends Error {
+  constructor(public status: number, public code: string | null, message: string, public batchId: string | null = null) {
+    super(message);
+    this.name = 'BatchApiError';
+  }
+}
+
+async function batchFetch(path: string, init?: RequestInit): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await runFetch(path, init);
+  } catch (err) {
+    throw new BatchApiError(0, null, err instanceof Error ? err.message : String(err));
+  }
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (!res.ok) {
+    const d = (body as { detail?: { code?: string; error?: string; batch_id?: string } | string } | null)?.detail;
+    const detail = d && typeof d === 'object' ? d : null;
+    throw new BatchApiError(res.status, detail?.code ?? null, detail?.error ?? (typeof d === 'string' ? d : `batch request failed: ${res.status}`), detail?.batch_id ?? null);
+  }
+  return body;
+}
+
+/** Body of POST /batches `start` (also what buildRunStart returns): the whitelist fields only, never a ticker or reservation. */
+export type BatchStartTemplate = Omit<AnalyzeRequest, 'ticker' | 'reservation_id' | 'client_run_key'>;
+
+export async function createBatch(input: { tickers: string[]; client_batch_key: string; start: BatchStartTemplate }, signal?: AbortSignal): Promise<BatchSnapshot> {
+  const r = (await batchFetch('/batches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+    signal,
+  })) as { batch: BatchSnapshot };
+  return r.batch;
+}
+
+/** Newest first. The first entry is the "latest batch". */
+export async function listBatches(limit = 1, signal?: AbortSignal): Promise<BatchSnapshot[]> {
+  const r = (await batchFetch(`/batches?limit=${limit}`, { signal })) as { batches: BatchSnapshot[] };
+  return r.batches ?? [];
+}
+
+export async function getBatch(batchId: string, signal?: AbortSignal): Promise<BatchSnapshot> {
+  return (await batchFetch(`/batches/${encodeURIComponent(batchId)}`, { signal })) as BatchSnapshot;
+}
+
+/** Idempotent stop. Only the explicit Stop button calls this; leaving the page never does. */
+export async function cancelBatch(batchId: string): Promise<BatchSnapshot> {
+  return (await batchFetch(`/batches/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' })) as BatchSnapshot;
 }
 
 export type TwSourceState = 'connected' | 'wired_untested' | 'failed' | 'not_implemented';

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 _SCHEMA_DDL = """
@@ -176,6 +176,27 @@ def _do_initialize() -> None:
         rcols = {r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
         if "cost_report" not in rcols:
             conn.execute("ALTER TABLE runs ADD COLUMN cost_report TEXT")
+        for name, kind in (("batch_id", "TEXT"), ("batch_index", "INTEGER"), ("batch_total", "INTEGER")):
+            if name not in rcols:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id, batch_index);
+            CREATE TABLE IF NOT EXISTS batches (
+                batch_id TEXT PRIMARY KEY, owner TEXT NOT NULL, client_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, state TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0,
+                terminal_code TEXT, error TEXT, provider TEXT, model TEXT, auth_kind TEXT, engine TEXT,
+                trade_date TEXT, report_language TEXT, created_at REAL NOT NULL, started_at REAL, ended_at REAL,
+                UNIQUE(owner, client_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_batches_owner_created ON batches(owner, created_at DESC);
+            CREATE TABLE IF NOT EXISTS batch_items (
+                batch_id TEXT NOT NULL, item_index INTEGER NOT NULL, ticker TEXT NOT NULL,
+                state TEXT NOT NULL, run_id TEXT, session_id TEXT, stance TEXT, conviction REAL,
+                estimated_cost_usd REAL, cost_known INTEGER, cost_partial INTEGER NOT NULL DEFAULT 0,
+                elapsed_s REAL, started_at REAL, ended_at REAL, error_code TEXT, error TEXT,
+                PRIMARY KEY(batch_id, item_index)
+            );
+        """)
         # Bump the stored version forward if we just migrated up. Never
         # downgrade — a v2 db running on a v1 engine is rejected above.
         conn.execute(
@@ -339,7 +360,7 @@ def write_session(
 
 
 def write_session_from_events(
-    *, ticker: str, trade_date: str, events: list[dict]
+    *, ticker: str, trade_date: str, events: list[dict], scrubber: Any = None
 ) -> Optional[str]:
     """Persist a session by extracting metadata from its captured event stream.
 
@@ -364,20 +385,23 @@ def write_session_from_events(
         "conviction": 0.0,
         "reasoning": "Session ended without a well-formed assessment payload.",
     }
+    # Control fields are read from the original event. Scrub only the copy that
+    # reaches History; cleaning first can turn a protocol value into text.
+    clean = scrubber.clean if scrubber is not None else lambda value: value
     return write_session(
-        ticker=ticker,
-        trade_date=trade_date,
-        events=events,
-        decision=decision,
+        ticker=clean(ticker),
+        trade_date=clean(trade_date),
+        events=clean(events),
+        decision=clean(decision),
         live=bool(complete.get("live", False)),
-        provider=complete.get("provider"),
-        model=complete.get("model"),
+        provider=clean(complete.get("provider")),
+        model=clean(complete.get("model")),
         input_tokens=complete.get("input_tokens"),
         output_tokens=complete.get("output_tokens"),
         estimated_cost_usd=complete.get("estimated_cost_usd"),
-        auth_kind=complete.get("auth_kind"),
+        auth_kind=clean(complete.get("auth_kind")),
         elapsed_s=complete.get("elapsed_s") if isinstance(complete.get("elapsed_s"), (int, float)) else None,
-        cost_summary=_summary_of(complete),
+        cost_summary=clean(_summary_of(complete)),
     )
 
 

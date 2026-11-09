@@ -40,7 +40,12 @@ KEEP_DB_RUNS = 200
 KEEP_DB_SECONDS = 7 * 86400
 ACTIVE = ("queued", "running")
 TERMINAL = ("completed", "failed", "cancelled", "interrupted")
+
+
+class RunStartStorageError(Exception):
+    """The batch run has no durable row and must not start an executor."""
 _PHASE_BY_TYPE = {
+    "run.waiting_slot": "waiting_slot",
     "session.start": "data", "data.summary": "data", "news.headlines": "data", "run.notice": "data",
     "evidence.pack": "evidence", "dexter.result": "evidence", "graph.plan": "debate", "cost.usage": "debate",
     "session.complete": "done",
@@ -76,16 +81,61 @@ def idempotency_key(raw: Any) -> Optional[str]:
     return None
 
 
-def _scrub(text: str) -> str:
-    return secret_refs.scrub_key_shapes(secret_refs.redact(text))
-
-
 def _clean_event(ev: dict[str, Any]) -> str:
-    """JSON for storage: key shapes / resolved secrets scrubbed, oversized payloads replaced by a marker."""
-    txt = _scrub(json.dumps(ev, ensure_ascii=False, separators=(",", ":"), default=str))
+    """Serialize the already scrubbed event without changing protocol fields."""
+    txt = json.dumps(ev, ensure_ascii=False, separators=(",", ":"), default=str)
     if len(txt.encode("utf-8")) > MAX_EVENT_BYTES:
         txt = json.dumps({"type": ev.get("type"), "seq": ev.get("seq"), "truncated": True}, separators=(",", ":"))
     return txt
+
+
+def _recovered_ceiling_bound(run_report: str | None, session_events: str | None) -> float | None:
+    """Restore a conservative measured bound only when every call reported usage."""
+    from .llm_providers import ceiling_cost
+
+    def measured_bound(report: Any, *, completed: bool = False) -> float | None:
+        if not isinstance(report, dict) or completed and report.get("run_state") != "completed":
+            return None
+        lines = report.get("lines")
+        if not isinstance(lines, list) or not lines:
+            return None
+        totals = report.get("totals") or {}
+        reasons = totals.get("incomplete_reasons", []) if isinstance(totals, dict) else []
+        if not isinstance(reasons, list) or any(isinstance(reason, str) and ("usage_gap" in reason or "usage_not_reported" in reason or "usage_not_measured" in reason) for reason in reasons):
+            return None
+        bound = 0.0
+        for line in lines:
+            if not isinstance(line, dict) or line.get("usage_unreported_calls") or line.get("unpriced_reason") in ("usage_not_measured", "usage_not_reported"):
+                return None
+            missing = line.get("missing") or []
+            if not isinstance(missing, list) or any(reason in ("usage_not_measured", "usage_not_reported") for reason in missing):
+                return None
+            model, in_tokens, out_tokens = line.get("model"), line.get("input_tokens"), line.get("output_tokens")
+            if not isinstance(model, str) or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in (in_tokens, out_tokens)):
+                return None
+            part = ceiling_cost(model, in_tokens, out_tokens)
+            if part is None:
+                return None
+            bound += part
+        return bound
+
+    try:
+        events = json.loads(session_events) if session_events else None
+    except (TypeError, ValueError):
+        events = None
+    if isinstance(events, list):
+        complete = next((e for e in reversed(events) if isinstance(e, dict) and e.get("type") == "session.complete"), None)
+        if complete is not None and complete.get("cost_report") is not None:
+            # The completed session is authoritative even when its report is
+            # incomplete. A prior running snapshot must not lower the hold.
+            return measured_bound(complete["cost_report"], completed=True)
+    try:
+        report = json.loads(run_report) if run_report else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(report, dict) or report.get("run_state") not in ("completed", "failed", "cancelled", "interrupted"):
+        return None
+    return measured_bound(report)
 
 
 class _Sub:
@@ -103,7 +153,7 @@ class RunSink:
         self.run = run
         self._start = start_raw
         self.query_params: dict[str, str] = {}
-        self.scope: dict[str, Any] = {}
+        self.scope: dict[str, Any] = {"tal_owner": run.owner}
 
     async def receive_json(self) -> dict[str, Any]:
         return self._start
@@ -154,14 +204,24 @@ class Run:
         # The FINAL report carried by session.complete. Once seen it is the run's report: a later "running" snapshot (the engine's
         # finally block publishes one after the complete event) must not replace it, and it is never re-stated by with_run_state.
         self.final_cost_report: Optional[dict[str, Any]] = None
+        self.meta_persist_failed = False
+        self.batch_id: Optional[str] = None
+        self.batch_index: Optional[int] = None
+        self.batch_total: Optional[int] = None
+        self.batch_prepare: Optional[Callable[["Run"], Awaitable[bool]]] = None
+        self.scrubber = secret_refs.Scrubber()
 
     def set_cost_report(self, report: Optional[dict[str, Any]]) -> None:
         if self.final_cost_report is not None:
             return
         if report is None and self.cost_report is not None:
             return
-        self.cost_report = report
+        self.cost_report = self.scrubber.clean(report)
         self.mgr._save_report(self)
+
+    def clear_sensitive(self) -> None:
+        self.batch_prepare = None
+        self.scrubber.clear()
 
     # ---- derived -------------------------------------------------------------------------------------------------
     @property
@@ -178,6 +238,7 @@ class Run:
         hb = self.heartbeat
         return {
             "run_id": self.id, "state": self.state, "active": self.active,
+            "batch_id": self.batch_id, "batch_index": self.batch_index, "batch_total": self.batch_total,
             "ticker": self.meta.get("ticker"), "trade_date": self.meta.get("trade_date"),
             "provider": self.meta.get("provider"), "model": self.meta.get("model"), "auth_kind": self.meta.get("auth_kind"),
             "engine": self.meta.get("engine"), "phase": self.phase, "steps_done": self.steps_done,
@@ -203,18 +264,22 @@ class Run:
         """Record + fan out one event. Synchronous on purpose: it is atomic with respect to `subscribe()`."""
         if not isinstance(event, dict):
             return
+        raw_event = event
+        event = self.scrubber.clean(raw_event)
+        if raw_event.get("type") == "run.error" and isinstance(event.get("message"), str):
+            event["message"] = self.scrubber.clean_error(event["message"])
         now = _now()
         if self.reservation_id and self.active and now - self.last_extend >= EXTEND_EVERY_S:
             # The run is alive (events / heartbeats keep coming): keep its budget hold from expiring mid-run.
             self.last_extend = now
             cost_guard.extend_reservation(self.reservation_id)
-        if event.get("type") == "run.heartbeat":
+        if raw_event.get("type") == "run.heartbeat":
             self.heartbeat = {**event, "at": now}
             self._fan(event)                                   # liveness only: not sequenced, not stored
             return
         self.seq += 1
+        self._track({**raw_event, "seq": self.seq})
         ev = {**event, "seq": self.seq}
-        self._track(ev)
         size = len(json.dumps(ev, ensure_ascii=False, default=str))
         self.events.append(ev)
         self._sizes.append(size)
@@ -231,7 +296,7 @@ class Run:
     def _track(self, ev: dict[str, Any]) -> None:
         t = ev.get("type")
         self.last_event_type, self.last_event_at = t, _now()
-        self.phase = (ev.get("phase") if t == "agent.message" and ev.get("phase") else _PHASE_BY_TYPE.get(t, self.phase))
+        self.phase = self.scrubber.clean(ev.get("phase") if t == "agent.message" and ev.get("phase") else _PHASE_BY_TYPE.get(t, self.phase))
         if t == "agent.message":
             self.steps_done += 1
         elif t in ("cost.usage", "session.complete"):
@@ -248,9 +313,9 @@ class Run:
                 self.completed_seen = True
                 rep = ev.get("cost_report")
                 if isinstance(rep, dict) and rep.get("run_state") == "completed":
-                    self.final_cost_report = self.cost_report = rep
+                    self.final_cost_report = self.cost_report = self.scrubber.clean(rep)
         elif t == "run.error":
-            self.error = _scrub(str(ev.get("error") or ""))[:300]
+            self.error = self.scrubber.clean_error(str(ev.get("error") or ""))[:300]
 
     def _fan(self, ev: dict[str, Any]) -> None:
         for sub in list(self.subs):
@@ -311,13 +376,14 @@ class RunManager:
             sys.stderr.write(f"[runs] storage error: {type(exc).__name__}: {exc}\n")
             return None
 
-    def _save_meta(self, run: Run) -> None:
+    def _save_meta(self, run: Run, *, strict: bool = False) -> None:
         s = run.status()
-        self._db(lambda c: c.execute(
+        def write(c):
+            return c.execute(
             """INSERT INTO runs (run_id, owner, state, ticker, trade_date, provider, model, auth_kind, engine, created_at, ended_at, elapsed_s,
                    input_tokens, output_tokens, estimated_cost_usd, cost_known, session_id, terminal_code, error, last_seq, last_event_type,
-                   last_event_at, steps_done, reservation_id, engine_started)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   last_event_at, steps_done, reservation_id, engine_started, batch_id, batch_index, batch_total)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(run_id) DO UPDATE SET state=excluded.state, ended_at=excluded.ended_at, elapsed_s=excluded.elapsed_s,
                    input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, estimated_cost_usd=excluded.estimated_cost_usd,
                    cost_known=excluded.cost_known, session_id=excluded.session_id, terminal_code=excluded.terminal_code, error=excluded.error,
@@ -326,13 +392,29 @@ class RunManager:
             (run.id, run.owner, run.state, s["ticker"], s["trade_date"], s["provider"], s["model"], s["auth_kind"], s["engine"],
              run.created_at, run.ended_at, run.elapsed_s() if not run.active else None, run.input_tokens, run.output_tokens, run.cost,
              1 if run.cost_known else 0, run.session_id, run.terminal_code, run.error, run.seq, run.last_event_type, run.last_event_at,
-             run.steps_done, run.reservation_id, 1 if run.engine_started else 0)))
+             run.steps_done, run.reservation_id, 1 if run.engine_started else 0, run.batch_id, run.batch_index, run.batch_total))
+        if strict:
+            storage._ensure_initialized()
+            with storage._connect() as conn:
+                write(conn)
+                conn.commit()
+        else:
+            self._db(write)
+
+    def _save_meta_retry(self, run: Run) -> None:
+        for attempt in range(2):
+            try:
+                self._save_meta(run, strict=True)
+                return
+            except Exception:
+                if attempt:
+                    raise
 
     def _save_report(self, run: Run) -> None:
         if run.cost_report is None:
             return
         try:
-            blob = json.dumps(run.cost_report, ensure_ascii=False, separators=(",", ":"))
+            blob = json.dumps(run.scrubber.clean(run.cost_report), ensure_ascii=False, separators=(",", ":"))
         except (TypeError, ValueError):
             return
         self._db(lambda c: c.execute("UPDATE runs SET cost_report=? WHERE run_id=?", (blob, run.id)))
@@ -375,6 +457,7 @@ class RunManager:
         run.cost_known, run.session_id, run.terminal_code, run.error = bool(row["cost_known"]), row["session_id"], row["terminal_code"], row["error"]
         run.last_event_type, run.last_event_at, run.steps_done = row["last_event_type"], row["last_event_at"], row["steps_done"]
         run.reservation_id, run.engine_started = row["reservation_id"], bool(row["engine_started"])
+        run.batch_id, run.batch_index, run.batch_total = row["batch_id"], row["batch_index"], row["batch_total"]
         try:
             run.cost_report = json.loads(row["cost_report"]) if row["cost_report"] else None
         except (ValueError, KeyError, IndexError):
@@ -394,7 +477,12 @@ class RunManager:
         for r in rows:
             # Settle the budget hold FIRST (before any expiry sweep can turn it into an uncounted NULL): nothing billable
             # started -> released at 0; otherwise the measured cost, or the reserved estimate as a conservative hold.
-            cost_guard.settle_run_end(r["reservation_id"], billable_started=bool(r["engine_started"]))
+            reservation = r["reservation_id"]
+            if not reservation:
+                reservation = self._db(lambda c, rid=r["run_id"]: c.execute(
+                    "SELECT id FROM cost_reservations WHERE run_id=? AND finalized=0 LIMIT 1", (rid,)).fetchone())
+                reservation = reservation["id"] if reservation else None
+            cost_guard.settle_run_end(reservation, billable_started=bool(r["engine_started"]))
             report_blob = None
             try:
                 from .cost_report import with_run_state
@@ -411,11 +499,30 @@ class RunManager:
                 c.execute("UPDATE runs SET state='interrupted', ended_at=?, terminal_code='server_restart', last_seq=?, last_event_type='run.finished', "
                           "cost_report=COALESCE(?, cost_report) WHERE run_id=?",
                           (now, r["last_seq"] + 1, report_blob, r["run_id"]))))
+        # Reconcile every linked hold, including runs that reached a terminal
+        # state after a transient settlement failure. A saved session already
+        # contributes to the ledger, so its hold must not be counted again.
+        linked = self._db(lambda c: c.execute(
+            "SELECT cr.id, cr.auth_kind, r.state, r.engine_started, r.cost_report, "
+            "s.id AS saved_session, s.estimated_cost_usd AS session_cost, s.events_json AS session_events "
+            "FROM cost_reservations cr LEFT JOIN runs r ON r.run_id=cr.run_id "
+            "LEFT JOIN sessions s ON s.id=r.session_id "
+            "WHERE cr.run_id IS NOT NULL AND cr.finalized=0").fetchall()) or []
+        for hold in linked:
+            if hold["state"] == "completed" and hold["saved_session"]:
+                if hold["auth_kind"] in ("oauth", "local") or hold["session_cost"] is not None:
+                    cost_guard.finalize_reservation(hold["id"], actual_cost_usd=0.0)
+                else:
+                    bound = _recovered_ceiling_bound(hold["cost_report"], hold["session_events"])
+                    cost_guard.finalize_reservation(hold["id"], actual_cost_usd=None,
+                                                    hold_ceiling=True, ceiling_cost_usd=bound)
+            else:
+                cost_guard.settle_run_end(hold["id"], billable_started=bool(hold["engine_started"]))
         self._db(lambda c: (
-            c.execute("DELETE FROM run_events WHERE run_id IN (SELECT run_id FROM runs WHERE state NOT IN ('queued','running') AND COALESCE(ended_at, created_at) < ?)", (now - KEEP_DB_SECONDS,)),
-            c.execute("DELETE FROM runs WHERE state NOT IN ('queued','running') AND COALESCE(ended_at, created_at) < ?", (now - KEEP_DB_SECONDS,)),
-            c.execute("DELETE FROM run_events WHERE run_id IN (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT -1 OFFSET ?)", (KEEP_DB_RUNS,)),
-            c.execute("DELETE FROM runs WHERE run_id IN (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT -1 OFFSET ?)", (KEEP_DB_RUNS,))))
+            c.execute("DELETE FROM run_events WHERE run_id IN (SELECT run_id FROM runs WHERE state NOT IN ('queued','running') AND COALESCE(ended_at, created_at) < ? AND (batch_id IS NULL OR batch_id NOT IN (SELECT batch_id FROM batches WHERE state IN ('queued','running'))))", (now - KEEP_DB_SECONDS,)),
+            c.execute("DELETE FROM runs WHERE state NOT IN ('queued','running') AND COALESCE(ended_at, created_at) < ? AND (batch_id IS NULL OR batch_id NOT IN (SELECT batch_id FROM batches WHERE state IN ('queued','running')))", (now - KEEP_DB_SECONDS,)),
+            c.execute("DELETE FROM run_events WHERE run_id IN (SELECT run_id FROM runs WHERE batch_id IS NULL OR batch_id NOT IN (SELECT batch_id FROM batches WHERE state IN ('queued','running')) ORDER BY created_at DESC LIMIT -1 OFFSET ?)", (KEEP_DB_RUNS,)),
+            c.execute("DELETE FROM runs WHERE run_id IN (SELECT run_id FROM runs WHERE batch_id IS NULL OR batch_id NOT IN (SELECT batch_id FROM batches WHERE state IN ('queued','running')) ORDER BY created_at DESC LIMIT -1 OFFSET ?)", (KEEP_DB_RUNS,))))
         return len(rows)
 
     # ---- lookup (owner-scoped: another owner's run is "not found") --------------------------------------------------
@@ -437,7 +544,9 @@ class RunManager:
         return sorted(mem, key=lambda r: r.created_at, reverse=True)[:limit]
 
     # ---- start / attach / cancel -----------------------------------------------------------------------------------
-    async def start_or_attach(self, owner: str, raw: dict[str, Any], executor: Callable[[RunSink], Awaitable[None]]) -> tuple[Run, bool]:
+    async def start_or_attach(self, owner: str, raw: dict[str, Any], executor: Callable[[RunSink], Awaitable[None]],
+                              *, batch: tuple[str, int, int] | None = None,
+                              prepare: Callable[[Run], Awaitable[bool]] | None = None) -> tuple[Run, bool]:
         key = idempotency_key(raw)
         if key and (owner, key) in self._keys:
             existing = self.runs.get(self._keys[(owner, key)])
@@ -446,14 +555,24 @@ class RunManager:
         run = Run(self, "run_" + _secrets.token_hex(8), owner, start_meta(raw), key)
         rid = raw.get("reservation_id") if isinstance(raw, dict) else None
         run.reservation_id = rid if isinstance(rid, str) and 4 <= len(rid) <= 80 else None
+        if batch is not None:
+            run.batch_id, run.batch_index, run.batch_total = batch
+            run.batch_prepare = prepare
+        run.scrubber.collect(raw)
+        run.meta = run.scrubber.clean(run.meta)
+        try:
+            self._save_meta(run, strict=True) if batch is not None else self._save_meta(run)
+        except Exception as exc:
+            run.clear_sensitive()
+            raise RunStartStorageError("Could not persist the batch run") from exc
         self.runs[run.id] = run
         if key:
             self._keys[(owner, key)] = run.id
-        self._save_meta(run)
         if sum(1 for r in self.runs.values() if r.owner == owner and r.active) > MAX_ACTIVE_PER_OWNER:
             run.emit({"type": "run.error", "code": "too_many_runs", "error": f"At most {MAX_ACTIVE_PER_OWNER} analyses can run at once."})
             run.close_code = (1008, "too_many_runs")
             self._finish(run, "failed", "too_many_runs")
+            run.clear_sensitive()
             return run, True
         run.task = asyncio.create_task(self._drive(run, raw, executor))
         self._tasks.add(run.task)
@@ -465,6 +584,7 @@ class RunManager:
         run.state = "running"
         self._save_meta(run)
         sink = RunSink(run, raw)
+        scrub_token = secret_refs._current_scrubber.set(run.scrubber)
         state, code = "completed", None
         try:
             await executor(sink)
@@ -481,11 +601,14 @@ class RunManager:
                 state, code = "interrupted", "server_shutdown"
         except Exception as exc:  # noqa: BLE001 — safety net: the run body normally reports its own errors
             state, code = "failed", "engine_exception"
-            msg = _scrub(f"{type(exc).__name__}: {exc}")
+            msg = run.scrubber.clean(f"{type(exc).__name__}: {exc}")
             run.emit({"type": "run.error", "code": "engine_exception", "error": f"Analysis stopped (internal error): {msg}"})
             run.close_code = (1011, "engine_exception")
         finally:
+            secret_refs._current_scrubber.reset(scrub_token)
             self._finish(run, state, code)
+            sink._start = {}
+            run.clear_sensitive()
 
     def _settle_if_unfinished(self, run: Run) -> None:
         """A task cancelled before its first step never enters `_drive`'s try block: still give the run a terminal state."""
@@ -495,6 +618,7 @@ class RunManager:
                 self._finish(run, "cancelled", "user_cancelled")
             else:
                 self._finish(run, "interrupted", "server_shutdown")
+            run.clear_sensitive()
 
     def _finish(self, run: Run, state: str, code: Optional[str]) -> None:
         if not run.active and run.ended_at is not None:
@@ -504,7 +628,7 @@ class RunManager:
             try:
                 from .cost_report import with_run_state
 
-                run.cost_report = with_run_state(run.cost_report, state)       # what was metered so far, flagged partial
+                run.cost_report = run.scrubber.clean(with_run_state(run.cost_report, state))
             except Exception:  # noqa: BLE001
                 pass
         finished = {"type": "run.finished", "state": state, "code": code, "elapsed_s": run.elapsed_s(), "input_tokens": run.input_tokens,
@@ -517,7 +641,13 @@ class RunManager:
             # Not completed, OR completed but its history row was never written (storage failure): there is no session whose
             # cost the caps would count, so settle the hold as incomplete spend instead of letting the cost vanish.
             cost_guard.settle_run_end(run.reservation_id, billable_started=run.engine_started)
-        self._save_meta(run)
+        if run.batch_id is not None:
+            try:
+                self._save_meta_retry(run)
+            except Exception:
+                run.meta_persist_failed = True
+        else:
+            self._save_meta(run)
         run.finish_subs()
         try:
             asyncio.get_running_loop().call_later(KEEP_EVENTS_AFTER_END_S, run.drop_events)

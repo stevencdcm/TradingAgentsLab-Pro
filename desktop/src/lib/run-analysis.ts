@@ -15,6 +15,7 @@
 import {
   PROVIDER_SECRET_KEY,
   streamDebate,
+  type BatchStartTemplate,
   type DebateEvent,
   type LLMProvider,
   type ProviderConfig,
@@ -92,10 +93,19 @@ export type RunAnalysisResult =
  * History page refresh) update in real time. Owning the dispatch here
  * means every caller of runAnalysis gets the same observable behaviour.
  */
-export async function runAnalysis(
-  opts: RunAnalysisOptions,
-  callbacks: RunAnalysisCallbacks,
-): Promise<RunAnalysisResult> {
+/**
+ * Everything of a start frame that does not depend on the ticker, with NO CostGuard reservation and NO socket: the
+ * template `POST /batches` runs for every ticker (D56). `runAnalysis` builds its frame from the same function so a
+ * single run and a batch send identical provider / data / webhook / Pro settings.
+ */
+export interface RunStartParts {
+  template: BatchStartTemplate;
+  /** The single-run CostGuard reservation request (deep model, extra models); null when no provider is configured (stub). */
+  reserveReq: { model: string; auth_kind: 'api_key' | 'oauth' | 'local'; max_tokens: number; extra_models: string[] } | null;
+  maxTokens: number;
+}
+
+export async function buildRunStart(opts: Omit<RunAnalysisOptions, 'ticker'>): Promise<RunStartParts> {
   const maxTokens = opts.maxTokens ?? 400;
   const providerConfig = await resolveProviderConfig(opts, maxTokens);
   const dataConfig = await resolveDataConfig();
@@ -112,18 +122,46 @@ export async function runAnalysis(
   // `config is not None` block, so engine='pro' + no key still falls to stub.
   const proConfig = assembleProConfig(opts.model, opts.provider);
 
-  let reservationId: string | undefined;
+  let reserveReq: RunStartParts['reserveReq'] = null;
   if (providerConfig) {
     // Reserve against the deep model (the pricier of the split) so the
     // pre-flight budget gate is the conservative one for a full-graph run.
     const cgModel = proConfig.deep_think_llm || providerConfig.model || '';
-    const reserveReq = {
+    reserveReq = {
       model: cgModel,
       auth_kind: providerConfig.auth.type,
       max_tokens: maxTokens,
       // Every other model this run can bill (Pro quick model, main model for Dexter): an unpriced one makes the cost unknown.
       extra_models: [proConfig.quick_think_llm, providerConfig.model].filter((m): m is string => !!m && m !== cgModel),
     };
+  }
+
+  const { webhookConfigs, telegramChatIds } = await loadWebhooksForStream();
+  const template: BatchStartTemplate = {
+    trade_date: opts.trade_date,
+    provider_config: providerConfig,
+    data_config: dataConfig,
+    webhooks: webhookConfigs.length > 0 ? webhookConfigs : undefined,
+    telegram_chat_ids: Object.keys(telegramChatIds).length > 0 ? telegramChatIds : undefined,
+    engine: 'pro',
+    pro_config: proConfig,
+    alpha_vantage_key: alphaVantageKey,
+    tw_flow: opts.twFlow,
+    tw_dexter: opts.twFlow === 'full' ? opts.twDexter : undefined,
+    finmind_token: finmindToken,
+    report_language: opts.reportLanguage,
+  };
+  return { template, reserveReq, maxTokens };
+}
+
+export async function runAnalysis(
+  opts: RunAnalysisOptions,
+  callbacks: RunAnalysisCallbacks,
+): Promise<RunAnalysisResult> {
+  const { template, reserveReq } = await buildRunStart(opts);
+
+  let reservationId: string | undefined;
+  if (reserveReq) {
     try {
       const reservation = await reserveCostGuard(reserveReq);
       reservationId = reservation.reservation_id;
@@ -143,8 +181,6 @@ export async function runAnalysis(
     }
   }
 
-  const { webhookConfigs, telegramChatIds } = await loadWebhooksForStream();
-
   // Wrap the caller's onEvent so the global tal:session-complete signal
   // fires regardless of caller. StatusStrip's spend pill + History
   // refresh listen on this event; without it the spend pill stays stale
@@ -160,23 +196,7 @@ export async function runAnalysis(
   };
 
   const handle = await streamDebate(
-    {
-      ticker: opts.ticker,
-      trade_date: opts.trade_date,
-      provider_config: providerConfig,
-      reservation_id: reservationId,
-      data_config: dataConfig,
-      webhooks: webhookConfigs.length > 0 ? webhookConfigs : undefined,
-      telegram_chat_ids:
-        Object.keys(telegramChatIds).length > 0 ? telegramChatIds : undefined,
-      engine: 'pro',
-      pro_config: proConfig,
-      alpha_vantage_key: alphaVantageKey,
-      tw_flow: opts.twFlow,
-      tw_dexter: opts.twFlow === 'full' ? opts.twDexter : undefined,
-      finmind_token: finmindToken,
-      report_language: opts.reportLanguage,
-    },
+    { ...template, ticker: opts.ticker, reservation_id: reservationId },
     wrappedOnEvent,
     callbacks.onError,
     callbacks.onConnection,
@@ -185,7 +205,7 @@ export async function runAnalysis(
 }
 
 async function resolveProviderConfig(
-  opts: RunAnalysisOptions,
+  opts: Omit<RunAnalysisOptions, 'ticker'>,
   maxTokens: number,
 ): Promise<ProviderConfig | undefined> {
   const { provider, openaiAuthKind, model } = opts;

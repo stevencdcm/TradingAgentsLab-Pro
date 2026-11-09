@@ -1,28 +1,29 @@
 // @vitest-environment happy-dom
-// Watchlist selective batch: only ticked tickers run, default none, a running queue is frozen. No models are called:
-// runAnalysis, the secret store and OAuth status are fakes.
+// Watchlist selective batch: only ticked tickers are posted (default none); the queue itself runs in the engine (D56), so these
+// tests fake the /batches calls. No models, no network.
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { item, snapshot } from './helpers/batch-snapshot';
 
 const api = vi.hoisted(() => ({
   listWatchlist: vi.fn(),
   addWatchlist: vi.fn(),
   removeWatchlist: vi.fn(),
   searchTwSymbols: vi.fn(),
+  listBatches: vi.fn(),
+  getBatch: vi.fn(),
+  createBatch: vi.fn(),
+  cancelBatch: vi.fn(),
 }));
 vi.mock('../../src/lib/engine-client', async (orig) => ({ ...(await orig<typeof import('../../src/lib/engine-client')>()), ...api }));
 vi.mock('../../src/lib/secrets', () => ({ listSecrets: async () => [{ key: 'llm:anthropic' }] }));
 vi.mock('../../src/lib/oauth', () => ({ getOpenAIOAuthStatus: async () => ({ connected: false }) }));
-
-const run = vi.hoisted(() => ({ calls: [] as string[], release: [] as Array<() => void>, closed: 0 }));
 vi.mock('../../src/lib/run-analysis', () => ({
-  runAnalysis: async (opts: { ticker: string }) => {
-    run.calls.push(opts.ticker);
-    let finish!: () => void;
-    const done = new Promise<void>((r) => { finish = r; });
-    run.release.push(finish);
-    return { kind: 'started', handle: { done, close: () => { run.closed += 1; finish(); } } };
-  },
+  buildRunStart: async () => ({
+    template: { trade_date: '2026-11-09', provider_config: { provider: 'anthropic', auth: { type: 'api_key', api_key: 'k' }, model: 'm' }, engine: 'pro' },
+    reserveReq: null,
+    maxTokens: 400,
+  }),
 }));
 
 import Watchlist from '../../src/pages/Watchlist';
@@ -31,8 +32,13 @@ import { I18nProvider } from '../../src/i18n';
 const row = (ticker: string, extra = {}) => ({ ticker, added_at: new Date().toISOString(), note: null, market: null, name: null, ...extra });
 const LIST = [row('2330', { market: 'TWSE', name: '台積電' }), row('AAPL'), row('6488', { market: 'TPEx', name: '環球晶' }), row('NVDA')];
 
+const queueOf = (tickers: string[], states: Array<'pending' | 'running' | 'completed'>) => snapshot(tickers.map((t, i) => item(i, t, states[i])));
+const setVisible = () => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }); document.dispatchEvent(new Event('visibilitychange')); };
+
 beforeEach(() => {
-  run.calls = []; run.release = []; run.closed = 0;
+  api.listBatches.mockResolvedValue([]);
+  api.getBatch.mockReset(); api.createBatch.mockReset(); api.cancelBatch.mockReset();
+  try { localStorage.clear(); } catch { /* ignore */ }
   api.listWatchlist.mockResolvedValue(LIST);
   api.removeWatchlist.mockResolvedValue(undefined);
   api.addWatchlist.mockImplementation(async (i: { ticker: string }) => row(i.ticker));
@@ -49,7 +55,6 @@ const mount = async () => {
 const box = (t: string) => screen.getByTestId(`watchlist-select-${t}`) as HTMLInputElement;
 const runBtn = () => screen.getByTestId('batch-run-button') as HTMLButtonElement;
 const all = () => screen.getByTestId('watchlist-select-all') as HTMLInputElement;
-const settle = async (n = 1) => { for (let i = 0; i < n; i++) { await waitFor(() => expect(run.release.length).toBeGreaterThan(i)); await act(async () => { run.release[i](); }); } };
 
 describe('Watchlist selective batch', () => {
   it('starts with nothing selected: run is disabled and says how many (0)', async () => {
@@ -80,36 +85,36 @@ describe('Watchlist selective batch', () => {
     expect((screen.getByTestId('watchlist-select-clear') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('runs only the ticked Taiwan + US tickers, in list order, never the unticked ones', async () => {
+  it('posts only the ticked Taiwan + US tickers, in list order, never the unticked ones', async () => {
     await mount();
+    api.createBatch.mockResolvedValue(queueOf(['2330', '6488', 'NVDA'], ['running', 'pending', 'pending']));
     fireEvent.click(box('NVDA'));                             // ticked out of order on purpose
     fireEvent.click(box('2330'));
     fireEvent.click(box('6488'));
     expect(runBtn().textContent).toMatch(/3/);
     fireEvent.click(runBtn());
-    await settle(3);
-    await waitFor(() => expect(screen.getByTestId('batch-runner').textContent).toMatch(/3.*3/));
-    expect(run.calls).toEqual(['2330', '6488', 'NVDA']);
+    await waitFor(() => expect(api.createBatch).toHaveBeenCalledTimes(1));
+    expect(api.createBatch.mock.calls[0][0].tickers).toEqual(['2330', '6488', 'NVDA']);
+    await waitFor(() => expect(screen.getByTestId('batch-row-NVDA')).toBeTruthy());
     expect(screen.queryByTestId('batch-row-AAPL')).toBeNull();
   });
 
-  it('a running batch keeps its queue and totals when the list changes; selection is locked meanwhile', async () => {
+  it('a running batch keeps its queue and totals when the list changes; selection is locked while it is active on the server', async () => {
     await mount();
+    api.createBatch.mockResolvedValue(queueOf(['2330', 'AAPL'], ['running', 'pending']));
     fireEvent.click(box('2330')); fireEvent.click(box('AAPL'));
     fireEvent.click(screen.getByTestId('batch-run-button'));
-    await waitFor(() => expect(run.calls).toEqual(['2330']));
-    expect(box('2330').disabled).toBe(true);
+    await waitFor(() => expect(box('2330').disabled).toBe(true));
     expect(all().disabled).toBe(true);
-    expect(screen.getByTestId('batch-runner').textContent).toMatch(/1.*2/);       // "1 of 2"
-    // delete a queued ticker from the list mid-run: the frozen queue still runs it and still counts 2
+    expect(screen.getByTestId('batch-runner').textContent).toMatch(/1.*2/);       // "1 / 2"
+    // delete a queued ticker from the list mid-run: the server queue still has it and still counts 2
     fireEvent.click(screen.getByRole('button', { name: /AAPL/ }));
     await waitFor(() => expect(screen.queryByTestId('watchlist-row-AAPL')).toBeNull());
     expect(screen.getByTestId('batch-row-AAPL')).toBeTruthy();
     expect(screen.getByTestId('batch-runner').textContent).toMatch(/1.*2/);
-    await settle(1);
-    await waitFor(() => expect(run.calls).toEqual(['2330', 'AAPL']));
-    await settle(2);
-    await waitFor(() => expect(screen.getByTestId('batch-runner').textContent).toMatch(/2.*2/));   // summary "2 of 2"
+    api.listBatches.mockResolvedValue([queueOf(['2330', 'AAPL'], ['completed', 'completed'])]);
+    await act(async () => { setVisible(); });                 // foreground refresh picks up the finished batch
+    await waitFor(() => expect(screen.getByTestId('batch-status').textContent).toBe('批次已完成'));
     expect(box('2330').disabled).toBe(false);                 // unlocked again after the batch
   });
 
@@ -126,14 +131,32 @@ describe('Watchlist selective batch', () => {
     expect(screen.getByTestId('watchlist-select-count').textContent).toMatch(/1.*4/);
   });
 
-  it('stop and leaving the page still cancel the batch (no remount, no extra runs)', async () => {
+  it('leaving the page does NOT cancel the batch; reopening restores it from the server, even with an empty list', async () => {
+    api.createBatch.mockResolvedValue(queueOf(['2330', 'AAPL', '6488', 'NVDA'], ['running', 'pending', 'pending', 'pending']));
     const { unmount } = await mount();
     fireEvent.click(all());
     fireEvent.click(runBtn());
-    await waitFor(() => expect(run.calls).toEqual(['2330']));
+    await waitFor(() => expect(screen.getByTestId('batch-row-2330')).toBeTruthy());
     unmount();
-    await waitFor(() => expect(run.closed).toBe(1));
     await new Promise((r) => setTimeout(r, 20));
-    expect(run.calls).toEqual(['2330']);
+    expect(api.cancelBatch).not.toHaveBeenCalled();
+    expect(api.createBatch).toHaveBeenCalledTimes(1);
+    cleanup();
+    // reopen with an EMPTY watchlist: the engine still reports the active batch
+    api.listWatchlist.mockResolvedValue([]);
+    api.listBatches.mockResolvedValue([queueOf(['2330', 'AAPL', '6488', 'NVDA'], ['completed', 'running', 'pending', 'pending'])]);
+    render(<I18nProvider><Watchlist /></I18nProvider>);
+    await waitFor(() => expect(screen.getByTestId('batch-current').textContent).toMatch(/AAPL/));
+    expect(screen.getByTestId('batch-status').textContent).toMatch(/2.*4/);
+    expect(api.createBatch).toHaveBeenCalledTimes(1);
+    expect(api.cancelBatch).not.toHaveBeenCalled();
+  });
+
+  it('an empty watchlist with no batch shows no batch card', async () => {
+    api.listWatchlist.mockResolvedValue([]);
+    render(<I18nProvider><Watchlist /></I18nProvider>);
+    await waitFor(() => expect(api.listBatches).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('batch-runner')).toBeNull();
   });
 });

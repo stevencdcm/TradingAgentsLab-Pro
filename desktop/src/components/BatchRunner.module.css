@@ -155,3 +155,106 @@
 @media (max-width: 820px) {
   .progressRow { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--tal-space-1); }
 }
+
+/* ---- D53: server-side progress ---- */
+.clearButton {
+  background: transparent;
+  border: 1px solid var(--tal-border);
+  color: var(--tal-text-muted);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.clearButton:hover { border-color: var(--tal-accent); color: var(--tal-accent); }
+
+.progressBlock { margin-bottom: 12px; }
+.bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--tal-bg-sunken);
+  overflow: hidden;
+}
+.barFill {
+  height: 100%;
+  background: var(--tal-accent);
+  transition: width 0.3s ease;
+}
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--tal-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.currentCard {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--tal-accent);
+  border-radius: 6px;
+  background: var(--tal-bg-overlay);
+}
+.currentHead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.currentTicker { font-family: var(--tal-font-mono); font-weight: 600; font-size: 13px; color: var(--tal-text); }
+.currentPhase { font-size: 12px; color: var(--tal-accent); }
+.currentLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--tal-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.stuck {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--tal-text);
+  background: rgba(230, 160, 30, 0.14);
+  border: 1px solid rgba(230, 160, 30, 0.45);
+}
+
+.eta { margin: 0 0 10px; font-size: 12px; color: var(--tal-text-muted); font-variant-numeric: tabular-nums; }
+.pollError {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--tal-text);
+  background: rgba(230, 160, 30, 0.14);
+  border: 1px solid rgba(230, 160, 30, 0.45);
+}
+.infoLine { margin: 8px 0 0; font-size: 12px; color: var(--tal-text-muted); }
+.hint { margin: 12px 0 0; font-size: 12px; color: var(--tal-text-muted); }
+.terminalReason { margin: 8px 0 0; font-size: 12px; color: var(--tal-text); }
+.progressLink { font-size: 11px; white-space: nowrap; }
+.progressLink a { color: var(--tal-accent); }
+
+.state_completed { color: var(--tal-positive, #4caf50); }
+.state_failed { color: var(--tal-negative, #d64545); }
+.state_running, .state_waiting_slot { color: var(--tal-accent); }
+
+.progressRow { grid-template-columns: 60px minmax(0, 1fr) auto auto auto auto; }
+.progressState { overflow-wrap: anywhere; }
+.summaryBar { flex-wrap: wrap; row-gap: 4px; }
+
+@media (max-width: 820px) {
+  .batchHeader { flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+  .batchActions { flex-wrap: wrap; width: 100%; }
+  .batchActions > button { flex: 1 1 auto; min-height: 40px; }
+  .progressRow { grid-template-columns: 56px minmax(0, 1fr) auto; row-gap: 4px; }
+  .progressRow > .progressDecision,
+  .progressRow > .progressMeta,
+  .progressRow > .progressLink { grid-column: 2 / -1; }
+  .progressRow > .progressDecision:empty,
+  .progressRow > .progressMeta:empty,
+  .progressRow > .progressLink:empty { display: none; }
+  .counts { flex-direction: column; }
+}

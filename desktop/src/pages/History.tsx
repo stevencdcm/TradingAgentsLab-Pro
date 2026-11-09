@@ -1,4 +1,5 @@
 import { formatRunDuration } from '../lib/duration';
+import { consumePendingSession } from '../lib/handoff';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './History.module.css';
 import ReportPdfButton from '../components/ReportPdfButton';
@@ -99,6 +100,12 @@ function History() {
       }
     }
   }, []);
+
+  // Arrived from a batch row's "View report": open that session once (the key is cleared on read).
+  useEffect(() => {
+    const pending = consumePendingSession();
+    if (pending) void onOpen(pending);
+  }, [onOpen]);
 
   const onBack = useCallback(() => {
     setView('list');

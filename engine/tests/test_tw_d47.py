@@ -6,7 +6,7 @@ import json
 import os
 import stat
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -317,6 +317,14 @@ def test_snapshot_drops_credential_like_arguments_and_bounds_output(tmp_snap):
 
 @pytest.fixture()
 def wired(tmp_snap, monkeypatch):
+    # The sample files describe a 2026-11-02 latest run; keep the clock fixed so the
+    # historical-data guard does not turn this fixture into a past run over time.
+    class FixtureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 2, tzinfo=tz)
+
+    monkeypatch.setattr(tg, "datetime", FixtureClock)
     tr = _transport()
     src = FreeTaiwanSources(transport=tr, min_interval_seconds=0, sleep=lambda s: None)
     monkeypatch.setattr(tg, "MARKET", md.OfficialMarketData(src))
@@ -405,7 +413,7 @@ def test_finalize_snapshot_returns_a_content_free_manifest_and_failure_is_report
     assert tg.finalize_snapshot("local", analysts=None, dropped=None)["status"] == "not_recorded"
 
 
-def test_snapshot_endpoint_serves_only_the_owner_and_hides_unknown_ids(tmp_snap):
+def test_snapshot_endpoint_serves_only_the_owner_and_hides_unknown_ids(tmp_snap, tmp_db):
     from fastapi.testclient import TestClient
 
     from engine import server as srv

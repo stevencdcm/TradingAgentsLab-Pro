@@ -14,8 +14,9 @@ describe('single-run and batch share one analyst/model assembly (D47)', () => {
     const src = join(__dirname, '../../src');
     const users = walk(src).filter((p) => /assembleProConfig\(/.test(readFileSync(p, 'utf8')) && !p.endsWith('lib/pro-config.ts'));
     expect(users.map((p) => p.replace(src, ''))).toEqual(['/lib/run-analysis.ts']);
-    for (const f of ['components/BatchRunner.tsx', 'pages/Analyze.tsx']) {
-      expect(readFileSync(join(src, f), 'utf8')).toMatch(/runAnalysis\(/);
-    }
+    // The batch posts the SAME start template runAnalysis builds (buildRunStart lives next to assembleProConfig).
+    expect(readFileSync(join(src, 'components/BatchRunner.tsx'), 'utf8')).toMatch(/buildRunStart\(/);
+    expect(readFileSync(join(src, 'pages/Analyze.tsx'), 'utf8')).toMatch(/runAnalysis\(/);
+    expect(readFileSync(join(src, 'lib/run-analysis.ts'), 'utf8')).toMatch(/await buildRunStart\(opts\)/);
   });
 });

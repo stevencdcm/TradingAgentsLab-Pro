@@ -1178,9 +1178,11 @@ def test_final_report_wins_over_a_later_running_snapshot_and_a_usage_gap_stays_i
     r = Run(_Mgr(), "run_x", "owner", "key", {})
     gap_final = {"run_state": "completed", "totals": {"complete": False, "incomplete_reasons": ["debate:usage_not_reported"]}, "lines": []}
     r._track({"type": "session.complete", "cost_report": gap_final})
-    assert r.cost_report is gap_final and r.cost_report["totals"]["complete"] is False              # a missing-usage unknown stays unknown
+    assert r.cost_report == gap_final and r.cost_report is not gap_final
+    assert r.cost_report["totals"]["complete"] is False       # a missing-usage unknown stays unknown
+    safe_final = r.cost_report
     r.set_cost_report({"run_state": "running", "totals": {"complete": False, "incomplete_reasons": ["run_running_usage_is_partial"]}, "lines": []})
-    assert r.cost_report is gap_final                                                              # the finally-block snapshot is ignored
+    assert r.cost_report is safe_final                   # the finally-block snapshot is ignored
     partial = Run(_Mgr(), "run_y", "owner", "key", {})
     partial._track({"type": "session.complete", "cost_report": {"run_state": "running"}})          # not a final report: not adopted
     assert partial.final_cost_report is None

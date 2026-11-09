@@ -25,7 +25,7 @@ import {
 import { runAnalysis } from '../lib/run-analysis';
 import { forgetRun, recallRun, rememberRun } from '../lib/run-memory';
 import type { CostReport } from '../lib/cost-report';
-import { getActiveRuns, getRunStatus, resumeRun, type RunConnection, type RunStatusSnapshot } from '../lib/engine-client';
+import { getActiveRuns, getRunStatus, listBatches, resumeRun, type BatchSnapshot, type RunConnection, type RunStatusSnapshot } from '../lib/engine-client';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { listSecrets, onSecretsChanged } from '../lib/secrets';
 import { consumePendingTicker } from '../lib/handoff';
@@ -702,11 +702,49 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     }
   };
 
+  // A batch runs in the engine one ticker at a time and is followed on the Watchlist: Analyze never re-attaches to one of
+  // its runs (that would show a stranger's ticker as "your" analysis). The notice below is driven by GET /batches.
+  const [activeBatch, setActiveBatch] = useState<BatchSnapshot | null>(null);
+
+  // Keep the notice honest: while it shows, re-check every 10 s and on foreground return; drop it once the batch is not active.
+  const batchShown = activeBatch !== null;
+  useEffect(() => {
+    if (!batchShown) return;
+    let dead = false;
+    const check = async () => {
+      try {
+        const latest = (await listBatches(1))[0] ?? null;
+        if (!dead) setActiveBatch(latest?.active ? latest : null);
+      } catch {
+        // keep the current notice until a read succeeds
+      }
+    };
+    const id = setInterval(() => void check(), 10_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void check();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      dead = true;
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [batchShown]);
+
   // On open / reload: re-attach to the run this tab was showing, else to the one active run (second tab).
   const resumeTriedRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // Source of truth for the notice (D58 A9): the latest batch, only when it is active. A failure here must not block the resume.
+      let batchActive = false;
+      try {
+        const latest = (await listBatches(1))[0] ?? null;
+        batchActive = !!latest?.active;
+        if (!cancelled) setActiveBatch(batchActive ? latest : null);
+      } catch {
+        // engine not ready / older engine without /batches: no notice
+      }
       try {
         if (isStreamingRef.current || resumeTriedRef.current) return;
         resumeTriedRef.current = true;
@@ -716,6 +754,11 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         if (!st) {
           const { runs } = await getActiveRuns();
           st = runs[0] ?? null;
+        }
+        // A run that belongs to a batch is never attached (finished or not); a remembered one is forgotten.
+        if (st && st.batch_id) {
+          forgetRun();
+          return;
         }
         if (!st || cancelled || isStreamingRef.current) return;
         await resumeFromEngine(st);
@@ -1173,6 +1216,14 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         {streamError && (
           <p className={styles.errorBanner}>
             {t('analyze.streamError', { error: describeEngineError(streamError, i18n) })}
+          </p>
+        )}
+        {activeBatch && (
+          <p role="status" data-testid="analyze-batch-notice" style={{ margin: '12px 0 0', padding: '8px 12px', border: '1px solid var(--tal-border)', borderRadius: 6, background: 'var(--tal-bg-sunken)', fontSize: 13 }}>
+            {activeBatch.current_index === null
+              ? t('batch.analyzeNoticePreparing')
+              : t('batch.analyzeNotice', { current: activeBatch.current_index + 1, total: activeBatch.total })}{' '}
+            <a href="#watchlist">{t('batch.analyzeNoticeLink')}</a>
           </p>
         )}
       </section>

@@ -321,10 +321,9 @@ function Watchlist() {
 
       {loadError && <div className={styles.errorBanner}>{describeEngineError(loadError, i18n)}</div>}
 
-      {/* Stay mounted while a batch runs even if the list empties: unmounting cancels the job. */}
-      {entries && (entries.length > 0 || batchRunning) && (
-        <BatchRunner tickers={selectedTickers} onRunningChange={setBatchRunning} />
-      )}
+      {/* Always mounted (even before the list loads or when it is empty): the batch runs in the engine, so even an empty list must be able to show
+          (restore) a batch that is still running. BatchRunner renders nothing when there is neither a list nor a batch. */}
+      <BatchRunner tickers={selectedTickers} onRunningChange={setBatchRunning} watchlistEmpty={!entries || entries.length === 0} />
 
       {entries && entries.length > 0 && (
         <div className={styles.selectBar} role="group" aria-label={t('watchlist.select.group')} data-testid="watchlist-select-bar">

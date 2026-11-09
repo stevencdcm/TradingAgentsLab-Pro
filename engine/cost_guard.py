@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS cost_reservations (
     override INTEGER NOT NULL DEFAULT 0,
     finalized INTEGER NOT NULL DEFAULT 0,
     finalized_cost_usd REAL,
-    settled_as TEXT
+    settled_as TEXT,
+    run_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS cost_reservations_finalized_idx
@@ -307,6 +308,9 @@ def initialize() -> None:
         # session row (failed / cancelled / interrupted) so its spend is still counted; completed runs are counted via sessions.
         if "settled_as" not in {r[1] for r in conn.execute("PRAGMA table_info(cost_reservations)").fetchall()}:
             conn.execute("ALTER TABLE cost_reservations ADD COLUMN settled_as TEXT")
+        if "run_id" not in {r[1] for r in conn.execute("PRAGMA table_info(cost_reservations)").fetchall()}:
+            conn.execute("ALTER TABLE cost_reservations ADD COLUMN run_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cost_reservations_run ON cost_reservations(run_id, finalized)")
         conn.execute(_SEED_CONFIG_SQL, (_iso(_utcnow()),))
         # Sweep any reservations that expired while the engine was down.
         _sweep_expired_reservations(conn)
@@ -448,6 +452,7 @@ def reserve(
     max_tokens: int,
     override: bool = False,
     extra_models: Optional[list[str]] = None,
+    run_id: Optional[str] = None,
 ) -> ReserveResult:
     """Atomically check-and-insert a reservation row.
 
@@ -479,10 +484,10 @@ def reserve(
             """
             INSERT INTO cost_reservations (
                 id, created_at, expires_at, est_cost_usd, auth_kind,
-                override, finalized, finalized_cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, NULL)
+                override, finalized, finalized_cost_usd, run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?)
             """,
-            (rid, _iso(now), _iso(expires), est, auth_kind, 1 if override else 0),
+            (rid, _iso(now), _iso(expires), est, auth_kind, 1 if override else 0, run_id),
         )
         conn.commit()
     return ReserveResult(
@@ -621,7 +626,7 @@ def _sweep_expired_reservations(conn: sqlite3.Connection) -> int:
     """
     cur = conn.execute(
         "UPDATE cost_reservations SET finalized = 1 "
-        "WHERE finalized = 0 AND expires_at < ?",
+        "WHERE finalized = 0 AND run_id IS NULL AND expires_at < ?",
         (_iso(_utcnow()),),
     )
     return cur.rowcount

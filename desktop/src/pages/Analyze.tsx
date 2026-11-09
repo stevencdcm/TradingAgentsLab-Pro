@@ -25,7 +25,7 @@ import {
 import { runAnalysis } from '../lib/run-analysis';
 import { forgetRun, recallRun, rememberRun } from '../lib/run-memory';
 import type { CostReport } from '../lib/cost-report';
-import { getActiveRuns, getRunStatus, listBatches, resumeRun, type BatchSnapshot, type RunConnection, type RunStatusSnapshot } from '../lib/engine-client';
+import { cancelBatch, getActiveRuns, getBatch, getRunStatus, listBatches, resumeRun, type BatchSnapshot, type RunConnection, type RunStatusSnapshot } from '../lib/engine-client';
 import { buildTranscriptMarkdown } from '../lib/transcript';
 import { listSecrets, onSecretsChanged } from '../lib/secrets';
 import { consumePendingTicker } from '../lib/handoff';
@@ -44,6 +44,8 @@ import { modelMarkerSuffix, modelNoteLabel } from '../lib/model-notes';
 const SELECTED_PROVIDER_STORAGE_KEY = 'tal:analyze:selected-provider';
 
 type EngineStatus = 'pending' | 'running' | 'error';
+
+const FOLLOW_TERMINAL_CODES = ['invalid_credential', 'user_cancelled', 'cost_guard_blocked', 'oauth_expired', 'oauth_refresh_failed', 'storage_unavailable', 'server_restart'];
 
 interface AnalyzeProps {
   /** Increments when the App menu fires "New analysis" — clears prior results. */
@@ -410,6 +412,8 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   // Reset state when the menu fires "New analysis".
   useEffect(() => {
     if (resetSignal === 0) return;
+    // While following a batch, "New analysis" must not touch the batch (only Stop batch does).
+    if (followIdRef.current) return;
     // "New analysis" is an explicit stop: cancel the engine-side run (leaving or reloading the page never does).
     requestCancel();
     forgetRun();
@@ -648,7 +652,12 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   };
 
   /** Re-attach to an engine-side run and replay it from the start (reload, second tab, finished run shown again). */
-  const resumeFromEngine = async (st: RunStatusSnapshot) => {
+  const attachGenRef = useRef(0);
+  const resumeFromEngine = async (st: RunStatusSnapshot, opts: { follow?: boolean } = {}) => {
+    // Only the newest attach may touch the page: switching to the next batch ticker closes the old subscription and its
+    // late events / its `finally` must not clobber the new one.
+    const gen = ++attachGenRef.current;
+    if (opts.follow) handleRef.current?.close();
     cancellingRef.current = !!st.cancelling;
     isStreamingRef.current = st.active;
     setEvents([]);
@@ -670,11 +679,13 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       costReport: st.cost_report ?? null,
       connection: 'connected',
     });
-    rememberRun({ runId: st.run_id, ticker: st.ticker ?? '' });
+    // A followed batch run is never remembered: a reload re-derives it from GET /batches (D71).
+    if (!opts.follow) rememberRun({ runId: st.run_id, ticker: st.ticker ?? '' });
     try {
       const handle = await resumeRun(
         st.run_id,
         (event) => {
+          if (gen !== attachGenRef.current) return;
           const t0 = (event as { type: string }).type;
           if (t0 === 'run.heartbeat') return handleRunEvent(event);
           // Replayed events must not make a long-quiet run look freshly active: only live ones touch the clock.
@@ -686,15 +697,20 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
           }
           handleRunEvent(event);
         },
-        handleRunError,
-        handleConnection,
+        (err) => { if (gen === attachGenRef.current) handleRunError(err); },
+        (state) => { if (gen === attachGenRef.current) handleConnection(state); },
         0,
       );
+      if (gen !== attachGenRef.current) {
+        handle.close();
+        return;
+      }
       handleRef.current = handle;
       await handle.done;
     } catch (err) {
-      handleRunError(err);
+      if (gen === attachGenRef.current) handleRunError(err);
     } finally {
+      if (gen !== attachGenRef.current) return;
       setRunClock((c) => (c.startedAt && !c.endedAt ? { ...c, endedAt: Date.now() } : c));
       handleRef.current = null;
       isStreamingRef.current = false;
@@ -702,14 +718,147 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     }
   };
 
-  // A batch runs in the engine one ticker at a time and is followed on the Watchlist: Analyze never re-attaches to one of
-  // its runs (that would show a stranger's ticker as "your" analysis). The notice below is driven by GET /batches.
+  // Batch analysis (D71). A batch runs in the engine one ticker at a time; every ticker is an ordinary run. When this tab
+  // has no run of its own, Analyze FOLLOWS the batch: it shows the current ticker's live debate exactly like a single
+  // analysis and moves to the next ticker by itself. A run this tab started (or remembers) always wins; then the batch
+  // only shows a one-line notice. Following never remembers a run and never cancels anything on leave.
   const [activeBatch, setActiveBatch] = useState<BatchSnapshot | null>(null);
+  const [followId, setFollowId] = useState<string | null>(null);
+  const [followSnap, setFollowSnap] = useState<BatchSnapshot | null>(null);
+  const [followEnded, setFollowEnded] = useState<BatchSnapshot | null>(null);
+  const [followStopping, setFollowStopping] = useState(false);
+  const [followStopFailed, setFollowStopFailed] = useState(false);
+  const [followPollError, setFollowPollError] = useState(false);
+  const followIdRef = useRef<string | null>(null);
+  const followAttachedRef = useRef<string | null>(null);
+  const followStopSentRef = useRef(false);
+  const followRefreshRef = useRef<(() => void) | null>(null);
+  const resumeFromEngineRef = useRef(resumeFromEngine);
+  resumeFromEngineRef.current = resumeFromEngine;
 
-  // Keep the notice honest: while it shows, re-check every 10 s and on foreground return; drop it once the batch is not active.
+  const startFollow = (batchId: string) => {
+    if (followIdRef.current === batchId) return;
+    followIdRef.current = batchId;
+    followAttachedRef.current = null;
+    followStopSentRef.current = false;
+    setFollowEnded(null);
+    setFollowSnap(null);
+    setFollowStopping(false);
+    setFollowStopFailed(false);
+    setFollowPollError(false);
+    setActiveBatch(null);
+    setFollowId(batchId);
+  };
+
+  // One poll chain per followed batch: 2 s, backing off 2→5→10 s on errors, immediate on foreground. A stale response never
+  // overwrites a newer one. Terminal state stops the chain and keeps the last ticker's content on screen.
+  useEffect(() => {
+    if (!followId) return;
+    let dead = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let seq = 0;
+    let applied = 0;
+    let errors = 0;
+    const BACKOFF = [2000, 5000, 10000];
+    const schedule = (ms: number) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void poll(), ms);
+    };
+    const apply = async (snap: BatchSnapshot) => {
+      setFollowSnap(snap);
+      if (snap.cancel_requested) followStopSentRef.current = true;
+      if (!snap.active) {
+        followIdRef.current = null;
+        setFollowId(null);
+        setFollowSnap(null);
+        setFollowEnded(snap);
+        setFollowStopping(false);
+        return;
+      }
+      const rid = snap.current_run?.run_id ?? null;
+      if (rid && rid !== followAttachedRef.current) {
+        followAttachedRef.current = rid;
+        try {
+          const st = await getRunStatus(rid);
+          if (dead) return;
+          if (st) void resumeFromEngineRef.current(st, { follow: true });
+          else followAttachedRef.current = null;
+        } catch (err) {
+          followAttachedRef.current = null;
+          throw err;
+        }
+      }
+    };
+    const poll = async () => {
+      const mine = ++seq;
+      try {
+        const snap = await getBatch(followId);
+        if (dead || mine < applied) return;
+        applied = mine;
+        errors = 0;
+        setFollowPollError(false);
+        await apply(snap);
+        if (!dead && snap.active) schedule(2000);
+      } catch {
+        if (dead) return;
+        setFollowPollError(true);
+        schedule(BACKOFF[Math.min(errors, BACKOFF.length - 1)]);
+        errors += 1;
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        if (timer) clearTimeout(timer);
+        void poll();
+      }
+    };
+    followRefreshRef.current = () => void poll();
+    document.addEventListener('visibilitychange', onVisible);
+    void poll();
+    return () => {
+      dead = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      followRefreshRef.current = null;
+    };
+  }, [followId]);
+
+  // Leaving the page only unsubscribes from a followed run; the run and the batch keep going in the engine.
+  useEffect(
+    () => () => {
+      if (followAttachedRef.current) handleRef.current?.close();
+    },
+    [],
+  );
+
+  // Stop while following cancels the BATCH (idempotent), never the run: sent once, a failed send can be retried, and
+  // "stopping" shows only after the engine accepted it.
+  const stopInFlightRef = useRef(false);
+  const stopBatch = () => {
+    const id = followIdRef.current;
+    if (!id || followStopSentRef.current || stopInFlightRef.current) return;
+    stopInFlightRef.current = true;
+    setFollowStopFailed(false);
+    void cancelBatch(id).then(
+      (snap) => {
+        stopInFlightRef.current = false;
+        followStopSentRef.current = true;
+        setFollowStopping(true);
+        if (snap && followIdRef.current === id && snap.active) setFollowSnap(snap);
+      },
+      () => {
+        stopInFlightRef.current = false;
+        setFollowStopFailed(true);
+      },
+    );
+  };
+  const stopBatchRef = useRef(stopBatch);
+  stopBatchRef.current = stopBatch;
+
+  // Keep the one-line notice honest (a run of this tab is showing): re-check every 10 s and on foreground return.
   const batchShown = activeBatch !== null;
   useEffect(() => {
-    if (!batchShown) return;
+    if (!batchShown || followId) return;
     let dead = false;
     const check = async () => {
       try {
@@ -729,7 +878,37 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [batchShown]);
+  }, [batchShown, followId]);
+
+  // Analyze stays mounted while hidden, so a batch started on the Watchlist is picked up when this page is shown again
+  // (hash → #analyze) or the window returns to the foreground.
+  useEffect(() => {
+    const detect = async () => {
+      if (followIdRef.current) return;
+      try {
+        const latest = (await listBatches(1))[0] ?? null;
+        if (followIdRef.current) return;
+        if (!latest?.active) return;
+        if (isStreamingRef.current) setActiveBatch(latest);
+        else startFollow(latest.batch_id);
+      } catch {
+        // engine not ready: nothing to follow
+      }
+    };
+    const onHash = () => {
+      if (window.location.hash.replace(/^#/, '') === 'analyze') void detect();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && window.location.hash.replace(/^#/, '') === 'analyze') void detect();
+    };
+    window.addEventListener('hashchange', onHash);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('hashchange', onHash);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // On open / reload: re-attach to the run this tab was showing, else to the one active run (second tab).
   const resumeTriedRef = useRef(false);
@@ -738,8 +917,9 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     void (async () => {
       // Source of truth for the notice (D58 A9): the latest batch, only when it is active. A failure here must not block the resume.
       let batchActive = false;
+      let latest: BatchSnapshot | null = null;
       try {
-        const latest = (await listBatches(1))[0] ?? null;
+        latest = (await listBatches(1))[0] ?? null;
         batchActive = !!latest?.active;
         if (!cancelled) setActiveBatch(batchActive ? latest : null);
       } catch {
@@ -753,14 +933,18 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
         if (!st && last) forgetRun();
         if (!st) {
           const { runs } = await getActiveRuns();
-          st = runs[0] ?? null;
+          st = runs.find((r) => !r.batch_id) ?? null;
         }
-        // A run that belongs to a batch is never attached (finished or not); a remembered one is forgotten.
+        // A batch run is never attached as "my" run (a remembered one is forgotten); it is followed through GET /batches.
         if (st && st.batch_id) {
           forgetRun();
+          st = null;
+        }
+        if (cancelled || isStreamingRef.current) return;
+        if (!st) {
+          if (batchActive && latest) startFollow(latest.batch_id);
           return;
         }
-        if (!st || cancelled || isStreamingRef.current) return;
         await resumeFromEngine(st);
       } catch {
         // No engine yet / nothing to resume: the normal empty page.
@@ -773,7 +957,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
   }, []);
 
   const onAnalyze = async () => {
-    if (!engineReadyRef.current || isStreamingRef.current) return;
+    if (!engineReadyRef.current || isStreamingRef.current || batchBlockedRef.current) return;
     // A saved model the provider has retired is kept in the picker (labelled) but cannot start a run: say so, change nothing.
     const guardModel = activeModelRef.current;
     if (isRetiredModel(activeProviderRef.current, guardModel)) {
@@ -783,6 +967,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     setEvents([]);
     setStreamError(null);
     setCopied(false);
+    setFollowEnded(null);
     forgetRun();
     cancellingRef.current = false;
     // Reset asset class so the previous run's "crypto" badge doesn't bleed
@@ -872,15 +1057,21 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       }
     });
   };
-  const onStop = requestCancel;
+  // Button, menu and shortcut share one gesture: following a batch → stop the batch; otherwise → stop this run.
+  const stopGesture = () => {
+    if (followIdRef.current) stopBatchRef.current();
+    else requestCancel();
+  };
+  const onStop = stopGesture;
 
   // Listen for the App menu "Stop streaming" command.
   useEffect(() => {
     const bridge = window.tradingAgentsLab;
     if (!bridge?.onMenuCommand) return;
     return bridge.onMenuCommand('menu:stop-stream', () => {
-      requestCancel();
+      stopGesture();
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Page-level keyboard shortcuts:
@@ -893,10 +1084,10 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
       if (!meta) return;
       if (e.key === 'Enter') {
         e.preventDefault();
-        if (engineReadyRef.current && !isStreamingRef.current) onAnalyze();
+        if (engineReadyRef.current && !isStreamingRef.current && !batchBlockedRef.current) onAnalyze();
       } else if (e.key === '.') {
         e.preventDefault();
-        requestCancel();
+        stopGesture();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -944,7 +1135,17 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
     }
   };
 
-  const buttonDisabled = engineStatus !== 'running' || isStreaming;
+  // One analysis at a time: while a batch is active (followed here or only noticed) starting one is disabled.
+  const followActive = followId !== null;
+  const batchBlocked = followActive || activeBatch !== null;
+  const batchBlockedRef = useRef(false);
+  batchBlockedRef.current = batchBlocked;
+  const busy = isStreaming || followActive;
+  const buttonDisabled = engineStatus !== 'running' || isStreaming || batchBlocked;
+  const followStopShown = followStopping || !!followSnap?.cancel_requested;
+  const followTicker = followSnap?.current_run && followSnap.current_index !== null
+    ? followSnap.items.find((i) => i.index === followSnap.current_index)?.ticker ?? ticker
+    : null;
   // A run that ended without a result (cancelled / failed / interrupted) can still be exported: its usage report is the engine's
   // current partial one (same object the status panel shows), so no session.complete has to be invented.
   const transcriptReady =
@@ -988,7 +1189,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             className={styles.providerSelect}
             value={activeProvider ?? ''}
             onChange={(e) => onSelectProvider(e.target.value as LLMProvider | '')}
-            disabled={isStreaming || engineStatus !== 'running'}
+            disabled={busy || engineStatus !== 'running'}
             data-testid="provider-select"
           >
             {PROVIDER_PRIORITY.map((p) => {
@@ -1016,7 +1217,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               className={styles.providerSelect}
               value={activeModel ?? ''}
               onChange={(e) => onSelectModel(e.target.value)}
-              disabled={isStreaming || engineStatus !== 'running'}
+              disabled={busy || engineStatus !== 'running'}
               aria-label={t('analyze.model.aria')}
               data-testid="model-select"
             >
@@ -1041,7 +1242,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               type="button"
               className={styles.providerReset}
               onClick={onResetOverrides}
-              disabled={isStreaming}
+              disabled={busy}
               title={t('analyze.resetTitle')}
               aria-label={t('analyze.resetTitle')}
             >
@@ -1093,7 +1294,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               onChange={(e) => setTicker(e.target.value.toUpperCase())}
               placeholder="NVDA"
               maxLength={8}
-              disabled={isStreaming}
+              disabled={busy}
               data-testid="ticker-input"
             />
           </div>
@@ -1106,20 +1307,20 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               value={date}
               max={new Date().toISOString().split('T')[0]}
               onChange={(e) => setDate(e.target.value)}
-              disabled={isStreaming}
+              disabled={busy}
               data-testid="date-input"
             />
           </div>
           <div className={styles.fieldButton}>
-            {isStreaming ? (
+            {followActive || isStreaming ? (
               <button
                 className={`${styles.button} ${styles.buttonStop}`}
                 onClick={onStop}
-                disabled={!!runClock.cancelling}
+                disabled={followActive ? followStopShown : !!runClock.cancelling}
                 type="button"
                 data-testid="stop-button"
               >
-                {t('analyze.stop')}
+                {followActive ? (followStopShown ? t('batch.follow.stopping') : t('batch.follow.stop')) : t('analyze.stop')}
               </button>
             ) : (
               <button
@@ -1142,7 +1343,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
               <select
                 value={twFlow}
                 onChange={(e) => setTwFlow(e.target.value as 'full' | 'simplified')}
-                disabled={isStreaming}
+                disabled={busy}
                 data-testid="tw-flow-select"
               >
                 <option value="full">{t('analyze.twFlow.full')}</option>
@@ -1158,7 +1359,7 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
                   type="checkbox"
                   checked={twDexter}
                   onChange={(e) => setTwDexter(e.target.checked)}
-                  disabled={isStreaming}
+                  disabled={busy}
                   data-testid="tw-dexter-toggle"
                 />
                 <span>{t('analyze.twDexter.label')}</span>
@@ -1218,14 +1419,45 @@ function Analyze({ resetSignal = 0 }: AnalyzeProps) {
             {t('analyze.streamError', { error: describeEngineError(streamError, i18n) })}
           </p>
         )}
-        {activeBatch && (
-          <p role="status" data-testid="analyze-batch-notice" style={{ margin: '12px 0 0', padding: '8px 12px', border: '1px solid var(--tal-border)', borderRadius: 6, background: 'var(--tal-bg-sunken)', fontSize: 13 }}>
+        {followActive && (
+          <div className={styles.batchBanner} role="status" data-testid="analyze-batch-follow">
+            <span>
+              {followSnap?.current_run && followSnap.current_index !== null
+                ? t('batch.follow.banner', { current: followSnap.current_index + 1, total: followSnap.total, ticker: followTicker ?? '' })
+                : t('batch.follow.preparing')}
+            </span>
+            {followStopShown && <span data-testid="analyze-batch-stopping"> {t('batch.follow.stopping')}</span>}{' '}
+            <a href="#watchlist">{t('batch.follow.link')}</a>
+            {followPollError && <p className={styles.batchNote} data-testid="analyze-batch-poll-error">{t('batch.follow.pollError')}</p>}
+          </div>
+        )}
+        {followActive && followStopFailed && (
+          <p className={styles.errorBanner} data-testid="analyze-batch-stop-failed">{t('batch.follow.stopFailed')}</p>
+        )}
+        {!followActive && followEnded && (
+          <div className={styles.batchBanner} role="status" data-testid="analyze-batch-ended">
+            <span>
+              {t(`batch.follow.ended.${followEnded.state === 'queued' || followEnded.state === 'running' ? 'stopped' : followEnded.state}`, {
+                done: followEnded.counts.completed,
+                failed: followEnded.counts.failed,
+                skipped: followEnded.counts.skipped,
+              })}
+            </span>{' '}
+            <a href="#watchlist">{t('batch.follow.link')}</a>
+            {followEnded.terminal_code && FOLLOW_TERMINAL_CODES.includes(followEnded.terminal_code) && (
+              <p className={styles.batchNote} data-testid="analyze-batch-ended-reason">{t(`batch.terminal.${followEnded.terminal_code}`)}</p>
+            )}
+          </div>
+        )}
+        {!followActive && activeBatch && (
+          <p role="status" data-testid="analyze-batch-notice" className={styles.batchBanner}>
             {activeBatch.current_index === null
               ? t('batch.analyzeNoticePreparing')
               : t('batch.analyzeNotice', { current: activeBatch.current_index + 1, total: activeBatch.total })}{' '}
             <a href="#watchlist">{t('batch.analyzeNoticeLink')}</a>
           </p>
         )}
+        {batchBlocked && <p className={styles.helper} data-testid="analyze-batch-blocked">{t('batch.follow.blocked')}</p>}
       </section>
 
       {/* Status cards used to live here; lifted to the App-shell `<StatusStrip>`

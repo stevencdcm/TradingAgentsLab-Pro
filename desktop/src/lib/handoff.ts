@@ -33,3 +33,27 @@ export function consumePendingTicker(): string | null {
   }
   return null;
 }
+
+/** Batch row "View report" -> History: only a session id travels, same sessionStorage pattern as the ticker handoff. */
+export const PENDING_SESSION_KEY = 'tal:pending-history-session';
+
+export function setPendingSession(id: string): void {
+  try {
+    sessionStorage.setItem(PENDING_SESSION_KEY, id);
+  } catch {
+    // Storage unavailable: History just opens on its list.
+  }
+}
+
+export function consumePendingSession(): string | null {
+  try {
+    const value = sessionStorage.getItem(PENDING_SESSION_KEY);
+    if (value) {
+      sessionStorage.removeItem(PENDING_SESSION_KEY);
+      return value;
+    }
+  } catch {
+    // Ignore: History opens on its list.
+  }
+  return null;
+}

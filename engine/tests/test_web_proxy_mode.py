@@ -93,6 +93,19 @@ def test_state_changing_requests_need_origin_and_the_session_cookie(app):
     assert post(origin=PUBLIC).status_code == 200
 
 
+def test_batch_routes_keep_proxy_cookie_origin_and_owner_guards(app):
+    c = client(app)
+    assert c.get("/batches", headers=hop()).status_code in (401, 403)
+    c.get("/", headers=hop())
+    c.cookies.set(COOKIE_NAME, COOKIE)
+    assert c.get("/batches", headers=hop()).status_code == 200
+    malformed = {"tickers": [], "client_batch_key": "key-12345", "start": {}}
+    assert c.post("/batches", json=malformed, headers=hop()).status_code == 403
+    assert c.post("/batches", json=malformed, headers=hop(origin="https://evil.example")).status_code == 403
+    assert c.post("/batches", json=malformed, headers=hop(origin=PUBLIC)).status_code == 400
+    assert client(app, peer="10.1.2.3").get("/batches", headers=hop()).status_code == 403
+
+
 def test_websocket_authenticates_by_cookie_without_a_token_in_the_url(app):
     c = client(app)
     c.cookies.set(COOKIE_NAME, COOKIE)

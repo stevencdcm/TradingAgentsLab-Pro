@@ -320,6 +320,8 @@ def build_web_app(
             return _json_error(exc)
 
     oauth = oauth or OpenAIOAuth(store)
+    app.state.batch_oauth_refresh = oauth.ensure_fresh
+    app.state.batch_manager.oauth_refresh = oauth.ensure_fresh
 
     @app.get("/web/oauth/status")
     async def oauth_status() -> dict[str, Any]:

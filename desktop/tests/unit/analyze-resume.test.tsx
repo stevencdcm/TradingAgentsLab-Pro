@@ -8,6 +8,9 @@ const calls = { onEvent: null as null | ((e: any) => void), resume: [] as string
 let doneResolve: () => void = () => {};
 
 let statusOverride: Record<string, unknown> = {};
+let batches: unknown[] = [];
+let batchesFail = false;
+let activeRunsOverride: unknown[] = [];
 const status = {
   run_id: 'run_abc', state: 'running', active: true, ticker: 'AAPL', trade_date: '2026-10-30', provider: 'openai', model: 'gpt-6.1-sol',
   auth_kind: 'oauth', engine: 'pro', phase: 'debate', steps_done: 3, started_at: Date.now() / 1000 - 120, ended_at: null, elapsed_s: 120, last_seq: 4,
@@ -23,7 +26,8 @@ vi.mock('../../src/lib/engine-client', async () => {
     getLocalRuntimes: vi.fn(async () => ({ runtimes: [] })),
     listLocalModels: vi.fn(async () => ({ models: [] })),
     getRunStatus: vi.fn(async (id: string) => (id === 'run_abc' ? { ...status, ...statusOverride } : null)),
-    getActiveRuns: vi.fn(async () => ({ runs: [], recent: [] })),
+    getActiveRuns: vi.fn(async () => ({ runs: activeRunsOverride, recent: [] })),
+    listBatches: vi.fn(async () => { if (batchesFail) throw new Error('offline'); return batches; }),
     resumeRun: vi.fn(async (id: string, onEvent: (e: any) => void) => {
       calls.onEvent = onEvent;
       calls.resume.push(id);
@@ -50,7 +54,7 @@ import Analyze from '../../src/pages/Analyze';
 import { I18nProvider } from '../../src/i18n';
 
 beforeEach(() => {
-  calls.resume = []; calls.cancel = 0; calls.close = 0; calls.reserve = 0; calls.runAnalysis = 0; statusOverride = {};
+  calls.resume = []; calls.cancel = 0; calls.close = 0; calls.reserve = 0; calls.runAnalysis = 0; statusOverride = {}; batches = []; batchesFail = false; activeRunsOverride = [];
   sessionStorage.clear();
   (window as any).tradingAgentsLab = { platform: 'web', getEngineHandshake: async () => ({ port: 8765, proxy: true }), consent: { get: async () => ({}) } };
 });
@@ -153,5 +157,108 @@ describe('Analyze + engine-side runs', () => {
     await waitFor(() => expect(opened).toHaveLength(1));
     expect(opened[0]).toMatch(/data-testid="cost-report"/); expect(opened[0]).toMatch(/已取消，只計入目前量測到的用量/);
     expect(opened[0]).not.toMatch(/\$0\.0/);
+  });
+
+  describe('batch runs (D56/D58 A9)', () => {
+    const batchSnap = (extra: Record<string, unknown> = {}) => ({ batch_id: 'b_1', active: true, state: 'running', total: 3, current_index: 1, items: [], ...extra });
+    const flush = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 30)); }); };
+
+    it('a remembered run that belongs to a batch is NOT re-attached, is forgotten, and an active batch shows the notice', async () => {
+      statusOverride = { batch_id: 'b_1', batch_index: 1, batch_total: 3 };
+      batches = [batchSnap()];
+      sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+      mount();
+      await flush();
+      expect(calls.resume).toEqual([]);
+      expect(calls.reserve).toBe(0);
+      expect(calls.cancel).toBe(0);
+      expect(sessionStorage.getItem('tal:last-run')).toBeNull();
+      const notice = await screen.findByTestId('analyze-batch-notice');
+      expect(notice.textContent).toMatch(/批量分析進行中（第 2\/3 檔）/);
+      expect(notice.querySelector('a')?.getAttribute('href')).toBe('#watchlist');
+    });
+
+    it('a remembered batch run whose batch has finished: forgotten, not attached, and NO notice', async () => {
+      statusOverride = { batch_id: 'b_1', batch_index: 1, batch_total: 3, active: false, state: 'completed' };
+      batches = [batchSnap({ active: false, state: 'completed', current_index: null })];
+      sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+      mount();
+      await flush();
+      expect(calls.resume).toEqual([]);
+      expect(sessionStorage.getItem('tal:last-run')).toBeNull();
+      expect(screen.queryByTestId('analyze-batch-notice')).toBeNull();
+    });
+
+    it('an active batch with no run yet (between tickers) shows the notice; preparing has its own wording', async () => {
+      batches = [batchSnap({ current_index: null, state: 'queued' })];
+      mount();
+      await flush();
+      expect(calls.resume).toEqual([]);
+      expect((await screen.findByTestId('analyze-batch-notice')).textContent).toMatch(/準備中/);
+      expect(screen.getByTestId('analyze-batch-notice').textContent).not.toMatch(/NaN|null/);
+    });
+
+    it('the notice re-checks every 10 s and on foreground return, and disappears once the batch is no longer active; unmount clears the timer', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        batches = [batchSnap()];
+        const { unmount } = mount();
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+        expect(screen.getByTestId('analyze-batch-notice')).toBeTruthy();
+        const { listBatches } = await import('../../src/lib/engine-client');
+        const n0 = (listBatches as any).mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
+        expect((listBatches as any).mock.calls.length).toBe(n0);          // not before 10 s
+        batches = [batchSnap({ active: false, state: 'completed', current_index: null })];
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+        expect((listBatches as any).mock.calls.length).toBe(n0 + 1);
+        expect(screen.queryByTestId('analyze-batch-notice')).toBeNull();   // gone
+        // foreground return re-checks too: a new active batch brings the notice back
+        batches = [batchSnap({ batch_id: 'b_2' })];
+        await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+        expect(screen.queryByTestId('analyze-batch-notice')).toBeNull();   // no notice shown -> no timer/listener; the next mount sees it
+        unmount();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('foreground return while the notice shows re-checks at once and removes it when the batch ended', async () => {
+      batches = [batchSnap()];
+      mount();
+      await screen.findByTestId('analyze-batch-notice');
+      batches = [batchSnap({ active: false, state: 'cancelled', current_index: null })];
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+      await waitFor(() => expect(screen.queryByTestId('analyze-batch-notice')).toBeNull());
+    });
+
+    it('the active-run fallback also skips a batch run (second tab)', async () => {
+      activeRunsOverride = [{ ...status, batch_id: 'b_1', batch_index: 0, batch_total: 2 }];
+      batches = [batchSnap({ total: 2, current_index: 0 })];
+      mount();
+      await flush();
+      expect(calls.resume).toEqual([]);
+      expect((await screen.findByTestId('analyze-batch-notice')).textContent).toMatch(/第 1\/2 檔/);
+    });
+
+    it('a single (non-batch) run still re-attaches even when /batches is unavailable, and no notice is shown', async () => {
+      batchesFail = true;
+      sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+      mount();
+      await waitFor(() => expect(calls.resume).toEqual(['run_abc']));
+      expect(screen.queryByTestId('analyze-batch-notice')).toBeNull();
+    });
+
+    it('no active batch: no notice, and a remembered single run attaches as before', async () => {
+      batches = [batchSnap({ active: false, state: 'completed', current_index: null })];
+      sessionStorage.setItem('tal:last-run', JSON.stringify({ runId: 'run_abc', ticker: 'AAPL' }));
+      mount();
+      await waitFor(() => expect(calls.resume).toEqual(['run_abc']));
+      expect(screen.queryByTestId('analyze-batch-notice')).toBeNull();
+    });
   });
 });

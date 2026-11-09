@@ -18,13 +18,101 @@ error text can be scrubbed (`redact`).
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit
 
 from .secret_store import REF_RE, SecretStore
 
 _store: Optional[SecretStore] = None
 _seen: list[str] = []
 _MAX_SEEN = 32
+_current_scrubber: ContextVar["Scrubber | None"] = ContextVar("run_scrubber", default=None)
+
+_SECRET_FIELDS = frozenset({"api_key", "access", "refresh", "key_id", "secret", "alpha_vantage_key", "finmind_token"})
+
+
+def is_secret_field(field: str, *, webhook: bool = False) -> bool:
+    """Shared classification for request scrubbing and batch fingerprints."""
+    name = field.lower()
+    return name in _SECRET_FIELDS or webhook and ("url" in name or "token" in name or "secret" in name)
+
+
+class Scrubber:
+    """Secrets belonging to one run, including values resolved from references."""
+
+    def __init__(self, start: dict[str, Any] | None = None):
+        self.values: set[str] = set()
+        self.resolved_values: set[str] = set()
+        if start:
+            self.collect(start)
+
+    def add(self, value: Any) -> None:
+        if isinstance(value, str) and value:
+            self.values.add(value)
+
+    def add_resolved(self, value: Any) -> None:
+        self.add(value)
+        if isinstance(value, str) and value:
+            self.resolved_values.add(value)
+
+    def collect(self, start: dict[str, Any]) -> None:
+        pc = start.get("provider_config") or {}
+        auth = pc.get("auth") or {} if isinstance(pc, dict) else {}
+        if isinstance(auth, dict):
+            for k, v in auth.items():
+                if is_secret_field(k):
+                    self.add(v)
+            base_url = auth.get("base_url")
+            if isinstance(base_url, str):
+                try:
+                    parsed = urlsplit(base_url)
+                    if parsed.username is not None or parsed.password is not None:
+                        self.add(base_url)
+                        for part in (parsed.username, parsed.password):
+                            self.add(part)
+                            self.add(unquote(part or ""))
+                        userinfo = parsed.netloc.rsplit("@", 1)[0]
+                        self.add(userinfo)
+                        self.add(unquote(userinfo))
+                except ValueError:
+                    pass
+        dc = start.get("data_config") or {}
+        if isinstance(dc, dict):
+            for k, v in dc.items():
+                if is_secret_field(k):
+                    self.add(v)
+        for k in ("alpha_vantage_key", "finmind_token"):
+            self.add(start.get(k))
+        for hook in start.get("webhooks") or []:
+            if isinstance(hook, dict):
+                for k, v in hook.items():
+                    if isinstance(v, str) and is_secret_field(k, webhook=True):
+                        self.add(v)
+
+    def clean(self, value: Any) -> Any:
+        if isinstance(value, str):
+            for secret in sorted(self.values | set(_seen), key=len, reverse=True):
+                if len(secret) >= 8:
+                    value = value.replace(secret, "[REDACTED]")
+                else:
+                    value = re.sub(r"(?<!\w)" + re.escape(secret) + r"(?!\w)", "[REDACTED]", value)
+            return scrub_key_shapes(value)
+        if isinstance(value, dict):
+            return {self.clean(k) if isinstance(k, str) and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) else k:
+                    v if k in ("type", "seq") else
+                    self.clean_error(v) if k == "error" and isinstance(v, str) else self.clean(v)
+                    for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self.clean(v) for v in value]
+        return value
+
+    def clean_error(self, value: str) -> str:
+        return scrub_urls_and_tokens(self.clean(value))
+
+    def clear(self) -> None:
+        self.values.clear()
+        self.resolved_values.clear()
 
 
 class SecretRefError(Exception):
@@ -52,7 +140,7 @@ _FINMIND_NAME = "data:finmind"
 
 
 def _remember(value: str) -> None:
-    if len(value) >= 8 and value not in _seen:
+    if value and value not in _seen:
         _seen.append(value)
         del _seen[:-_MAX_SEEN]
 
@@ -62,6 +150,9 @@ def _lookup(name: str) -> str:
         raise SecretRefError("secret references are not available")
     value = _store.get(name) or ""
     _remember(value)
+    scrubber = _current_scrubber.get()
+    if scrubber is not None:
+        scrubber.add_resolved(value)
     return value
 
 
@@ -85,6 +176,48 @@ def _has_ref(obj: Any) -> bool:
     if isinstance(obj, list):
         return any(_has_ref(v) for v in obj)
     return False
+
+
+def validate_start_refs(start: Any) -> None:
+    """Validate reference placement without retrieving any secret before a run owns its slot."""
+    if not isinstance(start, dict):
+        return
+    if _has_ref(start) and _store is None:
+        raise SecretRefError("secret references are unavailable")
+    pc = start.get("provider_config") or {}
+    if isinstance(pc, dict):
+        provider = str(pc.get("provider") or "").lower()
+        auth = pc.get("auth") or {}
+        if _has_ref({k: v for k, v in pc.items() if k != "auth"}):
+            raise SecretRefError("secret reference not allowed in this field")
+        if isinstance(auth, dict):
+            for field, value in auth.items():
+                name = _ref_name(value)
+                if name is None:
+                    if _has_ref(value):
+                        raise SecretRefError("secret reference not allowed in this field")
+                    continue
+                if name not in _PROVIDER_FIELDS.get(provider, {}).get(field, frozenset()):
+                    raise SecretRefError("secret reference not allowed for this provider/field")
+                if provider == "local" and field == "api_key":
+                    saved = _store.get("local:base-url") if _store else None
+                    if not saved or _norm_url(auth.get("base_url")) != _norm_url(saved):
+                        raise SecretRefError("the local API key can only be sent to the saved local server")
+    dc = start.get("data_config") or {}
+    if isinstance(dc, dict):
+        for field, value in dc.items():
+            name = _ref_name(value)
+            if name is not None and name != _DATA_FIELDS.get(field):
+                raise SecretRefError("secret reference not allowed in this field")
+            if name is None and _has_ref(value):
+                raise SecretRefError("secret reference not allowed in this field")
+    for field, allowed in (("alpha_vantage_key", _AV_NAME), ("finmind_token", _FINMIND_NAME)):
+        value = start.get(field)
+        name = _ref_name(value)
+        if name is not None and name != allowed or name is None and _has_ref(value):
+            raise SecretRefError("secret reference not allowed in this field")
+    if _has_ref({k: v for k, v in start.items() if k not in ("provider_config", "data_config", "alpha_vantage_key", "finmind_token")}):
+        raise SecretRefError("secret reference not allowed in this field")
 
 
 def resolve_provider_config(cfg: Any) -> Any:
@@ -185,8 +318,11 @@ def redact(text: str, *extra: Optional[str]) -> str:
     """Scrub resolved secrets (and the tail of any key echoed back) from outgoing text."""
     out = str(text)
     for value in list(_seen) + [v for v in extra if v and len(v) >= 8]:
-        out = out.replace(value, "[redacted]")
-        out = out.replace(value[-8:], "[redacted]")
+        if len(value) >= 8:
+            out = out.replace(value, "[redacted]")
+            out = out.replace(value[-8:], "[redacted]")
+        else:
+            out = re.sub(r"(?<!\w)" + re.escape(value) + r"(?!\w)", "[redacted]", out)
     return out
 
 

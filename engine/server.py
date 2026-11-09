@@ -47,6 +47,8 @@ from .report_language import normalize_report_language
 from .llm_providers import adapter_for
 from . import cost_guard, llm_providers, local_llm_detect, secret_refs, sentiment_sources, storage
 from .run_manager import RunManager
+from .run_slot import SlotGate
+from .batch_manager import BatchManager, BatchError
 from . import webhooks as webhook_dispatcher
 from .stub_debate import canned_debate
 from .telegram_bot import TelegramBot, TelegramBotConfig
@@ -640,11 +642,22 @@ def build_app(*, token: str) -> FastAPI:
             "agents": [],
         }
 
-    run_slot = {"busy": False}
+    def _lingering_graph() -> bool:
+        try:
+            from . import full_debate as mod
+            return mod.graph_thread_still_running()
+        except ImportError:
+            return False
+
+    gate = SlotGate(_lingering_graph)
 
     run_manager = RunManager()
     run_manager.recover()          # unfinished runs of a previous process -> interrupted (never re-run)
     app.state.run_manager = run_manager
+
+    batch_manager = BatchManager(run_manager)
+    batch_manager.recover()
+    app.state.batch_manager = batch_manager
 
     async def _execute_run(ws) -> None:
         """The analysis itself. `ws` is a RunSink: events go to the run (replayable, multi-subscriber), not to one socket."""
@@ -653,11 +666,37 @@ def build_app(*, token: str) -> FastAPI:
         slot_held = False
         tw_run_started = False
         tw_dexter_res = None
+        config = None
+        reservation_id = None
+        run = getattr(ws, "run", None)
+        def _safe_log(value: str) -> str:
+            return run.scrubber.clean_error(value) if run is not None else secret_refs.scrub_urls_and_tokens(secret_refs.scrub_key_shapes(secret_refs.redact(value)))
         # Bound before the try so the `except WebSocketDisconnect` handler can
         # log it even when the client disconnects before sending the start
         # frame (otherwise referencing `ticker` there raises NameError).
         ticker = ""
         try:
+            if run is not None and run.batch_id is not None:
+                run.emit({"type": "run.waiting_slot"})
+                claimed = await gate.wait_claim(run.id, lambda: run.cancel_requested,
+                                                on_wait=lambda: run.emit({"type": "run.heartbeat", "phase": "waiting_slot"}))
+                if not claimed:
+                    await ws.send_json({"type": "run.error", "code": "slot_timeout", "error": "Timed out waiting for another analysis."})
+                    await ws.close(code=1008, reason="slot_timeout")
+                    return
+                slot_held = True
+                try:
+                    batch_manager._update(run.batch_id, "batches", {"state": "running", **({"started_at": time.time()} if run.batch_index == 0 else {})})
+                    batch_manager._update(run.batch_id, "batch_items", {"state": "running"}, run.batch_index)
+                except Exception:
+                    await ws.send_json({"type": "run.error", "code": "storage_unavailable", "error": "Could not save batch progress."})
+                    await ws.close(code=1008, reason="storage_unavailable")
+                    return
+                if run.batch_prepare is not None and not await run.batch_prepare(run):
+                    code = run.terminal_code or "oauth_expired"
+                    await ws.send_json({"type": "run.error", "code": code, "error": "Please sign in again before running remaining items."})
+                    await ws.close(code=1008, reason=code)
+                    return
             # Wait for the client's start frame:
             #   {
             #     "ticker": "NVDA",
@@ -673,6 +712,10 @@ def build_app(*, token: str) -> FastAPI:
             # (no-op in the desktop build). The browser never held the values.
             try:
                 start = secret_refs.resolve_start_frame(await ws.receive_json())
+                if run is not None and run.batch_id is not None and any(len(v) < 8 for v in run.scrubber.resolved_values):
+                    await ws.send_json({"type": "run.error", "code": "invalid_credential", "error": "A credential field has invalid format."})
+                    await ws.close(code=1008, reason="invalid_credential")
+                    return
                 run_t0 = time.monotonic()      # whole-run wall clock starts when the start frame arrives
             except secret_refs.SecretRefError as exc:
                 await ws.send_json({"type": "run.error", "error": str(exc), "code": "secret_ref_rejected"})
@@ -732,26 +775,18 @@ def build_app(*, token: str) -> FastAPI:
             tw_simple = tw_mode and not tw_full
             # The full graph mutates process-global library config / env while it runs, so only
             # one such run may be active; a second is refused explicitly rather than racing.
-            if is_pro or tw_mode:
-                try:
-                    from . import full_debate as _fd_mod
-
-                    _lingering = _fd_mod.graph_thread_still_running()      # a cancelled run's model call is still finishing
-                except ImportError:                                         # no full-graph engine installed
-                    _lingering = False
-                if run_slot["busy"] or _lingering:
+            if (is_pro or tw_mode) and not slot_held:
+                if not gate.try_claim(run.id if run is not None else "legacy"):
                     evt = {"type": "run.error", "code": "run_busy",
                            "error": "Another full-graph / Taiwan research run is already in progress. Wait for it to finish, then retry."}
                     # Same owner only: hand over the id of the run that holds the slot so the page can attach to it.
                     _run = getattr(ws, "run", None)
-                    _holder = _run.mgr.get(_run.owner, run_slot.get("run_id") or "") if _run is not None else None
+                    _holder = _run.mgr.get(_run.owner, gate.holder or "") if _run is not None else None
                     if _holder is not None and _holder.active:
                         evt["active_run_id"] = _holder.id
                     await ws.send_json(evt)
                     await ws.close(code=1008, reason="run_busy")
                     return
-                run_slot["busy"] = True
-                run_slot["run_id"] = getattr(getattr(ws, "run", None), "id", None)
                 slot_held = True
 
             # Optional. Per-stream webhook configs (Phase 8a). Renderer sends
@@ -782,10 +817,11 @@ def build_app(*, token: str) -> FastAPI:
                 if config is not None
                 else "stub"
             )
-            sys.stderr.write(
+            clean_log = _safe_log
+            sys.stderr.write(clean_log(
                 f"[ws] OPEN ticker={ticker} date={trade_date} "
                 f"data={data_provider.name} llm={llm_label}\n"
-            )
+            ))
 
             # Best-effort data fetch; debate degrades gracefully if it fails.
             if tw_full:
@@ -841,13 +877,12 @@ def build_app(*, token: str) -> FastAPI:
                         stocktwits=twits_text, reddit=reddit_text
                     )
                     sys.stderr.write(
-                        f"[ws] sentiment fetched ticker={ticker} "
-                        f"twits_chars={len(twits_text)} reddit_chars={len(reddit_text)}\n"
+                        clean_log(f"[ws] sentiment fetched ticker={ticker} "
+                                  f"twits_chars={len(twits_text)} reddit_chars={len(reddit_text)}\n")
                     )
                 except Exception as exc:  # noqa: BLE001 — sentiment is supplemental
                     sys.stderr.write(
-                        f"[ws] sentiment fetch error ticker={ticker}: "
-                        f"{type(exc).__name__}: {exc}\n"
+                        clean_log(f"[ws] sentiment fetch error ticker={ticker}: {type(exc).__name__}: {exc}\n")
                     )
                     sentiment = None
 
@@ -979,6 +1014,7 @@ def build_app(*, token: str) -> FastAPI:
                             max_tokens=config.max_tokens,
                             override=False,
                             extra_models=guard_models,
+                            run_id=ws.run.id if getattr(ws, "run", None) is not None else None,
                         )
                         reservation_id = auto.reservation_id
                     except cost_guard.CostGuardBlocked as exc:
@@ -1003,6 +1039,14 @@ def build_app(*, token: str) -> FastAPI:
                 if getattr(ws, "run", None) is not None:
                     ws.run.reservation_id = reservation_id
                     ws.run.engine_started = True
+                    try:
+                        ws.run.mgr._save_meta(ws.run, strict=True)
+                    except Exception:
+                        ws.run.engine_started = False
+                        cost_guard.settle_run_end(reservation_id, billable_started=False)
+                        await ws.send_json({"type": "run.error", "code": "storage_unavailable", "error": "Could not save run metadata."})
+                        await ws.close(code=1008, reason="storage_unavailable")
+                        return
                 _cancel_check = (lambda: ws.run.cancel_requested) if getattr(ws, "run", None) is not None else None
 
                 def _report_sink(rep: Optional[dict[str, Any]]) -> None:
@@ -1201,6 +1245,7 @@ def build_app(*, token: str) -> FastAPI:
                 ticker=ticker,
                 trade_date=trade_date,
                 events=captured_events,
+                scrubber=ws.run.scrubber if getattr(ws, "run", None) is not None else None,
             )
             if getattr(ws, "run", None) is not None:
                 ws.run.session_id = session_id          # exactly one history row per run; the run record points at it
@@ -1246,21 +1291,19 @@ def build_app(*, token: str) -> FastAPI:
                         captured_events.append(report_evt)
                     except Exception as exc:  # noqa: BLE001 — webhooks must never break the stream
                         sys.stderr.write(
-                            f"[webhooks] dispatch crashed: {type(exc).__name__}: {exc}\n"
+                            clean_log(f"[webhooks] dispatch crashed: {type(exc).__name__}: {exc}\n")
                         )
 
-            sys.stderr.write(
-                f"[ws] CLOSE ticker={ticker} events={len(captured_events)} code=1000\n"
-            )
+            sys.stderr.write(_safe_log(f"[ws] CLOSE ticker={ticker} events={len(captured_events)} code=1000\n"))
             await ws.close(code=1000)
         except WebSocketDisconnect:
-            sys.stderr.write(f"[ws] DISCONNECT ticker={ticker} mid-stream\n")
+            sys.stderr.write(_safe_log(f"[ws] DISCONNECT ticker={ticker} mid-stream\n"))
             return
         except Exception as exc:  # noqa: BLE001 — never end a run silently: say what failed (redacted) and release the hold
             import traceback
 
-            msg = secret_refs.scrub_key_shapes(secret_refs.redact(f"{type(exc).__name__}: {exc}"))
-            sys.stderr.write(f"[ws] ERROR ticker={ticker} {msg}\n" + secret_refs.scrub_key_shapes(secret_refs.redact(traceback.format_exc(limit=6))) + "\n")
+            msg = _safe_log(f"{type(exc).__name__}: {exc}")
+            sys.stderr.write(_safe_log(f"[ws] ERROR ticker={ticker} {msg}\n") + _safe_log(traceback.format_exc(limit=6)) + "\n")
             if reservation_id:
                 # Local / OAuth cost nothing; a paid run that died mid-flight has an unknown cost (NULL), not 0.
                 free = config is None or config.auth_kind in ("oauth", "local")
@@ -1277,8 +1320,43 @@ def build_app(*, token: str) -> FastAPI:
 
                 tw_graph_tools.end_run()
             if slot_held:
-                run_slot["busy"] = False
-                run_slot["run_id"] = None
+                gate.release(ws.run.id if getattr(ws, "run", None) is not None else "legacy")
+
+    batch_manager.executor = _execute_run
+
+    @app.post("/batches", dependencies=bearer)
+    async def create_batch(request: Request):
+        try:
+            body = await request.json()
+            return {"batch": await batch_manager.create(_owner(request.scope), body)}
+        except BatchError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail()) from None
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail={"code": "invalid_batch", "error": "Invalid JSON body."}) from None
+
+    @app.get("/batches", dependencies=bearer)
+    async def list_batches(request: Request):
+        try:
+            limit = int(request.query_params.get("limit", "5"))
+        except ValueError:
+            limit = 0
+        if not 1 <= limit <= 20:
+            raise HTTPException(status_code=400, detail={"code": "invalid_batch", "error": "limit must be 1 to 20."})
+        return {"batches": batch_manager.list(_owner(request.scope), limit)}
+
+    @app.get("/batches/{batch_id}", dependencies=bearer)
+    async def get_batch(request: Request, batch_id: str):
+        try:
+            return batch_manager.get(_owner(request.scope), batch_id)
+        except BatchError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail()) from None
+
+    @app.post("/batches/{batch_id}/cancel", dependencies=bearer)
+    async def cancel_batch(request: Request, batch_id: str):
+        try:
+            return await batch_manager.cancel(_owner(request.scope), batch_id)
+        except BatchError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail()) from None
 
     def _owner(scope) -> str:
         """`local` for the loopback entry; the verified owner login behind the workbench proxy (set by the web guard)."""
@@ -1406,7 +1484,7 @@ async def with_heartbeat(agen, *, meta: dict, interval: float = 0.0):
 
 
 def _persist_session_safe(
-    *, ticker: str, trade_date: str, events: list[dict]
+    *, ticker: str, trade_date: str, events: list[dict], scrubber=None
 ) -> str | None:
     """Find session.complete in the captured events and write a row.
 
@@ -1418,7 +1496,7 @@ def _persist_session_safe(
     to History rows.
     """
     return storage.write_session_from_events(
-        ticker=ticker, trade_date=trade_date, events=events
+        ticker=ticker, trade_date=trade_date, events=events, scrubber=scrubber
     )
 
 

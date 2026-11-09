@@ -131,7 +131,7 @@ def test_adapter_exception_returns_error(client):
     mock_adapter.close.assert_awaited_once()
 
 
-def test_requires_bearer_token():
+def test_requires_bearer_token(tmp_db):
     app = build_app(token=TOKEN)
     with TestClient(app) as c:
         r = c.post("/llm/test", json={"provider_config": {}})
